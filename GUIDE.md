@@ -8,10 +8,13 @@
 
 1. [What this plugin does](#1-what-this-plugin-does)
 2. [Installation](#2-installation)
-3. [Getting the model file](#3-getting-the-model-file)
+3. [Getting the model files](#3-getting-the-model-files)
 4. [Opening the plugin in napari](#4-opening-the-plugin-in-napari)
 5. [Tab 1 — Skin Remover](#5-tab-1--skin-remover)
 6. [Tab 2 — Create Labels](#6-tab-2--create-labels)
+   - [6a. Which tool is active — Pixel Classifier or Cellpose-SAM?](#6a-which-tool-is-active--pixel-classifier-or-cellpose-sam)
+   - [6b. Pixel Classifier — Union-Find Labels](#6b-pixel-classifier--union-find-labels)
+   - [6c. Cellpose-SAM Segmentation](#6c-cellpose-sam-segmentation)
 7. [Tab 3 — Statistics](#7-tab-3--statistics)
    - [7a. Analysing cells by brain region (optic tectum / hindbrain)](#brain-regions-optional)
    - [7b. Intensity statistics per label](#intensity-statistics-optional)
@@ -33,9 +36,11 @@ This plugin does two things, in order:
 
 **Step A — Skin Removal (Tab 1):** Uses a trained AI model (MONAI 3D U-Net) to automatically detect and remove everything outside the brain, producing a clean `brain_only` image where only the cells of interest remain visible.
 
-**Step B — Label (Tab 2):** From the cleaned image, automatically finds and labels each individual cell as a separately numbered 3D region. Lets you sort, split, and edit labels before saving.
+**Step B — Label (Tab 2):** From the cleaned image, automatically finds and labels each individual cell as a separately numbered 3D region, using **one of two interchangeable methods** — a Pixel Classifier or a Cellpose-SAM segmentation pipeline. The tab shows whichever one matches your Tab 1 output automatically; see [Section 6a](#6a-which-tool-is-active--pixel-classifier-or-cellpose-sam). Lets you sort, split, and edit labels before saving.
 
 **Step C — Analyse (Tab 3):** Computes a comprehensive set of shape statistics for each labelled cell and exports them to a CSV file, with an optional AI-generated plain-language description per cell.
+
+> **Every numeric field with a slider next to it (in all three tabs) is directly editable** — click the number box and type an exact value instead of dragging the slider. Both stay in sync.
 
 ---
 
@@ -57,9 +62,13 @@ All dependencies (PyTorch, MONAI, scikit-image, etc.) are installed automaticall
 
 ---
 
-## 3. Getting the model file
+## 3. Getting the model files
 
-The AI model (~220 MB) is **not included in the plugin** and must be downloaded separately.
+The plugin needs up to **two** trained checkpoints, depending on which labelling method you plan to use. Neither is bundled in the plugin.
+
+### MONAI skin-removal model (required — Tab 1)
+
+The AI model (~220 MB) that powers skin removal.
 
 **Download:**
 
@@ -77,6 +86,12 @@ Documents/
 
 You will point the plugin to this file the first time you use it. **The plugin remembers the path** — you only need to do this once per installation.
 
+### Cellpose-SAM checkpoint (optional — Tab 2, only if using Cellpose-SAM Segmentation)
+
+Only needed if you plan to label cells with **Cellpose-SAM Segmentation** rather than the **Pixel Classifier** (see [Section 6a](#6a-which-tool-is-active--pixel-classifier-or-cellpose-sam)). This is a project-specific fine-tuned Cellpose-SAM model — there is no fixed public download, since every lab trains its own on its own ground truth. Browse to whatever checkpoint you have using the **Browse `[...]`** button in the Cellpose-SAM Segmentation section of Tab 2. The path is remembered the same way as the MONAI model path.
+
+If you don't have a checkpoint yet, use the **Pixel Classifier** instead — it needs no additional model file.
+
 ---
 
 ## 4. Opening the plugin in napari
@@ -84,7 +99,7 @@ You will point the plugin to this file the first time you use it. **The plugin r
 1. Open a terminal and type `napari` to launch it.
 2. In the napari menu bar, click **Plugins**.
 3. Click **MONAI Skin-Remover**.
-4. A panel appears on the right side with two tabs: **Skin Remover** and **Create Labels**.
+4. A panel appears on the right side with tabs: **Skin Remover**, **Create Labels**, and **Statistics** (Statistics only appears once at least one Labels layer exists in the viewer).
 
 ---
 
@@ -257,7 +272,30 @@ Processing time:
 
 ## 6. Tab 2 — Create Labels
 
-> Before using this tab, run Tab 1 with **Option 2 — Remove background globally**. Then click the resulting `brain_only` layer in the Layers panel to select it.
+> Before using this tab, run Tab 1 first, then click the resulting `brain_only` layer in the Layers panel to select it. Which section of Tab 2 appears depends on which background mode you used — see 6a below.
+
+---
+
+### 6a. Which tool is active — Pixel Classifier or Cellpose-SAM?
+
+Tab 2 shows **exactly one** of the two labelling methods below, chosen automatically from the active layer's filename suffix. Select a different layer in the Layers panel and Tab 2 switches live — no manual toggle needed.
+
+| Active layer ends in | Section shown | Produced by Tab 1 option |
+|---|---|---|
+| `_ExtRm` | **Cellpose-SAM Segmentation** (6c) | Option 1 — Remove background outside brain |
+| `_NoBG` | **Pixel Classifier** (6b) | Option 2 — Remove background globally |
+| `_RndFill` | *Neither* — this output is for presentation/visualisation only | Option 3 — Fill removed with random background |
+| anything else (e.g. the raw channel) | *Neither*, with a hint on what to select | — |
+
+So the choice is really made back in **Tab 1, Step 5**: pick **Option 1** if you plan to segment with Cellpose-SAM, or **Option 2** if you plan to use the Pixel Classifier.
+
+The **Sort by / Resort Labels**, **Split Label**, and **Save Labels** tools (Section 6, further down) only appear once one of the two sections above is showing — with no `_ExtRm`/`_NoBG` layer selected, there's nothing yet to sort, split, or save. Likewise, **Tab 3 — Statistics** only appears once at least one Labels layer exists in the viewer.
+
+---
+
+### 6b. Pixel Classifier — Union-Find Labels
+
+Fully self-contained: Gaussian smooth → threshold → per-slice 2D connected components → overlap-based union-find into 3D objects → volume filter → sequential renumber. Shown when the active layer ends in `_NoBG` (background removed everywhere, not just outside the brain) — needs no additional model file.
 
 ---
 
@@ -340,6 +378,54 @@ After all 2D blobs are linked into 3D objects, any object smaller than this voxe
 Click to run the 3D labelling algorithm. Processing runs in a background thread — the button is disabled until complete.
 
 When done, a `*_labels` layer appears in napari with each detected cell shown in a different colour. The console prints how many labels were found.
+
+---
+
+### 6c. Cellpose-SAM Segmentation
+
+Shown when the active layer ends in `_ExtRm` (background removed only outside the brain — the interior is left intact for Cellpose-SAM to see). Runs `do_3D` Cellpose-SAM inference, then a 3-component-GMM cleanup pass, a Krendl safe-merge pass (rejoins sub-threshold fragments based on gap size and contact area), and a large-contact merge pass (catches cells accidentally split through a thick junction).
+
+**Requires a Cellpose-SAM checkpoint** — see [Section 3](#3-getting-the-model-files). This is a project-specific fine-tuned model, not shipped with the plugin.
+
+#### Model (.pt/checkpoint) — Browse button `[...]`
+
+Browse to your trained Cellpose-SAM checkpoint file. The path is remembered across sessions, the same way the MONAI model path is remembered in Tab 1.
+
+#### Cellprob threshold
+
+**Range:** -6.0 to 6.0 — **Default: -2.5**
+
+Cellpose-SAM's own confidence cutoff for what counts as foreground (cell) vs. background. Lower (more negative) values are more permissive — they recover more of a cell's thin, dim protrusions but can also let in more noise.
+
+#### Flow threshold
+
+**Range:** 0.0 to 1.0 — **Default: 0.4**
+
+Rejects predicted objects whose internal flow field doesn't self-consistently point back to a single centre (a sign of a malformed or noisy detection). Lower values are stricter — fewer, more confident objects.
+
+#### Safe-merge max gap (vox)
+
+**Range:** 0 to 20 — **Default: 2**
+
+During the Krendl safe-merge pass, two fragments separated by a gap up to this many voxels are considered for merging into one cell (in addition to the contact-area check below).
+
+#### Safe-merge min contact (vox)
+
+**Range:** 0 to 200 — **Default: 10**
+
+Minimum shared-boundary voxel count required between two fragments before the safe-merge pass will join them. Higher values require a more substantial touching surface before merging.
+
+#### Large-contact merge (vox)
+
+**Range:** 1 to 2000 — **Default: 20**
+
+A second, separate merge pass for large blobs that got split apart through a thick junction (more contact area than the safe-merge pass alone would normally join). Raise this if large cells are still coming out fragmented; lower it if separate cells are being wrongly joined.
+
+#### Run Cellpose-SAM Segmentation (button)
+
+Click to start. `do_3D` inference is slow — it can take **hours** for a full-size fish — and runs in a background thread with live status updates, so napari itself stays responsive while it works. When complete, a `*_labels` layer appears, exactly as with the Pixel Classifier.
+
+> If this button errors with `No module named 'cellpose'`, install it in your environment: `pip install cellpose` (already listed in `environment.yml`/`environment-mac.yml` for fresh installs — see Section 13).
 
 ---
 
@@ -837,24 +923,26 @@ Set these values in Tab 1:
 |---------|-------|
 | MONAI Threshold | **0.25** |
 | Erosion | 0 (default) |
-| Background | **Option 2 — Remove globally** |
+| Background | **Option 1** if you plan to use Cellpose-SAM in Step 3, **Option 2** if you plan to use the Pixel Classifier |
 | BG Threshold | **1.40** |
 
 Click **Run Skin-Remover** and wait.
 
-**What you should see:** A `brain_only` layer where microglia appear as bright isolated blobs on a black background, with clear space between cells.
+**What you should see:** A `brain_only` layer. With Option 2, microglia appear as bright isolated blobs on a black background, with clear space between cells (needed for the Pixel Classifier). With Option 1, the brain interior is left intact — only the tissue outside the brain is removed (needed for Cellpose-SAM).
 
-**If blobs look hollow or have large halos:** Lower BG Threshold (e.g. 0.40).
+**If blobs look hollow or have large halos (Option 2):** Lower BG Threshold (e.g. 0.40).
 
-**If too much dim signal remains between cells:** Raise BG Threshold (e.g. 0.80).
+**If too much dim signal remains between cells (Option 2):** Raise BG Threshold (e.g. 0.80).
 
 ---
 
 ### Step 3 — Create labels
 
-1. **Click the `brain_only_NoBG` layer** in the Layers panel.
-2. Switch to the **Create Labels** tab.
-3. Set these values:
+Click the `brain_only` layer Tab 1 just produced (`_ExtRm` or `_NoBG`, matching your choice above) in the Layers panel, then switch to the **Create Labels** tab. It automatically shows the matching section — see [Section 6a](#6a-which-tool-is-active--pixel-classifier-or-cellpose-sam) for the full logic.
+
+#### Option A — Pixel Classifier (active layer ends in `_NoBG`)
+
+Set these values:
 
 | Setting | Value |
 |---------|-------|
@@ -863,7 +951,7 @@ Click **Run Skin-Remover** and wait.
 | Min overlap | 10% (default) |
 | Min volume | 7500 (default) |
 
-4. Click **Create Labels**.
+Click **Create Labels**.
 
 **What you should see:** A labels layer where each cell is a different colour. The console prints how many were found.
 
@@ -871,6 +959,14 @@ Click **Run Skin-Remover** and wait.
 - Too many tiny fragments → increase Min volume or increase both σ values
 - Two cells merged together → try Split Label (see below)
 - Cells cut across slices → decrease Min overlap or increase σ Z
+
+#### Option B — Cellpose-SAM Segmentation (active layer ends in `_ExtRm`)
+
+1. Browse to your Cellpose-SAM checkpoint (Section 3) if not already set.
+2. Leave the defaults (Cellprob -2.5, Flow 0.4, Safe-merge max gap 2, Safe-merge min contact 10, Large-contact merge 20) unless you know you need to adjust them — see [Section 6c](#6c-cellpose-sam-segmentation) for what each one does.
+3. Click **Run Cellpose-SAM Segmentation** and wait — this can take hours for a full-size fish. Progress is shown in the status bar; napari stays usable while it runs.
+
+**What you should see:** A labels layer where each cell is a different colour, exactly as with the Pixel Classifier.
 
 ---
 
@@ -1086,6 +1182,18 @@ The blob doesn't have a clear separation into the requested number of parts.
 
 ---
 
+### "Run Cellpose-SAM Segmentation" errors with `No module named 'cellpose'`
+
+Install it in your environment: `pip install cellpose`. Already included in `environment.yml`/`environment-mac.yml` for fresh installs — if you set up your environment before this feature was added, run `conda env update --name skin-seg -f environment.yml --prune` (or `environment-mac.yml`) and reinstall.
+
+---
+
+### Neither Pixel Classifier nor Cellpose-SAM section shows up in Tab 2
+
+The active layer's name must end in `_ExtRm` (Cellpose-SAM) or `_NoBG` (Pixel Classifier) — reselect the correct Tab 1 output layer in the Layers panel. See [Section 6a](#6a-which-tool-is-active--pixel-classifier-or-cellpose-sam).
+
+---
+
 ## Quick Reference Card
 
 ### Tab 1 — Skin Remover
@@ -1099,12 +1207,31 @@ The blob doesn't have a clear separation into the requested number of parts.
 
 ### Tab 2 — Create Labels
 
+Shown automatically based on active layer suffix — `_ExtRm` → Cellpose-SAM, `_NoBG` → Pixel Classifier (see [6a](#6a-which-tool-is-active--pixel-classifier-or-cellpose-sam)).
+
+**Pixel Classifier**
+
 | Control | Recommended | What it does |
 |---------|-------------|--------------|
 | Smooth σ XY | 1.5 | Contour softness within each slice |
 | Smooth σ Z | 3.0 | Cross-slice blob connectivity |
 | Min overlap | 10% | Overlap needed to link blobs across slices |
 | Min volume | 7500 | Minimum voxels to keep a 3D object |
+
+**Cellpose-SAM Segmentation**
+
+| Control | Recommended | What it does |
+|---------|-------------|--------------|
+| Cellprob threshold | -2.5 | Confidence cutoff for foreground vs. background |
+| Flow threshold | 0.4 | Rejects self-inconsistent flow predictions |
+| Safe-merge max gap | 2 vox | Max gap allowed when merging fragments |
+| Safe-merge min contact | 10 vox | Min touching surface required to merge |
+| Large-contact merge | 20 vox | Second merge pass for thick-junction splits |
+
+**Both methods (once labels exist)**
+
+| Control | Recommended | What it does |
+|---------|-------------|--------------|
 | Split σ | 1.0 | Smoothness for watershed split |
 | Min distance | 5 | Peak separation for split detection |
 
