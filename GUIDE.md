@@ -139,10 +139,11 @@ The AI model outputs a probability map (0 = definitely not brain, 1 = definitely
 | Value | Effect |
 |-------|--------|
 | 0.20 | More generous — includes uncertain areas; may keep some skin |
-| **0.30** | **Recommended — good for zebrafish at 4 dpf** |
+| **0.25** | **Recommended — validated best results (Nathalie)** |
+| 0.30 | Previously documented default — superseded by 0.25 |
 | 0.50 | Stricter — may cut into brain edges |
 
-> Post-processing (largest connected component + hole filling) cleans up most artefacts regardless of threshold. Keep it at 0.30 unless results look obviously wrong.
+> Post-processing (largest connected component + hole filling) cleans up most artefacts regardless of threshold. Keep it at 0.25 unless results look obviously wrong.
 
 ---
 
@@ -213,11 +214,12 @@ pixels  > threshold → kept (treated as signal)
 | Value | Effect |
 |-------|--------|
 | 0.00 | Threshold = exactly the mode — removes only confirmed background |
-| **0.50** | **Default — removes background + a small margin above the mode** |
-| 0.60 | Recommended for microglia labelling — clean separation between cells |
-| 1.00+ | Aggressive — may remove dim signal from thin cell protrusions |
+| 0.50 | Previously documented default |
+| 0.60 | Previously documented "recommended for microglia" — superseded by 1.40 |
+| **1.40** | **Recommended for microglia labelling — validated best results (Nathalie)** |
+| 2.00 (max) | Aggressive — may remove dim signal from thin cell protrusions |
 
-> For microglia labelling, **0.60** typically produces the cleanest isolated blobs with good gaps between cells. If microglia are losing thin protrusions, lower the value.
+> For microglia labelling, **1.40** typically produces the cleanest isolated blobs with good gaps between cells. If microglia are losing thin protrusions, lower the value.
 
 ---
 
@@ -833,10 +835,10 @@ Set these values in Tab 1:
 
 | Setting | Value |
 |---------|-------|
-| MONAI Threshold | 0.30 (default) |
+| MONAI Threshold | **0.25** |
 | Erosion | 0 (default) |
 | Background | **Option 2 — Remove globally** |
-| BG Threshold | **0.60** |
+| BG Threshold | **1.40** |
 
 Click **Run Skin-Remover** and wait.
 
@@ -1031,7 +1033,7 @@ Replace `cuda12x` with your actual CUDA version if different (e.g. `cuda11x` for
 
 ### `brain_only` layer looks mostly empty (all black)
 
-BG Threshold is too high — lower it (e.g. from 0.60 to 0.30).
+BG Threshold is too high — lower it (e.g. from 1.40 toward 0.50-0.60).
 
 ---
 
@@ -1090,10 +1092,10 @@ The blob doesn't have a clear separation into the requested number of parts.
 
 | Control | Recommended | What it does |
 |---------|-------------|--------------|
-| MONAI Threshold | 0.30 | AI confidence cutoff |
+| MONAI Threshold | 0.25 | AI confidence cutoff |
 | Erosion | 0 | Strips voxels from mask edge |
 | Background | Option 2 | Removes background globally (best for labels) |
-| BG Threshold | 0.60 | Fine-tunes background removal level |
+| BG Threshold | 1.40 | Fine-tunes background removal level |
 
 ### Tab 2 — Create Labels
 

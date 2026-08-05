@@ -1,8 +1,9 @@
 """
 _statistics.py — Per-label morphological statistics + natural-language descriptions.
 
-Statistics computed per label (45 columns max)
-----------------------------------------------
+Statistics computed per label (46 columns always present; up to 51 when an
+intensity image and/or brain-region boundary lines are supplied)
+-----------------------------------------------------------------------
   label                   : label ID
   volume_vox              : voxel count
   volume_um3              : physical volume (µm³)
@@ -29,7 +30,10 @@ Statistics computed per label (45 columns max)
   endpoint_density        : n_endpoints / volume_um3  (×10⁶)
   process_complexity      : n_endpoints × mean_branch_len_um / volume_um3
   morphotype              : rule-based class (Ramified/Amoeboid/Rod-shaped/Intermediate)
+  nearest_neighbor_label  : label ID of the 1st nearest neighbour
   nearest_neighbor_dist_um: distance to nearest centroid (µm)
+  nearest_neighbor_2_label: label ID of the 2nd nearest neighbour
+  nearest_neighbor_2_dist_um: distance to 2nd nearest centroid (µm)
   nearest_neighbor_ratio  : observed NND / expected NND (3-D Clark-Evans index)
   local_density_100um     : cells within 100 µm radius
   depth_normalized        : centroid_z_um / max_centroid_z_um  (0 = top, 1 = bottom)

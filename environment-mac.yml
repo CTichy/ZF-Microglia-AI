@@ -24,6 +24,10 @@ dependencies:
     # ── MONAI ────────────────────────────────────────────────────────────
     - monai>=1.0
 
+    # ── Cellpose-SAM (Tab 2 — Cellpose-SAM Segmentation) ─────────────────
+    - cellpose
+    - superqt
+
     # ── Napari + plugins ─────────────────────────────────────────────────
     - "napari[all]>=0.5"
     - napari-console

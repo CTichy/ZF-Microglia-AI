@@ -7,7 +7,7 @@ name = "napari-skin-remover"
 version = "0.1.0"
 description = "MONAI Skin-Remover napari plugin — zebrafish confocal skin removal"
 requires-python = ">=3.8"
-dependencies = ["napari", "monai", "tifffile", "numpy", "qtpy"]
+dependencies = ["napari", "monai", "tifffile", "numpy", "qtpy", "superqt", "cellpose"]
 
 [project.scripts]
 skin-remover = "napari_skin_remover.__main__:main"

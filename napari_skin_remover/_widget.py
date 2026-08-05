@@ -14,16 +14,18 @@ import napari
 
 from qtpy.QtWidgets import (
     QPushButton, QLabel, QWidget, QVBoxLayout, QHBoxLayout,
-    QSlider, QCheckBox, QFileDialog, QSizePolicy, QButtonGroup, QRadioButton,
-    QTabWidget, QComboBox, QSpinBox, QLineEdit, QScrollArea, QGroupBox,
+    QCheckBox, QFileDialog, QSizePolicy, QButtonGroup, QRadioButton,
+    QTabWidget, QComboBox, QSpinBox, QDoubleSpinBox, QLineEdit, QScrollArea, QGroupBox,
 )
 from qtpy.QtCore import Qt, QTimer
+from superqt import QLabeledSlider, QLabeledDoubleSlider
 
 from ._io import load_file
 from ._inference import DEFAULT_MODEL, _SKIN_SEG_DIR, run_inference
 from ._background import remove_outside_brain, remove_global, fill_outside_brain_random
 from ._labeling import create_labels, resort_labels, split_label
 from ._statistics import compute_stats
+from ._cellpose_seg import run_full_pipeline as _run_cellpose_pipeline
 
 _CONFIG_PATH = Path.home() / ".config" / "napari-skin-remover" / "config.json"
 
@@ -113,6 +115,42 @@ def _save_config(data: dict) -> None:
         pass
 
 
+def _add_reliable_spinbox(row_layout, slider, minimum, maximum, step,
+                           decimals=None, slider_max_width=110):
+    """
+    Replace superqt's built-in numeric entry with a real QSpinBox /
+    QDoubleSpinBox synced to the slider.
+
+    superqt's QLabeled(Double)Slider has an internal numeric label
+    (`._label`) whose width it silently resets on first show to a value
+    that isn't reliably predictable outside the real running app — direct
+    attempts to fix its width (`._label.setFixedWidth(...)`) kept getting
+    overridden or landing too narrow in practice. QSpinBox/QDoubleSpinBox
+    are ordinary Qt widgets with correctly self-computed sizeHints and no
+    such override behaviour, so we hide the broken label and use one of
+    these instead — still perfectly in sync with the slider via signals.
+
+    Returns the spinbox (e.g. to enable/disable alongside the slider).
+    """
+    slider._label.setVisible(False)
+    slider._slider.setMaximumWidth(slider_max_width)
+
+    spin = QDoubleSpinBox() if decimals is not None else QSpinBox()
+    if decimals is not None:
+        spin.setDecimals(decimals)
+    spin.setMinimum(minimum)
+    spin.setMaximum(maximum)
+    spin.setSingleStep(step)
+    spin.setValue(slider.value())
+    spin.setFixedWidth(spin.sizeHint().width() + 6)  # +6px margin for safety
+
+    slider.valueChanged.connect(spin.setValue)
+    spin.valueChanged.connect(slider.setValue)
+
+    row_layout.addWidget(spin)
+    return spin
+
+
 def _sep():
     """Thin horizontal separator line."""
     w = QWidget()
@@ -179,11 +217,16 @@ class SkinRemoverWidget(QWidget):
             initial_model = DEFAULT_MODEL
         else:
             initial_model = None
+        # Cellpose-SAM checkpoint: saved config only (no bundled default —
+        # this is a project-specific fine-tuned model, not shipped with the plugin)
+        saved_cp_model = Path(cfg.get("cellpose_model_path", ""))
+        initial_cp_model = saved_cp_model if saved_cp_model.exists() else None
         self._state = {
-            "model_path":     initial_model,
-            "last_file_path": None,
-            "metadata":       None,
-            "config":         cfg,
+            "model_path":         initial_model,
+            "cellpose_model_path": initial_cp_model,
+            "last_file_path":     None,
+            "metadata":           None,
+            "config":             cfg,
         }
         self._build_ui()
         self._connect_signals()
@@ -196,6 +239,7 @@ class SkinRemoverWidget(QWidget):
 
     def _build_ui(self):
         tabs = QTabWidget()
+        self._tabs = tabs
 
         # ============================================================ #
         # TAB 1 — Skin Remover
@@ -240,26 +284,28 @@ class SkinRemoverWidget(QWidget):
 
         thresh_row = QHBoxLayout()
         thresh_row.addWidget(QLabel("MONAI Threshold:"))
-        self._thresh_slider = QSlider(Qt.Horizontal)
-        self._thresh_slider.setMinimum(1)
-        self._thresh_slider.setMaximum(99)
-        self._thresh_slider.setValue(30)
-        self._thresh_val = QLabel("0.30")
-        self._thresh_val.setFixedWidth(36)
+        self._thresh_slider = QLabeledDoubleSlider(Qt.Horizontal)
+        self._thresh_slider.setDecimals(2)
+        self._thresh_slider.setMinimum(0.01)
+        self._thresh_slider.setMaximum(0.99)
+        self._thresh_slider.setSingleStep(0.01)
+        self._thresh_slider.setValue(0.25)
         thresh_row.addWidget(self._thresh_slider)
-        thresh_row.addWidget(self._thresh_val)
+        self._thresh_spin = _add_reliable_spinbox(
+            thresh_row, self._thresh_slider, 0.01, 0.99, 0.01, decimals=2
+        )
         t1.addLayout(thresh_row)
 
         erosion_row = QHBoxLayout()
         erosion_row.addWidget(QLabel("Erosion (vox):"))
-        self._erosion_slider = QSlider(Qt.Horizontal)
+        self._erosion_slider = QLabeledSlider(Qt.Horizontal)
         self._erosion_slider.setMinimum(0)
         self._erosion_slider.setMaximum(15)
         self._erosion_slider.setValue(0)
-        self._erosion_val = QLabel("0")
-        self._erosion_val.setFixedWidth(24)
         erosion_row.addWidget(self._erosion_slider)
-        erosion_row.addWidget(self._erosion_val)
+        self._erosion_spin = _add_reliable_spinbox(
+            erosion_row, self._erosion_slider, 0, 15, 1
+        )
         t1.addLayout(erosion_row)
         erosion_note = QLabel(
             "  Erodes mask before applying to brain_only\n"
@@ -289,14 +335,16 @@ class SkinRemoverWidget(QWidget):
         tol_row = QHBoxLayout()
         self._tol_lbl = QLabel("  BG Threshold:")
         tol_row.addWidget(self._tol_lbl)
-        self._tol_slider = QSlider(Qt.Horizontal)
-        self._tol_slider.setMinimum(0)
-        self._tol_slider.setMaximum(200)
-        self._tol_slider.setValue(50)
-        self._tol_val = QLabel("0.50")
-        self._tol_val.setFixedWidth(36)
+        self._tol_slider = QLabeledDoubleSlider(Qt.Horizontal)
+        self._tol_slider.setDecimals(2)
+        self._tol_slider.setMinimum(0.00)
+        self._tol_slider.setMaximum(2.00)
+        self._tol_slider.setSingleStep(0.01)
+        self._tol_slider.setValue(1.40)
         tol_row.addWidget(self._tol_slider)
-        tol_row.addWidget(self._tol_val)
+        self._tol_spin = _add_reliable_spinbox(
+            tol_row, self._tol_slider, 0.00, 2.00, 0.01, decimals=2
+        )
         t1.addLayout(tol_row)
 
         bg_note = QLabel(
@@ -336,63 +384,184 @@ class SkinRemoverWidget(QWidget):
         t2 = QVBoxLayout()
         t2.setSpacing(6)
 
+        self._labels_mode_hint = QLabel("")
+        self._labels_mode_hint.setWordWrap(True)
+        self._labels_mode_hint.setStyleSheet("color: #8ab; font-size: 10px; font-style: italic;")
+        t2.addWidget(self._labels_mode_hint)
+
+        # ── Pixel Classifier (union-find labels) — shown for _NoBG layers ── #
+        self._pixel_classifier_group = QGroupBox("Pixel Classifier — Union-Find Labels")
+        pcg = QVBoxLayout()
+        pcg.setSpacing(6)
+
         lbl_note = QLabel(
             "Run option 2 (Remove globally) first to get a\n"
-            "brain_only layer, then select it and click below."
+            "brain_only (_NoBG) layer, then select it and click below."
         )
         lbl_note.setWordWrap(True)
         lbl_note.setStyleSheet("color: #aaa; font-size: 10px;")
-        t2.addWidget(lbl_note)
-
-        t2.addWidget(_sep())
+        pcg.addWidget(lbl_note)
 
         sxy_row = QHBoxLayout()
         sxy_row.addWidget(QLabel("Smooth σ XY:"))
-        self._sxy_slider = QSlider(Qt.Horizontal)
-        self._sxy_slider.setMinimum(0)
-        self._sxy_slider.setMaximum(50)
-        self._sxy_slider.setValue(10)
-        self._sxy_val = QLabel("1.0")
-        self._sxy_val.setFixedWidth(28)
+        self._sxy_slider = QLabeledDoubleSlider(Qt.Horizontal)
+        self._sxy_slider.setDecimals(1)
+        self._sxy_slider.setMinimum(0.0)
+        self._sxy_slider.setMaximum(5.0)
+        self._sxy_slider.setSingleStep(0.1)
+        self._sxy_slider.setValue(1.5)
         sxy_row.addWidget(self._sxy_slider)
-        sxy_row.addWidget(self._sxy_val)
-        t2.addLayout(sxy_row)
+        self._sxy_spin = _add_reliable_spinbox(
+            sxy_row, self._sxy_slider, 0.0, 5.0, 0.1, decimals=1
+        )
+        pcg.addLayout(sxy_row)
 
         sz_row = QHBoxLayout()
         sz_row.addWidget(QLabel("Smooth σ Z:"))
-        self._sz_slider = QSlider(Qt.Horizontal)
-        self._sz_slider.setMinimum(0)
-        self._sz_slider.setMaximum(50)
-        self._sz_slider.setValue(5)
-        self._sz_val = QLabel("0.5")
-        self._sz_val.setFixedWidth(28)
+        self._sz_slider = QLabeledDoubleSlider(Qt.Horizontal)
+        self._sz_slider.setDecimals(1)
+        self._sz_slider.setMinimum(0.0)
+        self._sz_slider.setMaximum(5.0)
+        self._sz_slider.setSingleStep(0.1)
+        self._sz_slider.setValue(3.0)
         sz_row.addWidget(self._sz_slider)
-        sz_row.addWidget(self._sz_val)
-        t2.addLayout(sz_row)
+        self._sz_spin = _add_reliable_spinbox(
+            sz_row, self._sz_slider, 0.0, 5.0, 0.1, decimals=1
+        )
+        pcg.addLayout(sz_row)
 
         area_row = QHBoxLayout()
         area_row.addWidget(QLabel("Min volume (vox):"))
-        self._area_slider = QSlider(Qt.Horizontal)
+        self._area_slider = QLabeledSlider(Qt.Horizontal)
         self._area_slider.setMinimum(5000)
         self._area_slider.setMaximum(10000)
         self._area_slider.setValue(7500)
-        self._area_val = QLabel("7500")
-        self._area_val.setFixedWidth(40)
         area_row.addWidget(self._area_slider)
-        area_row.addWidget(self._area_val)
-        t2.addLayout(area_row)
-
-        t2.addWidget(_sep())
+        self._area_spin = _add_reliable_spinbox(
+            area_row, self._area_slider, 5000, 10000, 100
+        )
+        pcg.addLayout(area_row)
 
         self._labels_btn = QPushButton("Create Labels")
         self._labels_btn.setStyleSheet("QPushButton { font-weight: bold; padding: 6px; }")
-        t2.addWidget(self._labels_btn)
+        pcg.addWidget(self._labels_btn)
 
         self._labels_status_lbl = QLabel("")
         self._labels_status_lbl.setWordWrap(True)
-        t2.addWidget(self._labels_status_lbl)
+        pcg.addWidget(self._labels_status_lbl)
+
+        self._pixel_classifier_group.setLayout(pcg)
+        t2.addWidget(self._pixel_classifier_group)
+
+        # ── Cellpose-SAM segmentation (do_3D + Krendl corrections) — shown for _ExtRm layers ── #
+        self._cellpose_group = QGroupBox("Cellpose-SAM Segmentation")
+        cpg = QVBoxLayout()
+        cpg.setSpacing(6)
+
+        cp_note = QLabel(
+            "  Select a brain_only layer, pick a Cellpose-SAM checkpoint,\n"
+            "  then click below. do_3D inference is slow (can be hours\n"
+            "  for a full fish) — this runs in the background."
+        )
+        cp_note.setWordWrap(True)
+        cp_note.setStyleSheet("color: #aaa; font-size: 10px;")
+        cpg.addWidget(cp_note)
+
+        cp_model_row = QHBoxLayout()
+        self._cp_model_lbl = QLabel(
+            str(self._state["cellpose_model_path"]) if self._state["cellpose_model_path"] else "— no model selected —"
+        )
+        self._cp_model_lbl.setWordWrap(True)
+        self._cp_model_lbl.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Preferred)
+        self._cp_model_browse_btn = QPushButton("...")
+        self._cp_model_browse_btn.setFixedWidth(32)
+        cp_model_row.addWidget(self._cp_model_lbl)
+        cp_model_row.addWidget(self._cp_model_browse_btn)
+        cpg.addLayout(cp_model_row)
+
+        cp_cellprob_row = QHBoxLayout()
+        cp_cellprob_row.addWidget(QLabel("Cellprob threshold:"))
+        self._cp_cellprob_slider = QLabeledDoubleSlider(Qt.Horizontal)
+        self._cp_cellprob_slider.setDecimals(2)
+        self._cp_cellprob_slider.setMinimum(-6.0)
+        self._cp_cellprob_slider.setMaximum(6.0)
+        self._cp_cellprob_slider.setSingleStep(0.1)
+        self._cp_cellprob_slider.setValue(-2.5)
+        cp_cellprob_row.addWidget(self._cp_cellprob_slider)
+        self._cp_cellprob_spin = _add_reliable_spinbox(
+            cp_cellprob_row, self._cp_cellprob_slider, -6.0, 6.0, 0.1, decimals=2
+        )
+        cpg.addLayout(cp_cellprob_row)
+
+        cp_flow_row = QHBoxLayout()
+        cp_flow_row.addWidget(QLabel("Flow threshold:"))
+        self._cp_flow_slider = QLabeledDoubleSlider(Qt.Horizontal)
+        self._cp_flow_slider.setDecimals(2)
+        self._cp_flow_slider.setMinimum(0.0)
+        self._cp_flow_slider.setMaximum(1.0)
+        self._cp_flow_slider.setSingleStep(0.05)
+        self._cp_flow_slider.setValue(0.4)
+        cp_flow_row.addWidget(self._cp_flow_slider)
+        self._cp_flow_spin = _add_reliable_spinbox(
+            cp_flow_row, self._cp_flow_slider, 0.0, 1.0, 0.05, decimals=2
+        )
+        cpg.addLayout(cp_flow_row)
+
+        cp_maxgap_row = QHBoxLayout()
+        cp_maxgap_row.addWidget(QLabel("Safe-merge max gap (vox):"))
+        self._cp_maxgap_slider = QLabeledSlider(Qt.Horizontal)
+        self._cp_maxgap_slider.setMinimum(0)
+        self._cp_maxgap_slider.setMaximum(20)
+        self._cp_maxgap_slider.setValue(2)
+        cp_maxgap_row.addWidget(self._cp_maxgap_slider)
+        self._cp_maxgap_spin = _add_reliable_spinbox(
+            cp_maxgap_row, self._cp_maxgap_slider, 0, 20, 1
+        )
+        cpg.addLayout(cp_maxgap_row)
+
+        cp_mincontact_row = QHBoxLayout()
+        cp_mincontact_row.addWidget(QLabel("Safe-merge min contact (vox):"))
+        self._cp_mincontact_slider = QLabeledSlider(Qt.Horizontal)
+        self._cp_mincontact_slider.setMinimum(0)
+        self._cp_mincontact_slider.setMaximum(200)
+        self._cp_mincontact_slider.setValue(10)
+        cp_mincontact_row.addWidget(self._cp_mincontact_slider)
+        self._cp_mincontact_spin = _add_reliable_spinbox(
+            cp_mincontact_row, self._cp_mincontact_slider, 0, 200, 1
+        )
+        cpg.addLayout(cp_mincontact_row)
+
+        cp_largecontact_row = QHBoxLayout()
+        cp_largecontact_row.addWidget(QLabel("Large-contact merge (vox):"))
+        self._cp_largecontact_slider = QLabeledSlider(Qt.Horizontal)
+        self._cp_largecontact_slider.setMinimum(1)
+        self._cp_largecontact_slider.setMaximum(2000)
+        self._cp_largecontact_slider.setValue(20)
+        cp_largecontact_row.addWidget(self._cp_largecontact_slider)
+        self._cp_largecontact_spin = _add_reliable_spinbox(
+            cp_largecontact_row, self._cp_largecontact_slider, 1, 2000, 10
+        )
+        cpg.addLayout(cp_largecontact_row)
+
+        self._cp_run_btn = QPushButton("Run Cellpose-SAM Segmentation")
+        self._cp_run_btn.setStyleSheet("QPushButton { font-weight: bold; padding: 6px; }")
+        cpg.addWidget(self._cp_run_btn)
+
+        self._cp_status_lbl = QLabel("")
+        self._cp_status_lbl.setWordWrap(True)
+        cpg.addWidget(self._cp_status_lbl)
+
+        self._cellpose_group.setLayout(cpg)
+        t2.addWidget(self._cellpose_group)
 
         t2.addWidget(_sep())
+
+        # ── Downstream label tools (Resort / Split / Save) — shown only
+        #    when a label-creation option is applicable to the active layer ── #
+        self._downstream_label_tools = QWidget()
+        dlt = QVBoxLayout()
+        dlt.setContentsMargins(0, 0, 0, 0)
+        dlt.setSpacing(6)
 
         sort_row = QHBoxLayout()
         sort_row.addWidget(QLabel("Sort by:"))
@@ -402,20 +571,20 @@ class SkinRemoverWidget(QWidget):
         self._sort_combo.addItem("Centroid Y", "centroid_y")
         self._sort_combo.addItem("Centroid X", "centroid_x")
         sort_row.addWidget(self._sort_combo)
-        t2.addLayout(sort_row)
+        dlt.addLayout(sort_row)
 
         self._sort_reverse_cb = QCheckBox("Reverse order")
-        t2.addWidget(self._sort_reverse_cb)
+        dlt.addWidget(self._sort_reverse_cb)
 
         self._resort_btn = QPushButton("Resort Labels")
         self._resort_btn.setStyleSheet("QPushButton { padding: 5px; }")
-        t2.addWidget(self._resort_btn)
+        dlt.addWidget(self._resort_btn)
 
         self._resort_status_lbl = QLabel("")
         self._resort_status_lbl.setWordWrap(True)
-        t2.addWidget(self._resort_status_lbl)
+        dlt.addWidget(self._resort_status_lbl)
 
-        t2.addWidget(_sep())
+        dlt.addWidget(_sep())
 
         split_lbl_row = QHBoxLayout()
         split_lbl_row.addWidget(QLabel("Target label:"))
@@ -427,7 +596,7 @@ class SkinRemoverWidget(QWidget):
         self._split_use_sel_btn = QPushButton("Use selected")
         self._split_use_sel_btn.setFixedWidth(90)
         split_lbl_row.addWidget(self._split_use_sel_btn)
-        t2.addLayout(split_lbl_row)
+        dlt.addLayout(split_lbl_row)
 
         split_n_row = QHBoxLayout()
         split_n_row.addWidget(QLabel("Split into:"))
@@ -438,49 +607,54 @@ class SkinRemoverWidget(QWidget):
         split_n_row.addWidget(self._split_n_spin)
         split_n_row.addWidget(QLabel("parts"))
         split_n_row.addStretch()
-        t2.addLayout(split_n_row)
+        dlt.addLayout(split_n_row)
 
         split_sigma_row = QHBoxLayout()
         split_sigma_row.addWidget(QLabel("Smooth σ:"))
-        self._split_sigma_slider = QSlider(Qt.Horizontal)
-        self._split_sigma_slider.setMinimum(0)
-        self._split_sigma_slider.setMaximum(30)
-        self._split_sigma_slider.setValue(10)
-        self._split_sigma_val = QLabel("1.0")
-        self._split_sigma_val.setFixedWidth(28)
+        self._split_sigma_slider = QLabeledDoubleSlider(Qt.Horizontal)
+        self._split_sigma_slider.setDecimals(1)
+        self._split_sigma_slider.setMinimum(0.0)
+        self._split_sigma_slider.setMaximum(3.0)
+        self._split_sigma_slider.setSingleStep(0.1)
+        self._split_sigma_slider.setValue(1.0)
         split_sigma_row.addWidget(self._split_sigma_slider)
-        split_sigma_row.addWidget(self._split_sigma_val)
-        t2.addLayout(split_sigma_row)
+        self._split_sigma_spin = _add_reliable_spinbox(
+            split_sigma_row, self._split_sigma_slider, 0.0, 3.0, 0.1, decimals=1
+        )
+        dlt.addLayout(split_sigma_row)
 
         split_dist_row = QHBoxLayout()
         split_dist_row.addWidget(QLabel("Min distance:"))
-        self._split_dist_slider = QSlider(Qt.Horizontal)
+        self._split_dist_slider = QLabeledSlider(Qt.Horizontal)
         self._split_dist_slider.setMinimum(1)
         self._split_dist_slider.setMaximum(30)
         self._split_dist_slider.setValue(5)
-        self._split_dist_val = QLabel("5")
-        self._split_dist_val.setFixedWidth(28)
         split_dist_row.addWidget(self._split_dist_slider)
-        split_dist_row.addWidget(self._split_dist_val)
-        t2.addLayout(split_dist_row)
+        self._split_dist_spin = _add_reliable_spinbox(
+            split_dist_row, self._split_dist_slider, 1, 30, 1
+        )
+        dlt.addLayout(split_dist_row)
 
         self._split_btn = QPushButton("Split Label")
         self._split_btn.setStyleSheet("QPushButton { padding: 5px; }")
-        t2.addWidget(self._split_btn)
+        dlt.addWidget(self._split_btn)
 
         self._split_status_lbl = QLabel("")
         self._split_status_lbl.setWordWrap(True)
-        t2.addWidget(self._split_status_lbl)
+        dlt.addWidget(self._split_status_lbl)
 
-        t2.addWidget(_sep())
+        dlt.addWidget(_sep())
 
         self._save_labels_btn = QPushButton("Save Labels")
         self._save_labels_btn.setStyleSheet("QPushButton { padding: 5px; }")
-        t2.addWidget(self._save_labels_btn)
+        dlt.addWidget(self._save_labels_btn)
 
         self._save_labels_status_lbl = QLabel("")
         self._save_labels_status_lbl.setWordWrap(True)
-        t2.addWidget(self._save_labels_status_lbl)
+        dlt.addWidget(self._save_labels_status_lbl)
+
+        self._downstream_label_tools.setLayout(dlt)
+        t2.addWidget(self._downstream_label_tools)
 
         t2.addStretch()
         tab2.setLayout(t2)
@@ -692,34 +866,12 @@ class SkinRemoverWidget(QWidget):
     def _connect_signals(self):
         self._open_btn.clicked.connect(self._on_open)
         self._model_browse_btn.clicked.connect(self._on_browse_model)
-        self._thresh_slider.valueChanged.connect(
-            lambda v: self._thresh_val.setText(f"{v / 100:.2f}")
-        )
-        self._erosion_slider.valueChanged.connect(
-            lambda v: self._erosion_val.setText(str(v))
-        )
-        self._tol_slider.valueChanged.connect(
-            lambda v: self._tol_val.setText(f"{v/100:.2f}")
-        )
         self._bg_group.buttonClicked.connect(self._on_bg_mode_changed)
         self._run_btn.clicked.connect(self._on_run)
-        self._sxy_slider.valueChanged.connect(
-            lambda v: self._sxy_val.setText(f"{v/10:.1f}")
-        )
-        self._sz_slider.valueChanged.connect(
-            lambda v: self._sz_val.setText(f"{v/10:.1f}")
-        )
-        self._area_slider.valueChanged.connect(
-            lambda v: self._area_val.setText(f"{v:,}")
-        )
         self._labels_btn.clicked.connect(self._on_create_labels)
+        self._cp_model_browse_btn.clicked.connect(self._on_browse_cp_model)
+        self._cp_run_btn.clicked.connect(self._on_run_cellpose_seg)
         self._resort_btn.clicked.connect(self._on_resort_labels)
-        self._split_sigma_slider.valueChanged.connect(
-            lambda v: self._split_sigma_val.setText(f"{v/10:.1f}")
-        )
-        self._split_dist_slider.valueChanged.connect(
-            lambda v: self._split_dist_val.setText(str(v))
-        )
         self._split_use_sel_btn.clicked.connect(self._on_use_selected_label)
         self._split_btn.clicked.connect(self._on_split_label)
         self._save_labels_btn.clicked.connect(self._on_save_labels)
@@ -745,7 +897,7 @@ class SkinRemoverWidget(QWidget):
         mode = self._bg_group.checkedId()
         has_tol = mode in (1, 2)
         self._tol_slider.setEnabled(has_tol)
-        self._tol_val.setEnabled(has_tol)
+        self._tol_spin.setEnabled(has_tol)
         self._tol_lbl.setEnabled(has_tol)
 
     def _get_layer_scale(self):
@@ -832,10 +984,67 @@ class SkinRemoverWidget(QWidget):
         if lyr is None:
             self._layer_info.setText("  — no image layers yet —")
             self._meta_lbl.setText("  — voxel info unavailable —")
+            self._update_labels_section_visibility()
             return
         d = lyr.data
         self._layer_info.setText(f'  "{lyr.name}"\n  {d.shape}  {d.dtype}')
         self._refresh_meta_lbl()
+        self._update_labels_section_visibility()
+
+    def _update_labels_section_visibility(self):
+        """
+        Show only the labeling tool that matches the active layer's
+        background-removal mode (by filename suffix, see _BG_SUFFIX):
+          _ExtRm    -> Cellpose-SAM Segmentation (this pipeline was always
+                       run on outside-brain-only-removed layers all session)
+          _NoBG     -> Pixel Classifier (globally background-removed —
+                       what the union-find tool was designed for)
+          _RndFill  -> neither (presentation/visualization output only,
+                       not meant to be labeled)
+          anything else (raw layer, no recognized suffix) -> neither,
+                       with a hint explaining what's needed
+        """
+        lyr = self._active_layer()
+        name = lyr.name if lyr is not None else ""
+
+        if name.endswith("_ExtRm"):
+            self._cellpose_group.setVisible(True)
+            self._pixel_classifier_group.setVisible(False)
+            self._labels_mode_hint.setText(
+                f'Active layer "{name}" ends in _ExtRm → showing Cellpose-SAM Segmentation.'
+            )
+        elif name.endswith("_NoBG"):
+            self._cellpose_group.setVisible(False)
+            self._pixel_classifier_group.setVisible(True)
+            self._labels_mode_hint.setText(
+                f'Active layer "{name}" ends in _NoBG → showing Pixel Classifier.'
+            )
+        elif name.endswith("_RndFill"):
+            self._cellpose_group.setVisible(False)
+            self._pixel_classifier_group.setVisible(False)
+            self._labels_mode_hint.setText(
+                f'Active layer "{name}" ends in _RndFill (presentation/visualization '
+                f"output only) — no labeling tool applies here."
+            )
+        else:
+            self._cellpose_group.setVisible(False)
+            self._pixel_classifier_group.setVisible(False)
+            self._labels_mode_hint.setText(
+                "Select a brain_only layer from Tab 1 (_ExtRm or _NoBG) to see "
+                "labeling options here."
+            )
+
+        # Downstream label tools (Resort/Split/Save) only make sense once a
+        # creation option is applicable to the current selection — same
+        # "based on what the user selects" logic, cascaded one step further.
+        creation_available = self._cellpose_group.isVisible() or self._pixel_classifier_group.isVisible()
+        self._downstream_label_tools.setVisible(creation_available)
+
+        # Statistics tab needs an actual Labels layer to operate on — a
+        # different, more direct condition than "is a creation tool shown",
+        # since labels can persist even after switching the active layer.
+        has_labels = any(isinstance(l, napari.layers.Labels) for l in self._viewer.layers)
+        self._tabs.setTabVisible(2, has_labels)
 
     # ------------------------------------------------------------------ #
     # Public helper (used by __main__.py for CLI pre-loading)
@@ -952,6 +1161,20 @@ class SkinRemoverWidget(QWidget):
         self._save_cfg(model_path=str(p))
         self._status(f"Model: {p.name}")
 
+    def _on_browse_cp_model(self):
+        # Cellpose-SAM checkpoints are typically extensionless files
+        # (e.g. "cpsam_microglia_512_multi3_bw_epoch_0150") — no filter.
+        path_str, _ = QFileDialog.getOpenFileName(
+            self, "Select Cellpose-SAM checkpoint", "", "All files (*)",
+        )
+        if not path_str:
+            return
+        p = Path(path_str)
+        self._state["cellpose_model_path"] = p
+        self._cp_model_lbl.setText(path_str)
+        self._save_cfg(cellpose_model_path=str(p))
+        self._labels_status_lbl.setText(f"Cellpose-SAM model: {p.name}")
+
     def _on_run(self):
         if not self._state["model_path"] or not Path(self._state["model_path"]).exists():
             self._status("ERROR: model file not found — browse to a .pth file.")
@@ -965,10 +1188,10 @@ class SkinRemoverWidget(QWidget):
             self._status(f"ERROR: 3D volume required, got {volume.ndim}D {volume.shape}.")
             return
 
-        threshold        = self._thresh_slider.value() / 100.0
+        threshold        = self._thresh_slider.value()
         erosion_voxels   = self._erosion_slider.value()
         bg_mode          = self._bg_group.checkedId()  # 0=off, 1=remove, 2=fill
-        bg_tolerance_pct = self._tol_slider.value() / 100.0
+        bg_tolerance_pct = self._tol_slider.value()
         model_path       = Path(self._state["model_path"])
         stem             = target.name
         file_path        = self._state.get("last_file_path")
@@ -1182,7 +1405,7 @@ class SkinRemoverWidget(QWidget):
 
         target_label = self._split_label_spin.value()
         n_splits     = self._split_n_spin.value()
-        sigma        = self._split_sigma_slider.value() / 10.0
+        sigma        = self._split_sigma_slider.value()
         min_dist     = self._split_dist_slider.value()
 
         self._split_btn.setEnabled(False)
@@ -1401,8 +1624,8 @@ class SkinRemoverWidget(QWidget):
             )
             return
 
-        sigma_xy   = self._sxy_slider.value()  / 10.0
-        sigma_z    = self._sz_slider.value()   / 10.0
+        sigma_xy   = self._sxy_slider.value()
+        sigma_z    = self._sz_slider.value()
         min_volume = self._area_slider.value()
         stem            = target.name
         scale           = tuple(float(v) for v in target.scale) if len(target.scale) == 3 else (1., 1., 1.)
@@ -1463,3 +1686,102 @@ class SkinRemoverWidget(QWidget):
 
         timer.timeout.connect(_poll)
         timer.start(500)
+
+    def _on_run_cellpose_seg(self):
+        target = self._active_layer()
+        if target is None:
+            self._cp_status_lbl.setText("Select a brain_only layer first.")
+            return
+        volume = np.asarray(target.data)
+        if volume.ndim != 3:
+            self._cp_status_lbl.setText(f"ERROR: 3D volume required, got {volume.ndim}D.")
+            return
+        model_path = self._state.get("cellpose_model_path")
+        if not model_path or not Path(model_path).exists():
+            self._cp_status_lbl.setText("ERROR: no Cellpose-SAM model selected — browse to a checkpoint.")
+            return
+
+        cellprob      = self._cp_cellprob_slider.value()
+        flow          = self._cp_flow_slider.value()
+        max_gap       = self._cp_maxgap_slider.value()
+        min_contact   = self._cp_mincontact_slider.value()
+        large_contact = self._cp_largecontact_slider.value()
+
+        stem  = target.name
+        scale = tuple(float(v) for v in target.scale) if len(target.scale) == 3 else (1.0, 1.0, 1.0)
+        z, y, x = scale
+        xy = (x + y) / 2.0
+        anisotropy = z / xy if xy > 0 else 5.747
+
+        gpu = torch.cuda.is_available()
+
+        self._cp_run_btn.setEnabled(False)
+        self._cp_status_lbl.setText(f"Starting (device={'cuda' if gpu else 'cpu'})...")
+
+        print(f"\n{'='*70}")
+        print(f"CELLPOSE-SAM SEGMENTATION — {stem}  shape={volume.shape}")
+        print(f"Model        : {Path(model_path).name}")
+        print(f"Cellprob     : {cellprob}   Flow: {flow}   Anisotropy: {anisotropy:.3f}")
+        print(f"Safe merge   : max_gap={max_gap}  min_contact={min_contact}")
+        print(f"Large contact: {large_contact}")
+        print(f"{'='*70}")
+
+        result = {}
+
+        def _worker():
+            try:
+                def _progress(msg):
+                    result["_progress"] = msg
+                labels, stats = _run_cellpose_pipeline(
+                    volume, model_path,
+                    cellprob=cellprob, flow=flow, anisotropy=anisotropy,
+                    max_gap=max_gap, min_contact=min_contact, large_contact=large_contact,
+                    gpu=gpu, progress_cb=_progress,
+                )
+                result["labels"] = labels
+                result["stats"]  = stats
+            except Exception as exc:
+                traceback.print_exc()
+                result["error"] = str(exc)
+
+        thread = threading.Thread(target=_worker, daemon=True)
+        thread.start()
+
+        timer2 = QTimer(self)
+
+        def _poll2():
+            if thread.is_alive():
+                if "_progress" in result:
+                    self._cp_status_lbl.setText(result["_progress"])
+                return
+            timer2.stop()
+
+            if "error" in result:
+                self._cp_status_lbl.setText(f"ERROR: {result['error']}")
+                self._cp_run_btn.setEnabled(True)
+                return
+
+            labels = result["labels"]
+            stats  = result["stats"]
+            lname  = f"{stem}_cellpose_labels"
+
+            if lname in self._viewer.layers:
+                self._viewer.layers.remove(lname)
+            self._viewer.add_labels(labels, name=lname, scale=scale)
+
+            self._cp_status_lbl.setText(
+                f"Done — {stats['n_final']} cells "
+                f"(raw={stats['n_raw']} -> gmm={stats['n_after_gmm']} -> "
+                f"safe={stats['n_after_safe_merge']} -> large={stats['n_after_large_contact']})."
+            )
+            self._cp_run_btn.setEnabled(True)
+
+            print(f"{'='*70}")
+            print(f"CELLPOSE-SAM SEGMENTATION COMPLETE — {stats['n_final']} cells")
+            print(f"  raw={stats['n_raw']}  after_gmm={stats['n_after_gmm']}"
+                  f"  after_safe_merge={stats['n_after_safe_merge']}"
+                  f"  after_large_contact={stats['n_after_large_contact']}")
+            print(f"{'='*70}\n")
+
+        timer2.timeout.connect(_poll2)
+        timer2.start(1000)  # 1s poll — this run is long, no need for finer granularity

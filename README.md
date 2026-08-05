@@ -11,8 +11,8 @@ Developed at **FH Technikum Wien** — Artificial Intelligence & Data Science.
 Given a 3D confocal volume (TIF or IMS), the plugin provides three tabs:
 
 - **Tab 1 — Skin Remover:** runs a trained MONAI U-Net to predict the brain mask, removes the skin, and saves `brain_mask.tif` + `brain_only.tif`
-- **Tab 2 — Create Labels:** detects and labels individual microglia in 3D (Gaussian smooth → threshold → overlap-based 3D stitching → volume filter)
-- **Tab 3 — Statistics:** computes up to 51 morphological, spatial, and intensity features per labelled cell and exports a CSV
+- **Tab 2 — Create Labels:** two interchangeable ways to detect and label individual microglia in 3D — a **Pixel Classifier** (Gaussian smooth → threshold → overlap-based union-find 3D stitching → volume filter) and a **Cellpose-SAM Segmentation** pipeline (`do_3D` inference → 3-component GMM cleanup → Krendl safe-merge → large-contact merge). The tab automatically shows whichever one matches your active layer's background-removal mode (see below) — no manual switching needed.
+- **Tab 3 — Statistics:** computes up to 51 morphological, spatial, and intensity features per labelled cell and exports a CSV. Only shown once at least one Labels layer exists.
 
 ---
 
@@ -66,14 +66,42 @@ conda env update --name skin-seg -f environment.yml --prune   # or environment-m
 
 ---
 
-## Model file
+## Developing the plugin (editable install)
 
-The plugin requires a trained `.pth` checkpoint — **not included in this repo** (~220 MB).
+The steps above install a fixed snapshot from GitHub — fine for using the plugin, but source edits won't take effect until you reinstall. For active development, install the local clone in editable mode instead:
+
+```bash
+cd napari-skin-remover
+conda activate skin-seg
+pip install -e .
+```
+
+Source edits now take effect the next time napari launches — no reinstall needed. Verify it's picking up the local clone (not a stale `site-packages` copy):
+
+```bash
+python -c "import napari_skin_remover; print(napari_skin_remover.__file__)"
+```
+
+This should print a path inside your cloned `napari-skin-remover/` folder, not inside `site-packages`.
+
+---
+
+## Model files
+
+This plugin needs **two** trained checkpoints — neither is bundled in the repo.
+
+### MONAI skin-removal model (required, Tab 1)
+
+A trained `.pth` checkpoint — **not included in this repo** (~220 MB).
 
 **Download:**
 [best_model_fullstack_v1_epoch460_dice9573.pth](https://cloud.technikum-wien.at/s/kYQ4qq3Jsn4xEyY)
 
 Save it anywhere and point the plugin to it using the **Browse (...)** button in Tab 1. The path is remembered across sessions.
+
+### Cellpose-SAM checkpoint (optional, Tab 2)
+
+Only needed if you plan to use **Cellpose-SAM Segmentation** rather than the Pixel Classifier. This is a project-specific fine-tuned Cellpose-SAM model — there's no fixed public download, since every lab/dataset will train its own. Browse to whatever checkpoint you've trained using the **Browse (...)** button in the Cellpose-SAM Segmentation section of Tab 2. The path is remembered across sessions.
 
 ---
 
@@ -84,43 +112,71 @@ Save it anywhere and point the plugin to it using the **Browse (...)** button in
 1. **Open a file** — click "Open TIF / IMS file". All channels load as separate layers.
 2. **Select the channel** to process by clicking its layer in the Layers panel.
 3. **Browse to the model** `.pth` file if not auto-detected.
-4. **Adjust MONAI Threshold** (default 0.30).
-5. **Choose Background mode** (recommended: Option 2 — Remove globally, BG Threshold 0.60).
+4. **Adjust MONAI Threshold** (default 0.25).
+5. **Choose Background mode** — pick **Option 1 (Remove outside brain only, `_ExtRm`)** if you plan to segment with **Cellpose-SAM** in Tab 2, or **Option 2 (Remove globally, `_NoBG`)** if you plan to use the **Pixel Classifier**. Tab 2 auto-detects which one you produced and shows the matching tool.
 6. Click **Run Skin-Remover**.
+
+All numeric sliders in this plugin are directly editable — click the number box next to any slider and type an exact value instead of dragging.
 
 ### Parameters
 
 | Parameter | Default | Notes |
 |-----------|---------|-------|
-| MONAI Threshold | 0.30 | Sigmoid cutoff. Keep low — post-processing cleans the rest. |
+| MONAI Threshold | 0.25 | Sigmoid cutoff. Keep low — post-processing cleans the rest. |
 | Erosion | 0 vox | Strips skin rim from `brain_only`. `brain_mask` always saved un-eroded. |
-| Background mode | Off | Option 2 recommended before labelling |
-| BG Threshold | 0.50 | Use 0.60 for microglia stacks |
+| Background mode | Off | 1 for Cellpose-SAM, 2 for Pixel Classifier (see Tab 2) |
+| BG Threshold | 1.40 | Validated for microglia stacks |
 
 ### Output files
 
 Saved in `<source_folder>/<source_stem>/`:
 
-| File | Content |
-|------|---------|
-| `*_brain_only.tif` | Volume with everything outside the brain zeroed |
-| `*_brain_only_NoBG.tif` | Same with global background also removed (Mode 2) |
-| `*_brain_mask.tif` | Binary mask (0/255 uint8), un-eroded |
+| File | Content | Feeds into (Tab 2) |
+|------|---------|---------------------|
+| `*_brain_only.tif` | Volume with everything outside the brain zeroed | — |
+| `*_brain_only_ExtRm.tif` | Background removed outside the brain only (Mode 1) | Cellpose-SAM Segmentation |
+| `*_brain_only_NoBG.tif` | Background also removed inside the brain (Mode 2) | Pixel Classifier |
+| `*_brain_mask.tif` | Binary mask (0/255 uint8), un-eroded | — |
 
 ---
 
 ## Tab 2 — Create Labels
 
-Detects individual microglia in 3D from a `brain_only` layer.
+Select a `brain_only` layer produced by Tab 1. The tab shows exactly one of the two sections below, chosen automatically by the layer's filename suffix — select a different layer and it switches live:
 
-### Parameters
+| Active layer ends in | Section shown |
+|---|---|
+| `_ExtRm` | Cellpose-SAM Segmentation |
+| `_NoBG` | Pixel Classifier |
+| `_RndFill` | neither (presentation/visualization output only) |
+| anything else | neither, with a hint on what to select |
 
-| Parameter | Default | Recommended |
-|-----------|---------|-------------|
-| Smooth σ XY | 1.0 | 1.5 |
-| Smooth σ Z | 0.5 | 3.0 |
-| Min overlap (%) | 10 | 10 |
-| Min volume (vox) | 7500 | 7500 |
+The **Resort Labels / Split Label / Save Labels** tools below only appear once one of the two sections above is showing, and **Tab 3 — Statistics** only appears once at least one Labels layer exists in the viewer.
+
+### Pixel Classifier — Union-Find Labels
+
+Fully self-contained: Gaussian smooth → threshold → per-slice 2D connected components → overlap-based union-find into 3D objects → volume filter → sequential renumber. Best on `_NoBG` layers (background removed everywhere, not just outside the brain).
+
+| Parameter | Default |
+|-----------|---------|
+| Smooth σ XY | 1.5 |
+| Smooth σ Z | 3.0 |
+| Min overlap (%) | 10 |
+| Min volume (vox) | 7500 |
+
+### Cellpose-SAM Segmentation
+
+Runs `do_3D` inference with a Cellpose-SAM checkpoint, then 3-component-GMM cleanup, a Krendl safe-merge pass (only sub-threshold fragments, gap/contact-based), and a large-contact merge pass (catches blobs split through a thick junction). Best on `_ExtRm` layers. `do_3D` inference is slow — can take hours for a full-size fish — and runs in a background thread so the UI stays responsive.
+
+Requires a **Cellpose-SAM checkpoint** — this is a project-specific fine-tuned model, not shipped with the plugin or downloadable from a fixed URL; browse to your own trained checkpoint. The path is remembered across sessions (like the MONAI model path).
+
+| Parameter | Default |
+|-----------|---------|
+| Cellprob threshold | -2.5 |
+| Flow threshold | 0.4 |
+| Safe-merge max gap (vox) | 2 |
+| Safe-merge min contact (vox) | 10 |
+| Large-contact merge (vox) | 20 |
 
 ### Additional tools
 
@@ -170,6 +226,9 @@ CSV saved as `<stem>_statistics.csv` in the output folder.
 | CUDA out of memory | Plugin falls back to CPU automatically |
 | `.ims` files fail to open | `pip install imaris_ims_file_reader` |
 | `EnvironmentFileNotFound` on `conda env update` | You must `cd` into the repo folder first |
+| "Run Cellpose-SAM Segmentation" errors with `No module named 'cellpose'` | `pip install cellpose` in the `skin-seg` env (already in `environment.yml` for fresh installs) |
+| Neither Tab 2 section shows up | Active layer name must end in `_ExtRm` or `_NoBG` — reselect the correct Tab 1 output layer |
+| Source edits to the plugin don't take effect | You have a non-editable install — see "Developing the plugin" above |
 
 ---
 
