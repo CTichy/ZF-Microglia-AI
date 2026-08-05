@@ -56,7 +56,7 @@ All dependencies (PyTorch, MONAI, scikit-image, etc.) are installed automaticall
 
 > **Mac with Apple Silicon (M1/M2/M3):** The plugin automatically uses your GPU via Metal (MPS). No extra steps needed.
 
-> **Windows / Linux with NVIDIA GPU:** CUDA is detected and used automatically. For the fastest statistics (GPU batch regionprops), `cupy-cuda12x` and `cucim` must be installed separately — see Section 13 for details.
+> **Windows / Linux with NVIDIA GPU:** CUDA is detected and used automatically for Tab 1 inference and Tab 2 GPU-accelerated labelling (`cupy-cuda12x`, which has wheels for both platforms). Tab 3's *fastest* statistics path additionally uses `cucim` for GPU batch regionprops — this only has Linux wheels (RAPIDS/cuCIM has no native Windows build), so on Windows Tab 3 automatically falls back to a CPU-threaded path instead; nothing breaks, statistics just run somewhat slower. See Section 13 for details.
 
 > **No GPU:** Works on CPU too, just slower (~30–60 minutes per stack for inference).
 
@@ -1081,6 +1081,17 @@ Then **fully close and reopen napari**. If napari is running when you reinstall,
 
 ## 13. Troubleshooting
 
+### `conda env create -f environment.yml` fails on Windows with `Didn't find wheel for cucim-cu12`
+
+Fixed in the current `environment.yml` (`cucim-cu12` is now Linux-only there — it has no Windows wheels at all, since it's a Linux/WSL2-only RAPIDS package, and isn't something a different pip flag or index fixes on native Windows). It only accelerates Tab 3 statistics, which fall back to CPU cleanly without it; Tab 1 and Tab 2 are unaffected.
+
+If you still hit this error:
+
+- You're on an older clone — `git pull` in the repo folder, then retry.
+- If the environment partially exists from the earlier failed attempt, remove it first: `conda env remove -n skin-seg`, then `conda env create -f environment.yml` again.
+
+---
+
 ### The plugin does not appear in Plugins menu
 
 - Make sure napari is fully closed and reopened after installation.
@@ -1117,13 +1128,15 @@ Should print `True` on M1/M2/M3.
 
 ### Statistics are slow (CPU only, no GPU batch)
 
-Install CuPy and cuCIM for GPU-accelerated regionprops:
+**Linux:** Install CuPy and cuCIM for GPU-accelerated regionprops:
 
 ```bash
-pip install cupy-cuda12x cucim
+pip install cupy-cuda12x cucim-cu12
 ```
 
-Replace `cuda12x` with your actual CUDA version if different (e.g. `cuda11x` for CUDA 11). After installing, reopen napari — the console will print `regionprops: cuCIM GPU` when statistics are computed.
+Replace `cuda12x`/`cu12` with your actual CUDA version if different (e.g. `cuda11x` for CUDA 11). After installing, reopen napari — the console will print `regionprops: cuCIM GPU` when statistics are computed.
+
+**Windows:** `cucim-cu12` has no native Windows build (RAPIDS/cuCIM is Linux/WSL2-only) — this is expected and not fixable with a different pip command on native Windows. Tab 3 statistics run on a CPU-threaded path instead; Tab 1 inference and Tab 2 GPU labelling are unaffected, since those only need `cupy-cuda12x`, which does support Windows. If GPU-accelerated statistics specifically matter to you, run the plugin inside WSL2 (Windows Subsystem for Linux) instead, where the Linux install path applies.
 
 ---
 

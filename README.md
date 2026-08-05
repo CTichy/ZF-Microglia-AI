@@ -224,6 +224,7 @@ CSV saved as `<stem>_statistics.csv` in the output folder.
 |---------|-----|
 | "no default model found" | Use Browse to select your `.pth` file |
 | CUDA out of memory | Plugin falls back to CPU automatically |
+| `conda env create` fails on Windows with `Didn't find wheel for cucim-cu12` | Fixed as of this `environment.yml` — `cucim-cu12` (Linux/WSL2-only, no Windows wheels) is now Linux-only. `git pull` if you're on an older clone; only Tab 3's GPU-batch stats path needs it, and it falls back to CPU cleanly without it |
 | `.ims` files fail to open | `pip install imaris_ims_file_reader` |
 | `EnvironmentFileNotFound` on `conda env update` | You must `cd` into the repo folder first |
 | "Run Cellpose-SAM Segmentation" errors with `No module named 'cellpose'` | `pip install cellpose` in the `skin-seg` env (already in `environment.yml` for fresh installs) |

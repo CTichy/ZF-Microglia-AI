@@ -8,7 +8,7 @@ dependencies:
   - python=3.10
   - pip
 
-  # CUDA runtime for CuPy JIT compilation (Linux + CUDA only)
+  # CUDA runtime for CuPy JIT compilation (Windows/Linux with NVIDIA GPU; not needed on Mac)
   - nvidia::cuda-nvrtc
 
   - pip:
@@ -18,8 +18,12 @@ dependencies:
     - torchvision==0.22.0+cu126
 
     # ── GPU acceleration ─────────────────────────────────────────────────
+    # cupy-cuda12x has Windows + Linux wheels — powers Tab 2 GPU labelling.
+    # cucim-cu12 is Linux/WSL2-only (RAPIDS, no Windows wheels) — it only
+    # accelerates Tab 3 batch statistics, which falls back to CPU cleanly
+    # when cuCIM is absent, so it's skipped on native Windows.
     - cupy-cuda12x
-    - cucim-cu12
+    - cucim-cu12; sys_platform == "linux"
 
     # ── Core scientific stack ────────────────────────────────────────────
     - numpy>=1.20
