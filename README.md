@@ -8,11 +8,12 @@ Developed at **FH Technikum Wien** — Artificial Intelligence & Data Science.
 
 ## What it does
 
-Given a 3D confocal volume (TIF or IMS), the plugin provides three tabs:
+Given a 3D confocal volume (TIF or IMS), the plugin provides four tabs:
 
 - **Tab 1 — Skin Remover:** runs a trained MONAI U-Net to predict the brain mask, removes the skin, and saves `brain_mask.tif` + `brain_only.tif`
 - **Tab 2 — Create Labels:** two interchangeable ways to detect and label individual microglia in 3D — a **Pixel Classifier** (Gaussian smooth → threshold → overlap-based union-find 3D stitching → volume filter) and a **Cellpose-SAM Segmentation** pipeline (`do_3D` inference → 3-component GMM cleanup → Krendl safe-merge → large-contact merge). The tab automatically shows whichever one matches your active layer's background-removal mode (see below) — no manual switching needed.
 - **Tab 3 — Statistics:** computes up to 51 morphological, spatial, and intensity features per labelled cell and exports a CSV. Only shown once at least one Labels layer exists.
+- **Tab 4 — AI Tools:** ground-truth polygon annotation plus launchers for MONAI and Cellpose-SAM training (dataset prep/crop extraction, hours-to-days training runs that survive napari closing). Only shown on a machine with a CUDA GPU with ≥8GB VRAM — see below.
 
 ---
 
@@ -102,6 +103,10 @@ Save it anywhere and point the plugin to it using the **Browse (...)** button in
 ### Cellpose-SAM checkpoint (optional, Tab 2)
 
 Only needed if you plan to use **Cellpose-SAM Segmentation** rather than the Pixel Classifier. This is a project-specific fine-tuned Cellpose-SAM model — there's no fixed public download, since every lab/dataset will train its own. Browse to whatever checkpoint you've trained using the **Browse (...)** button in the Cellpose-SAM Segmentation section of Tab 2. The path is remembered across sessions.
+
+### Training scripts (Tab 4 — AI Tools only)
+
+Tab 4 launches three external, project-specific research scripts (`prepare_data.py`, `train.py`, `train_xzyz.py`) that aren't part of the plugin package or distributed with it. The plugin guesses their location based on this project's own directory layout; if that guess is wrong for your setup, the config file (`~/.config/napari-zf-microglia-ai/config.json`) has `monai_prepare_script_path`/`monai_train_script_path`/`cellpose_train_script_path` keys to override.
 
 ---
 
@@ -199,6 +204,29 @@ CSV saved as `<stem>_statistics.csv` in the output folder.
 
 ---
 
+## Tab 4 — AI Tools
+
+Only appears when a CUDA GPU with **≥8GB VRAM** is detected (checked once at plugin startup) — this includes GT annotation, even though it itself needs no GPU, so the tab behaves consistently across machines instead of half-working on CPU-only setups. If hidden, none of this tab's functionality is reachable from the GUI.
+
+A switch at the top selects one of two mutually-exclusive groups:
+
+### MONAI Training
+
+- **GT Annotation** — hand-draw polygon boundaries on key slices (every ~10 slices) of a chosen Image layer, interpolate along Z (point-to-point, with propagation past a reference slice), then rasterize to `brain_mask`/`skin_mask`/`brain_only`/`skin_only` TIFFs, saved next to the source file (same `<parent>/<stem>/` convention as Tabs 1-3).
+- **Prepare Training Data** — converts raw+GT fish folders into the HDF5 dataset the MONAI trainer needs.
+- **Train MONAI U-Net** — launches the actual training run (hours to multiple days).
+
+### Cellpose-SAM Training
+
+- **Extract Training Crops** — from a `_statistics.csv` + brain_only image + labels triple, extracts single/double/triple/quadruple bbox crops per cell (cell + nearest neighbours) for fine-tuning.
+- **Train Cellpose-SAM** — launches fine-tuning (~20h for 200 epochs), defaulting the pretrained-checkpoint field to whatever's already loaded in Tab 2 — "continue training from where Tab 2 left off." Includes the project's branch-weighted loss option (`branch_weight`/`branch_radius`; `branch_weight=0` disables it, using the standard Cellpose loss).
+
+### How training launches work
+
+Both "Launch Training" buttons start a **detached background process** — `conda run -n <env> --no-capture-output <script> ...`, launched so it survives napari closing (POSIX `setsid()` / Windows `CREATE_NEW_PROCESS_GROUP | DETACHED_PROCESS`), with its own log file the GUI tails every 8 seconds. Progress and status persist to config, so **reopening napari automatically reconnects to a still-running job** instead of losing visibility into it. "Stop Training" kills the whole process tree (`conda run` spawns a child `python` process). This works identically on Windows, Linux, and Mac — no `tmux` dependency, since tmux doesn't exist natively on Windows.
+
+---
+
 ## Typical voxel dimensions (zebrafish 4 dpf, 25× objective)
 
 | Axis | Size |
@@ -230,6 +258,8 @@ CSV saved as `<stem>_statistics.csv` in the output folder.
 | "Run Cellpose-SAM Segmentation" errors with `No module named 'cellpose'` | `pip install cellpose` in the `zf-microglia-ai` env (already in `environment.yml` for fresh installs) |
 | Neither Tab 2 section shows up | Active layer name must end in `_ExtRm` or `_NoBG` — reselect the correct Tab 1 output layer |
 | Source edits to the plugin don't take effect | You have a non-editable install — see "Developing the plugin" above |
+| Tab 4 (AI Tools) doesn't appear | Requires a CUDA GPU with ≥8GB VRAM, checked once at startup — this is deliberate, not a bug (see Tab 4 section above) |
+| Tab 4's "Launch Training" buttons error with script-not-found | The plugin's guessed script path is wrong for your layout — override it in `~/.config/napari-zf-microglia-ai/config.json` (see "Training scripts" above) |
 
 ---
 

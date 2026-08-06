@@ -3,8 +3,10 @@ _widget.py — ZFMicrogliaAIWidget napari dock panel.
 """
 
 import json
+import os
 import threading
 import traceback
+from datetime import datetime
 from pathlib import Path
 
 import numpy as np
@@ -16,6 +18,7 @@ from qtpy.QtWidgets import (
     QPushButton, QLabel, QWidget, QVBoxLayout, QHBoxLayout,
     QCheckBox, QFileDialog, QSizePolicy, QButtonGroup, QRadioButton,
     QTabWidget, QComboBox, QSpinBox, QDoubleSpinBox, QLineEdit, QScrollArea, QGroupBox,
+    QTextEdit,
 )
 from qtpy.QtCore import Qt, QTimer
 from superqt import QLabeledSlider, QLabeledDoubleSlider
@@ -26,6 +29,12 @@ from ._background import remove_outside_brain, remove_global, fill_outside_brain
 from ._labeling import create_labels, resort_labels, split_label
 from ._statistics import compute_stats
 from ._cellpose_seg import run_full_pipeline as _run_cellpose_pipeline
+from ._gpu_check import GPU_OK, GPU_MSG
+if GPU_OK:
+    from . import _gt_annotation as _gt
+    from . import _ai_tools as _ait
+    from . import _training_jobs as _tj
+    from . import _crop_extraction as _crop
 
 _CONFIG_PATH = Path.home() / ".config" / "napari-zf-microglia-ai" / "config.json"
 
@@ -854,6 +863,468 @@ class ZFMicrogliaAIWidget(QWidget):
         tab3.setLayout(t3)
         tabs.addTab(tab3, "Statistics")
 
+        # ============================================================ #
+        # TAB 4 — AI Tools
+        # ============================================================ #
+        # Entire tab requires CUDA + >=8GB VRAM (see _gpu_check.py) — even
+        # GT annotation, which itself needs no GPU, is gated together with
+        # the two trainers so the tab behaves identically across machines
+        # rather than half-working on CPU-only setups. Hidden via
+        # setTabVisible, same precedent as Tab 3 Statistics being hidden
+        # until a Labels layer exists — not merely greyed out.
+        tab4 = QWidget()
+        t4 = QVBoxLayout()
+        t4.setSpacing(6)
+
+        gpu_status_lbl = QLabel(GPU_MSG)
+        gpu_status_lbl.setWordWrap(True)
+        gpu_status_lbl.setStyleSheet("color: #8ab; font-size: 10px; font-style: italic;")
+        t4.addWidget(gpu_status_lbl)
+
+        t4.addWidget(_sep())
+
+        # ── Group switch ──────────────────────────────────────────────── #
+        switch_row = QHBoxLayout()
+        self._ai_monai_radio = QRadioButton("MONAI Training")
+        self._ai_cellpose_radio = QRadioButton("Cellpose-SAM Training")
+        self._ai_mode_group = QButtonGroup(self)
+        self._ai_mode_group.addButton(self._ai_monai_radio, 0)
+        self._ai_mode_group.addButton(self._ai_cellpose_radio, 1)
+        saved_ai_mode = self._state.get("config", {}).get("ai_tools_mode", "monai")
+        if saved_ai_mode == "cellpose":
+            self._ai_cellpose_radio.setChecked(True)
+        else:
+            self._ai_monai_radio.setChecked(True)
+        switch_row.addWidget(self._ai_monai_radio)
+        switch_row.addWidget(self._ai_cellpose_radio)
+        t4.addLayout(switch_row)
+
+        t4.addWidget(_sep())
+
+        # ── Group 1 — GT annotation + MONAI training ────────────────────── #
+        self._ai_monai_group = QGroupBox("MONAI Training")
+        self._ai_monai_group_layout = QVBoxLayout()
+        self._ai_monai_group_layout.setSpacing(6)
+
+        if GPU_OK:
+            gtg = QGroupBox("GT Annotation")
+            gtl = QVBoxLayout()
+            gtl.setSpacing(6)
+
+            gt_note = QLabel(
+                "1. Pick the Image layer to annotate.\n"
+                "2. Select the 'brain_polygons' layer (yellow) and draw\n"
+                "   polygons every ~10 slices with the polygon tool.\n"
+                "3. Click Interpolate, review the cyan result, then Generate Masks."
+            )
+            gt_note.setWordWrap(True)
+            gt_note.setStyleSheet("color: #aaa; font-size: 10px;")
+            gtl.addWidget(gt_note)
+
+            gt_img_row = QHBoxLayout()
+            gt_img_row.addWidget(QLabel("Image layer:"))
+            self._gt_image_combo = QComboBox()
+            self._gt_image_combo.addItem("None", None)
+            gt_img_row.addWidget(self._gt_image_combo)
+            gtl.addLayout(gt_img_row)
+
+            self._gt_interpolate_btn = QPushButton("1. Interpolate Polygons")
+            gtl.addWidget(self._gt_interpolate_btn)
+            self._gt_generate_btn = QPushButton("2. Generate Masks")
+            gtl.addWidget(self._gt_generate_btn)
+
+            self._gt_status_lbl = QLabel("")
+            self._gt_status_lbl.setWordWrap(True)
+            gtl.addWidget(self._gt_status_lbl)
+
+            gtg.setLayout(gtl)
+            self._ai_monai_group_layout.addWidget(gtg)
+            self._ai_monai_group_layout.addWidget(_sep())
+
+            # ── Prepare Training Data (prepare_data.py) ─────────────────── #
+            cfg = self._state.get("config", {})
+            pdg = QGroupBox("Prepare Training Data")
+            pdl = QVBoxLayout()
+            pdl.setSpacing(6)
+
+            pd_note = QLabel(
+                "Converts raw+GT fish folders into the HDF5 dataset\n"
+                "train.py needs. Leave brain/skin dirs blank to use the\n"
+                "script's own built-in defaults."
+            )
+            pd_note.setWordWrap(True)
+            pd_note.setStyleSheet("color: #aaa; font-size: 10px;")
+            pdl.addWidget(pd_note)
+
+            bd_row = QHBoxLayout()
+            bd_row.addWidget(QLabel("Brain dirs:"))
+            self._pd_brain_dirs_edit = QLineEdit(cfg.get("monai_brain_dirs", ""))
+            self._pd_brain_dirs_edit.setPlaceholderText("comma-separated paths (optional)")
+            bd_row.addWidget(self._pd_brain_dirs_edit)
+            pdl.addLayout(bd_row)
+
+            sd_row = QHBoxLayout()
+            sd_row.addWidget(QLabel("Skin dirs:"))
+            self._pd_skin_dirs_edit = QLineEdit(cfg.get("monai_skin_dirs", ""))
+            self._pd_skin_dirs_edit.setPlaceholderText("comma-separated paths (optional)")
+            sd_row.addWidget(self._pd_skin_dirs_edit)
+            pdl.addLayout(sd_row)
+
+            pd_out_row = QHBoxLayout()
+            pd_out_row.addWidget(QLabel("Output dir:"))
+            self._pd_output_dir_edit = QLineEdit(cfg.get("monai_data_dir", "training_data_v2"))
+            pd_out_row.addWidget(self._pd_output_dir_edit)
+            self._pd_output_browse_btn = QPushButton("...")
+            self._pd_output_browse_btn.setFixedWidth(32)
+            pd_out_row.addWidget(self._pd_output_browse_btn)
+            pdl.addLayout(pd_out_row)
+
+            pd_tissue_row = QHBoxLayout()
+            pd_tissue_row.addWidget(QLabel("Tissue:"))
+            self._pd_tissue_combo = QComboBox()
+            self._pd_tissue_combo.addItems(["brain", "skin"])
+            pd_tissue_row.addWidget(self._pd_tissue_combo)
+            pdl.addLayout(pd_tissue_row)
+
+            pd_nums_row = QHBoxLayout()
+            pd_nums_row.addWidget(QLabel("n_val:"))
+            self._pd_nval_spin = QSpinBox()
+            self._pd_nval_spin.setRange(1, 100)
+            self._pd_nval_spin.setValue(5)
+            pd_nums_row.addWidget(self._pd_nval_spin)
+            pd_nums_row.addWidget(QLabel("n_test:"))
+            self._pd_ntest_spin = QSpinBox()
+            self._pd_ntest_spin.setRange(1, 100)
+            self._pd_ntest_spin.setValue(5)
+            pd_nums_row.addWidget(self._pd_ntest_spin)
+            pdl.addLayout(pd_nums_row)
+
+            pd_seed_row = QHBoxLayout()
+            pd_seed_row.addWidget(QLabel("split_seed:"))
+            self._pd_seed_spin = QSpinBox()
+            self._pd_seed_spin.setRange(0, 999999)
+            self._pd_seed_spin.setValue(16)
+            pd_seed_row.addWidget(self._pd_seed_spin)
+            pd_seed_row.addWidget(QLabel("num_workers:"))
+            self._pd_workers_spin = QSpinBox()
+            self._pd_workers_spin.setRange(1, 128)
+            self._pd_workers_spin.setValue(max(1, int((os.cpu_count() or 4) * 0.75)))
+            pd_seed_row.addWidget(self._pd_workers_spin)
+            pdl.addLayout(pd_seed_row)
+
+            self._pd_run_btn = QPushButton("Prepare Training Data")
+            self._pd_run_btn.setStyleSheet("QPushButton { padding: 5px; }")
+            pdl.addWidget(self._pd_run_btn)
+
+            self._pd_status_lbl = QLabel("")
+            self._pd_status_lbl.setWordWrap(True)
+            pdl.addWidget(self._pd_status_lbl)
+
+            pdg.setLayout(pdl)
+            self._ai_monai_group_layout.addWidget(pdg)
+            self._ai_monai_group_layout.addWidget(_sep())
+
+            # ── Train MONAI (train.py) ──────────────────────────────────── #
+            mtg = QGroupBox("Train MONAI U-Net")
+            mtl = QVBoxLayout()
+            mtl.setSpacing(6)
+
+            mt_data_row = QHBoxLayout()
+            mt_data_row.addWidget(QLabel("Data dir:"))
+            self._mt_data_dir_edit = QLineEdit(cfg.get("monai_data_dir", "training_data_v2"))
+            mt_data_row.addWidget(self._mt_data_dir_edit)
+            mtl.addLayout(mt_data_row)
+
+            mt_model_row = QHBoxLayout()
+            mt_model_row.addWidget(QLabel("Model dir:"))
+            self._mt_model_dir_edit = QLineEdit(cfg.get("monai_model_dir", "models_v2"))
+            mt_model_row.addWidget(self._mt_model_dir_edit)
+            self._mt_model_browse_btn = QPushButton("...")
+            self._mt_model_browse_btn.setFixedWidth(32)
+            mt_model_row.addWidget(self._mt_model_browse_btn)
+            mtl.addLayout(mt_model_row)
+
+            mt_ep_row = QHBoxLayout()
+            mt_ep_row.addWidget(QLabel("epochs:"))
+            self._mt_epochs_spin = QSpinBox()
+            self._mt_epochs_spin.setRange(1, 100000)
+            self._mt_epochs_spin.setValue(1500)
+            mt_ep_row.addWidget(self._mt_epochs_spin)
+            mt_ep_row.addWidget(QLabel("batch_size:"))
+            self._mt_batch_spin = QSpinBox()
+            self._mt_batch_spin.setRange(1, 64)
+            self._mt_batch_spin.setValue(2)
+            mt_ep_row.addWidget(self._mt_batch_spin)
+            mtl.addLayout(mt_ep_row)
+
+            mt_lr_row = QHBoxLayout()
+            mt_lr_row.addWidget(QLabel("lr:"))
+            self._mt_lr_spin = QDoubleSpinBox()
+            self._mt_lr_spin.setDecimals(6)
+            self._mt_lr_spin.setRange(1e-6, 1.0)
+            self._mt_lr_spin.setSingleStep(1e-5)
+            self._mt_lr_spin.setValue(1e-4)
+            mt_lr_row.addWidget(self._mt_lr_spin)
+            mt_lr_row.addWidget(QLabel("gpu idx:"))
+            self._mt_gpu_spin = QSpinBox()
+            self._mt_gpu_spin.setRange(0, 15)
+            mt_lr_row.addWidget(self._mt_gpu_spin)
+            mtl.addLayout(mt_lr_row)
+
+            mt_resume_row = QHBoxLayout()
+            mt_resume_row.addWidget(QLabel("resume:"))
+            self._mt_resume_edit = QLineEdit("")
+            self._mt_resume_edit.setPlaceholderText("optional checkpoint — blank = fresh start")
+            mt_resume_row.addWidget(self._mt_resume_edit)
+            self._mt_resume_browse_btn = QPushButton("...")
+            self._mt_resume_browse_btn.setFixedWidth(32)
+            mt_resume_row.addWidget(self._mt_resume_browse_btn)
+            mtl.addLayout(mt_resume_row)
+
+            mt_sched_row = QHBoxLayout()
+            mt_sched_row.addWidget(QLabel("patience:"))
+            self._mt_patience_spin = QSpinBox()
+            self._mt_patience_spin.setRange(1, 10000)
+            self._mt_patience_spin.setValue(50)
+            mt_sched_row.addWidget(self._mt_patience_spin)
+            mt_sched_row.addWidget(QLabel("val_every:"))
+            self._mt_valevery_spin = QSpinBox()
+            self._mt_valevery_spin.setRange(1, 1000)
+            self._mt_valevery_spin.setValue(5)
+            mt_sched_row.addWidget(self._mt_valevery_spin)
+            mt_sched_row.addWidget(QLabel("ckpt_every:"))
+            self._mt_ckptevery_spin = QSpinBox()
+            self._mt_ckptevery_spin.setRange(1, 1000)
+            self._mt_ckptevery_spin.setValue(50)
+            mt_sched_row.addWidget(self._mt_ckptevery_spin)
+            mtl.addLayout(mt_sched_row)
+
+            mt_btn_row = QHBoxLayout()
+            self._mt_launch_btn = QPushButton("Launch Training")
+            self._mt_launch_btn.setStyleSheet("QPushButton { font-weight: bold; padding: 5px; }")
+            mt_btn_row.addWidget(self._mt_launch_btn)
+            self._mt_stop_btn = QPushButton("Stop Training")
+            self._mt_stop_btn.setEnabled(False)
+            mt_btn_row.addWidget(self._mt_stop_btn)
+            mtl.addLayout(mt_btn_row)
+
+            self._mt_status_lbl = QLabel("")
+            self._mt_status_lbl.setWordWrap(True)
+            mtl.addWidget(self._mt_status_lbl)
+
+            self._mt_log_view = QTextEdit()
+            self._mt_log_view.setReadOnly(True)
+            self._mt_log_view.setStyleSheet("font-family: monospace; font-size: 9px;")
+            self._mt_log_view.setFixedHeight(120)
+            mtl.addWidget(self._mt_log_view)
+
+            mtg.setLayout(mtl)
+            self._ai_monai_group_layout.addWidget(mtg)
+
+            # In-memory job state (PID/log path/timer) — mirrors the config
+            # keys persisted for resume-after-restart (see _load_monai_job_state)
+            self._monai_job = {"pid": None, "log_path": None, "timer": None}
+
+        self._ai_monai_group.setLayout(self._ai_monai_group_layout)
+        t4.addWidget(self._ai_monai_group)
+
+        # ── Group 2 — Cellpose-SAM crop extraction + training ───────────── #
+        self._ai_cellpose_group = QGroupBox("Cellpose-SAM Training")
+        self._ai_cellpose_group_layout = QVBoxLayout()
+        self._ai_cellpose_group_layout.setSpacing(6)
+
+        if GPU_OK:
+            cfg = self._state.get("config", {})
+
+            # ── Extract Training Crops (extract_cellpose_crops.py port) ── #
+            ecg = QGroupBox("Extract Training Crops")
+            ecl = QVBoxLayout()
+            ecl.setSpacing(6)
+
+            ec_note = QLabel(
+                "Extracts single/double/triple/quadruple bbox crops per\n"
+                "cell (plus nearest neighbours) from a _statistics.csv +\n"
+                "image + labels triple, for Cellpose-SAM fine-tuning."
+            )
+            ec_note.setWordWrap(True)
+            ec_note.setStyleSheet("color: #aaa; font-size: 10px;")
+            ecl.addWidget(ec_note)
+
+            ec_csv_row = QHBoxLayout()
+            ec_csv_row.addWidget(QLabel("_statistics.csv:"))
+            self._ec_csv_edit = QLineEdit("")
+            ec_csv_row.addWidget(self._ec_csv_edit)
+            self._ec_csv_browse_btn = QPushButton("...")
+            self._ec_csv_browse_btn.setFixedWidth(32)
+            ec_csv_row.addWidget(self._ec_csv_browse_btn)
+            ecl.addLayout(ec_csv_row)
+
+            ec_img_row = QHBoxLayout()
+            ec_img_row.addWidget(QLabel("Image (brain_only):"))
+            self._ec_img_edit = QLineEdit("")
+            ec_img_row.addWidget(self._ec_img_edit)
+            self._ec_img_browse_btn = QPushButton("...")
+            self._ec_img_browse_btn.setFixedWidth(32)
+            ec_img_row.addWidget(self._ec_img_browse_btn)
+            ecl.addLayout(ec_img_row)
+
+            ec_lbl_row = QHBoxLayout()
+            ec_lbl_row.addWidget(QLabel("Labels:"))
+            self._ec_lbl_edit = QLineEdit("")
+            ec_lbl_row.addWidget(self._ec_lbl_edit)
+            self._ec_lbl_browse_btn = QPushButton("...")
+            self._ec_lbl_browse_btn.setFixedWidth(32)
+            ec_lbl_row.addWidget(self._ec_lbl_browse_btn)
+            ecl.addLayout(ec_lbl_row)
+
+            ec_opts_row = QHBoxLayout()
+            ec_opts_row.addWidget(QLabel("pad:"))
+            self._ec_pad_spin = QSpinBox()
+            self._ec_pad_spin.setRange(0, 200)
+            self._ec_pad_spin.setValue(15)
+            ec_opts_row.addWidget(self._ec_pad_spin)
+            ec_opts_row.addWidget(QLabel("out_subdir:"))
+            self._ec_outdir_edit = QLineEdit("train_cellpose")
+            ec_opts_row.addWidget(self._ec_outdir_edit)
+            ecl.addLayout(ec_opts_row)
+
+            ec_val_row = QHBoxLayout()
+            ec_val_row.addWidget(QLabel("val_cells:"))
+            self._ec_valcells_edit = QLineEdit("")
+            self._ec_valcells_edit.setPlaceholderText("optional, comma-separated cell IDs")
+            ec_val_row.addWidget(self._ec_valcells_edit)
+            ecl.addLayout(ec_val_row)
+
+            self._ec_run_btn = QPushButton("Extract Crops")
+            self._ec_run_btn.setStyleSheet("QPushButton { padding: 5px; }")
+            ecl.addWidget(self._ec_run_btn)
+
+            self._ec_status_lbl = QLabel("")
+            self._ec_status_lbl.setWordWrap(True)
+            ecl.addWidget(self._ec_status_lbl)
+
+            ecg.setLayout(ecl)
+            self._ai_cellpose_group_layout.addWidget(ecg)
+            self._ai_cellpose_group_layout.addWidget(_sep())
+
+            # ── Train Cellpose-SAM (train_xzyz.py) ──────────────────────── #
+            ctg = QGroupBox("Train Cellpose-SAM")
+            ctl = QVBoxLayout()
+            ctl.setSpacing(6)
+
+            ct_data_row = QHBoxLayout()
+            ct_data_row.addWidget(QLabel("Data dir:"))
+            self._ct_data_dir_edit = QLineEdit(cfg.get("cellpose_crops_data_dir", ""))
+            ct_data_row.addWidget(self._ct_data_dir_edit)
+            ctl.addLayout(ct_data_row)
+
+            ct_pre_row = QHBoxLayout()
+            ct_pre_row.addWidget(QLabel("Pretrained:"))
+            init_pretrained = str(self._state["cellpose_model_path"]) if self._state.get("cellpose_model_path") else "cpsam"
+            self._ct_pretrained_edit = QLineEdit(init_pretrained)
+            ct_pre_row.addWidget(self._ct_pretrained_edit)
+            self._ct_pretrained_browse_btn = QPushButton("...")
+            self._ct_pretrained_browse_btn.setFixedWidth(32)
+            ct_pre_row.addWidget(self._ct_pretrained_browse_btn)
+            ctl.addLayout(ct_pre_row)
+            ct_pre_note = QLabel("  Defaults to the checkpoint already loaded in Tab 2 — \"continue training\".")
+            ct_pre_note.setStyleSheet("color: #aaa; font-size: 10px;")
+            ct_pre_note.setWordWrap(True)
+            ctl.addWidget(ct_pre_note)
+
+            ct_name_row = QHBoxLayout()
+            ct_name_row.addWidget(QLabel("model_name:"))
+            self._ct_modelname_edit = QLineEdit("cpsam_microglia_xzyz")
+            ct_name_row.addWidget(self._ct_modelname_edit)
+            ctl.addLayout(ct_name_row)
+
+            ct_ep_row = QHBoxLayout()
+            ct_ep_row.addWidget(QLabel("n_epochs:"))
+            self._ct_epochs_spin = QSpinBox()
+            self._ct_epochs_spin.setRange(1, 100000)
+            self._ct_epochs_spin.setValue(200)
+            ct_ep_row.addWidget(self._ct_epochs_spin)
+            ct_ep_row.addWidget(QLabel("batch_size:"))
+            self._ct_batch_spin = QSpinBox()
+            self._ct_batch_spin.setRange(1, 64)
+            self._ct_batch_spin.setValue(4)
+            ct_ep_row.addWidget(self._ct_batch_spin)
+            ctl.addLayout(ct_ep_row)
+
+            ct_save_row = QHBoxLayout()
+            ct_save_row.addWidget(QLabel("save_every:"))
+            self._ct_saveevery_spin = QSpinBox()
+            self._ct_saveevery_spin.setRange(1, 1000)
+            self._ct_saveevery_spin.setValue(10)
+            ct_save_row.addWidget(self._ct_saveevery_spin)
+            ct_save_row.addWidget(QLabel("log_every:"))
+            self._ct_logevery_spin = QSpinBox()
+            self._ct_logevery_spin.setRange(1, 1000)
+            self._ct_logevery_spin.setValue(5)
+            ct_save_row.addWidget(self._ct_logevery_spin)
+            ctl.addLayout(ct_save_row)
+
+            ct_lr_row = QHBoxLayout()
+            ct_lr_row.addWidget(QLabel("lr:"))
+            self._ct_lr_spin = QDoubleSpinBox()
+            self._ct_lr_spin.setDecimals(6)
+            self._ct_lr_spin.setRange(1e-6, 1.0)
+            self._ct_lr_spin.setSingleStep(1e-5)
+            self._ct_lr_spin.setValue(1e-4)
+            ct_lr_row.addWidget(self._ct_lr_spin)
+            ctl.addLayout(ct_lr_row)
+
+            ct_bw_row = QHBoxLayout()
+            ct_bw_row.addWidget(QLabel("branch_weight:"))
+            self._ct_branchweight_spin = QDoubleSpinBox()
+            self._ct_branchweight_spin.setDecimals(1)
+            self._ct_branchweight_spin.setRange(0.0, 20.0)
+            self._ct_branchweight_spin.setSingleStep(0.5)
+            self._ct_branchweight_spin.setValue(0.0)
+            ct_bw_row.addWidget(self._ct_branchweight_spin)
+            ct_bw_row.addWidget(QLabel("branch_radius:"))
+            self._ct_branchradius_spin = QSpinBox()
+            self._ct_branchradius_spin.setRange(1, 20)
+            self._ct_branchradius_spin.setValue(3)
+            ct_bw_row.addWidget(self._ct_branchradius_spin)
+            ctl.addLayout(ct_bw_row)
+            ct_bw_note = QLabel("  branch_weight=0 disables the branch-weighted loss (standard Cellpose loss).")
+            ct_bw_note.setStyleSheet("color: #aaa; font-size: 10px;")
+            ct_bw_note.setWordWrap(True)
+            ctl.addWidget(ct_bw_note)
+
+            ct_btn_row = QHBoxLayout()
+            self._ct_launch_btn = QPushButton("Launch Training")
+            self._ct_launch_btn.setStyleSheet("QPushButton { font-weight: bold; padding: 5px; }")
+            ct_btn_row.addWidget(self._ct_launch_btn)
+            self._ct_stop_btn = QPushButton("Stop Training")
+            self._ct_stop_btn.setEnabled(False)
+            ct_btn_row.addWidget(self._ct_stop_btn)
+            ctl.addLayout(ct_btn_row)
+
+            self._ct_status_lbl = QLabel("")
+            self._ct_status_lbl.setWordWrap(True)
+            ctl.addWidget(self._ct_status_lbl)
+
+            self._ct_log_view = QTextEdit()
+            self._ct_log_view.setReadOnly(True)
+            self._ct_log_view.setStyleSheet("font-family: monospace; font-size: 9px;")
+            self._ct_log_view.setFixedHeight(120)
+            ctl.addWidget(self._ct_log_view)
+
+            ctg.setLayout(ctl)
+            self._ai_cellpose_group_layout.addWidget(ctg)
+
+            self._cellpose_job = {"pid": None, "log_path": None, "timer": None}
+
+        self._ai_cellpose_group.setLayout(self._ai_cellpose_group_layout)
+        t4.addWidget(self._ai_cellpose_group)
+
+        t4.addStretch()
+        tab4.setLayout(t4)
+        tabs.addTab(tab4, "AI Tools")
+        self._tabs.setTabVisible(3, GPU_OK)
+
         # ── outer layout ────────────────────────────────────────────── #
         outer = QVBoxLayout()
         outer.setContentsMargins(0, 0, 0, 0)
@@ -878,6 +1349,26 @@ class ZFMicrogliaAIWidget(QWidget):
         self._save_labels_btn.clicked.connect(self._on_save_labels)
         self._stats_backend_combo.currentIndexChanged.connect(self._on_stats_backend_changed)
         self._stats_btn.clicked.connect(self._on_generate_stats)
+        if GPU_OK:
+            self._ai_mode_group.buttonClicked.connect(self._on_ai_tools_mode_changed)
+            self._gt_image_combo.currentIndexChanged.connect(self._on_gt_image_changed)
+            self._gt_interpolate_btn.clicked.connect(self._on_gt_interpolate)
+            self._gt_generate_btn.clicked.connect(self._on_gt_generate_masks)
+            self._viewer.layers.events.inserted.connect(self._refresh_gt_layers)
+            self._viewer.layers.events.removed.connect(self._refresh_gt_layers)
+            self._pd_output_browse_btn.clicked.connect(self._on_pd_browse_output)
+            self._pd_run_btn.clicked.connect(self._on_prepare_monai_data)
+            self._mt_model_browse_btn.clicked.connect(self._on_mt_browse_model_dir)
+            self._mt_resume_browse_btn.clicked.connect(self._on_mt_browse_resume)
+            self._mt_launch_btn.clicked.connect(self._on_mt_launch_training)
+            self._mt_stop_btn.clicked.connect(self._on_mt_stop_training)
+            self._ec_csv_browse_btn.clicked.connect(self._on_ec_browse_csv)
+            self._ec_img_browse_btn.clicked.connect(self._on_ec_browse_img)
+            self._ec_lbl_browse_btn.clicked.connect(self._on_ec_browse_lbl)
+            self._ec_run_btn.clicked.connect(self._on_extract_crops)
+            self._ct_pretrained_browse_btn.clicked.connect(self._on_ct_browse_pretrained)
+            self._ct_launch_btn.clicked.connect(self._on_ct_launch_training)
+            self._ct_stop_btn.clicked.connect(self._on_ct_stop_training)
         self._viewer.layers.events.inserted.connect(self._refresh_layer_info)
         self._viewer.layers.events.removed.connect(self._refresh_layer_info)
         self._viewer.layers.selection.events.changed.connect(self._refresh_layer_info)
@@ -885,6 +1376,11 @@ class ZFMicrogliaAIWidget(QWidget):
         self._viewer.layers.events.removed.connect(self._refresh_stats_layers)
         # Apply initial panel visibility
         self._on_stats_backend_changed()
+        if GPU_OK:
+            self._on_ai_tools_mode_changed()
+            self._refresh_gt_layers()
+            self._resume_monai_job_if_active()
+            self._resume_cellpose_job_if_active()
 
     # ------------------------------------------------------------------ #
     # Helpers
@@ -900,6 +1396,439 @@ class ZFMicrogliaAIWidget(QWidget):
         self._tol_slider.setEnabled(has_tol)
         self._tol_spin.setEnabled(has_tol)
         self._tol_lbl.setEnabled(has_tol)
+
+    def _on_ai_tools_mode_changed(self, *_):
+        """Show only the training group matching the switch position."""
+        mode = "cellpose" if self._ai_cellpose_radio.isChecked() else "monai"
+        self._ai_monai_group.setVisible(mode == "monai")
+        self._ai_cellpose_group.setVisible(mode == "cellpose")
+        self._save_cfg(ai_tools_mode=mode)
+
+    def _refresh_gt_layers(self, *_):
+        """Repopulate the GT annotation Image-layer combo."""
+        cur = self._gt_image_combo.currentData()
+        self._gt_image_combo.blockSignals(True)
+        self._gt_image_combo.clear()
+        self._gt_image_combo.addItem("None", None)
+        for lyr in self._viewer.layers:
+            if isinstance(lyr, napari.layers.Image):
+                self._gt_image_combo.addItem(lyr.name, lyr.name)
+                if lyr.name == cur:
+                    self._gt_image_combo.setCurrentIndex(self._gt_image_combo.count() - 1)
+        self._gt_image_combo.blockSignals(False)
+
+    def _gt_selected_layer(self):
+        """Return the Image layer currently selected in the GT combo, or None."""
+        name = self._gt_image_combo.currentData()
+        if name is None or name not in self._viewer.layers:
+            return None
+        lyr = self._viewer.layers[name]
+        return lyr if isinstance(lyr, napari.layers.Image) else None
+
+    def _on_gt_image_changed(self, *_):
+        """Auto-create the 'brain_polygons' Shapes layer once a real Image
+        layer is picked, so the user never hits the original script's
+        KeyError-on-missing-layer footgun."""
+        lyr = self._gt_selected_layer()
+        if lyr is None:
+            return
+        scale = tuple(float(v) for v in lyr.scale) if len(lyr.scale) == 3 else (1.0, 1.0, 1.0)
+        _gt.ensure_brain_polygons_layer(self._viewer, scale=scale)
+        self._gt_status_lbl.setText(f"Draw polygons on the '{_gt.KEY_SHAPES_LAYER}' layer, then Interpolate.")
+
+    def _on_gt_interpolate(self):
+        lyr = self._gt_selected_layer()
+        if lyr is None:
+            self._gt_status_lbl.setText("ERROR: select an Image layer first.")
+            return
+        try:
+            result = _gt.interpolate_shapes(self._viewer, lyr)
+        except ValueError as exc:
+            self._gt_status_lbl.setText(f"ERROR: {exc}")
+            return
+        self._gt_status_lbl.setText(
+            f"Interpolated {len(result.data)} polygons — review 'brain_polygons_interpolated' (cyan), "
+            f"then Generate Masks."
+        )
+
+    def _on_gt_generate_masks(self):
+        lyr = self._gt_selected_layer()
+        if lyr is None:
+            self._gt_status_lbl.setText("ERROR: select an Image layer first.")
+            return
+        if not self._state.get("last_file_path"):
+            self._gt_status_lbl.setText(
+                "ERROR: no source file path known — open the file via "
+                "'Open TIF / IMS file' first (needed to name the output folder)."
+            )
+            return
+        try:
+            out_dir = _gt.generate_masks(self._viewer, lyr, self._state["last_file_path"])
+        except ValueError as exc:
+            self._gt_status_lbl.setText(f"ERROR: {exc}")
+            return
+        self._gt_status_lbl.setText(f"Masks saved to {out_dir}")
+
+    def _on_pd_browse_output(self):
+        path_str = QFileDialog.getExistingDirectory(self, "Select output directory")
+        if path_str:
+            self._pd_output_dir_edit.setText(path_str)
+
+    def _on_prepare_monai_data(self):
+        brain_dirs = [d.strip() for d in self._pd_brain_dirs_edit.text().split(",") if d.strip()]
+        skin_dirs = [d.strip() for d in self._pd_skin_dirs_edit.text().split(",") if d.strip()]
+        output_dir = self._pd_output_dir_edit.text().strip() or "training_data_v2"
+        tissue = self._pd_tissue_combo.currentText()
+        n_val = self._pd_nval_spin.value()
+        n_test = self._pd_ntest_spin.value()
+        split_seed = self._pd_seed_spin.value()
+        num_workers = self._pd_workers_spin.value()
+
+        script_path = self._state["config"].get("monai_prepare_script_path") or str(_ait.DEFAULT_PREPARE_DATA_SCRIPT)
+        if not Path(script_path).exists():
+            self._pd_status_lbl.setText(f"ERROR: prepare_data.py not found at {script_path}")
+            return
+        conda_env = self._state["config"].get("monai_conda_env", "zf-microglia-ai")
+
+        argv = _ait.build_prepare_data_argv(
+            script_path, brain_dirs, skin_dirs, output_dir, tissue,
+            n_val, n_test, split_seed, num_workers,
+        )
+        cwd = Path(script_path).parent
+
+        self._pd_run_btn.setEnabled(False)
+        self._pd_status_lbl.setText("Running (this can take ~15 min)...")
+
+        result = {}
+
+        def _worker():
+            try:
+                proc = _tj.run_subprocess_job(argv, cwd, conda_env)
+                result["returncode"] = proc.returncode
+                result["stdout"] = proc.stdout
+                result["stderr"] = proc.stderr
+            except Exception as exc:
+                traceback.print_exc()
+                result["error"] = str(exc)
+
+        thread = threading.Thread(target=_worker, daemon=True)
+        thread.start()
+
+        timer = QTimer(self)
+
+        def _poll():
+            if thread.is_alive():
+                return
+            timer.stop()
+            self._pd_run_btn.setEnabled(True)
+            if "error" in result:
+                self._pd_status_lbl.setText(f"ERROR: {result['error']}")
+                return
+            if result["returncode"] != 0:
+                tail = (result.get("stderr") or "")[-500:]
+                self._pd_status_lbl.setText(f"ERROR (exit {result['returncode']}): {tail}")
+                return
+            self._pd_status_lbl.setText(f"Done — dataset prepared at {output_dir}")
+            self._mt_data_dir_edit.setText(output_dir)
+            self._save_cfg(
+                monai_data_dir=output_dir,
+                monai_brain_dirs=self._pd_brain_dirs_edit.text(),
+                monai_skin_dirs=self._pd_skin_dirs_edit.text(),
+            )
+
+        timer.timeout.connect(_poll)
+        timer.start(1000)
+
+    def _on_mt_browse_model_dir(self):
+        path_str = QFileDialog.getExistingDirectory(self, "Select model output directory")
+        if path_str:
+            self._mt_model_dir_edit.setText(path_str)
+
+    def _on_mt_browse_resume(self):
+        path_str, _ = QFileDialog.getOpenFileName(self, "Select checkpoint to resume from", "", "All files (*)")
+        if path_str:
+            self._mt_resume_edit.setText(path_str)
+
+    def _start_monai_polling(self):
+        """(Re)start the coarse-interval log-tail/status poll for the active
+        MONAI training job. 8s interval, deliberately coarser than every
+        other job in the plugin — each tick does a psutil PID check plus a
+        bounded log-file read, and there's zero UX benefit to sub-second
+        polling on an hours-to-days job."""
+        timer = QTimer(self)
+
+        def _poll():
+            pid = self._monai_job.get("pid")
+            log_path = self._monai_job.get("log_path")
+            if log_path:
+                self._mt_log_view.setPlainText(_tj.tail_log(log_path))
+                sb = self._mt_log_view.verticalScrollBar()
+                sb.setValue(sb.maximum())
+            if pid and not _tj.is_running(pid):
+                timer.stop()
+                self._monai_job["timer"] = None
+                self._mt_status_lbl.setText(f"Training process (PID {pid}) has stopped.")
+                self._mt_launch_btn.setEnabled(True)
+                self._mt_stop_btn.setEnabled(False)
+
+        timer.timeout.connect(_poll)
+        timer.start(8000)
+        self._monai_job["timer"] = timer
+        _poll()  # immediate first tick so the log view isn't empty for 8s
+
+    def _on_mt_launch_training(self):
+        if self._monai_job.get("pid") and _tj.is_running(self._monai_job["pid"]):
+            self._mt_status_lbl.setText("A training job is already running.")
+            return
+
+        script_path = self._state["config"].get("monai_train_script_path") or str(_ait.DEFAULT_MONAI_TRAIN_SCRIPT)
+        if not Path(script_path).exists():
+            self._mt_status_lbl.setText(f"ERROR: train.py not found at {script_path}")
+            return
+
+        data_dir = self._mt_data_dir_edit.text().strip() or "training_data_v2"
+        model_dir = self._mt_model_dir_edit.text().strip() or "models_v2"
+        Path(model_dir).mkdir(parents=True, exist_ok=True)
+        resume = self._mt_resume_edit.text().strip() or None
+
+        argv = _ait.build_monai_train_argv(
+            script_path, data_dir, model_dir,
+            self._mt_epochs_spin.value(), self._mt_batch_spin.value(), self._mt_lr_spin.value(),
+            resume, self._mt_patience_spin.value(), self._mt_valevery_spin.value(),
+            self._mt_ckptevery_spin.value(), self._mt_gpu_spin.value(),
+        )
+        conda_env = self._state["config"].get("monai_conda_env", "zf-microglia-ai")
+        cwd = Path(script_path).parent
+        session = f"monai_train_{datetime.now():%Y%m%d_%H%M%S}"
+        log_path = Path(model_dir) / f"gui_launch_{session}.log"
+
+        try:
+            pid = _tj.launch_detached(argv, cwd, log_path, conda_env)
+        except Exception as exc:
+            self._mt_status_lbl.setText(f"ERROR launching: {exc}")
+            return
+
+        self._monai_job["pid"] = pid
+        self._monai_job["log_path"] = str(log_path)
+        self._save_cfg(
+            monai_active_pid=pid, monai_active_log=str(log_path),
+            monai_data_dir=data_dir, monai_model_dir=model_dir,
+        )
+        self._mt_launch_btn.setEnabled(False)
+        self._mt_stop_btn.setEnabled(True)
+        self._mt_status_lbl.setText(f"Launched (PID {pid}) — log: {log_path}")
+        self._start_monai_polling()
+
+    def _on_mt_stop_training(self):
+        pid = self._monai_job.get("pid")
+        if not pid:
+            return
+        _tj.kill_process_tree(pid)
+        self._mt_status_lbl.setText(f"Stopped (PID {pid}).")
+        self._mt_launch_btn.setEnabled(True)
+        self._mt_stop_btn.setEnabled(False)
+        self._save_cfg(monai_active_pid=None, monai_active_log="")
+        if self._monai_job.get("timer"):
+            self._monai_job["timer"].stop()
+            self._monai_job["timer"] = None
+
+    def _resume_monai_job_if_active(self):
+        """If a MONAI training job launched in a previous plugin/napari
+        session is still running, reconnect the GUI to it instead of
+        silently showing no active job — these are hours-to-days jobs
+        that regularly outlive a single napari session."""
+        cfg = self._state.get("config", {})
+        pid = cfg.get("monai_active_pid")
+        log_path = cfg.get("monai_active_log")
+        if pid and _tj.is_running(pid):
+            self._monai_job["pid"] = pid
+            self._monai_job["log_path"] = log_path
+            self._mt_launch_btn.setEnabled(False)
+            self._mt_stop_btn.setEnabled(True)
+            self._mt_status_lbl.setText(f"Resumed monitoring PID {pid} (already running).")
+            self._start_monai_polling()
+
+    def _on_ec_browse_csv(self):
+        path_str, _ = QFileDialog.getOpenFileName(self, "Select _statistics.csv", "", "CSV files (*.csv)")
+        if path_str:
+            self._ec_csv_edit.setText(path_str)
+
+    def _on_ec_browse_img(self):
+        path_str, _ = QFileDialog.getOpenFileName(self, "Select brain_only image", "", "TIFF files (*.tif *.tiff)")
+        if path_str:
+            self._ec_img_edit.setText(path_str)
+
+    def _on_ec_browse_lbl(self):
+        path_str, _ = QFileDialog.getOpenFileName(self, "Select labels TIFF", "", "TIFF files (*.tif *.tiff)")
+        if path_str:
+            self._ec_lbl_edit.setText(path_str)
+
+    def _on_extract_crops(self):
+        csv_path = self._ec_csv_edit.text().strip()
+        img_path = self._ec_img_edit.text().strip()
+        lbl_path = self._ec_lbl_edit.text().strip()
+        if not (csv_path and img_path and lbl_path):
+            self._ec_status_lbl.setText("ERROR: CSV, image, and labels paths are all required.")
+            return
+        for p, label in [(csv_path, "CSV"), (img_path, "image"), (lbl_path, "labels")]:
+            if not Path(p).exists():
+                self._ec_status_lbl.setText(f"ERROR: {label} file not found: {p}")
+                return
+
+        pad = self._ec_pad_spin.value()
+        out_subdir = self._ec_outdir_edit.text().strip() or "train_cellpose"
+        val_cells_txt = self._ec_valcells_edit.text().strip()
+        val_cells = None
+        if val_cells_txt:
+            try:
+                val_cells = [int(v.strip()) for v in val_cells_txt.split(",") if v.strip()]
+            except ValueError:
+                self._ec_status_lbl.setText("ERROR: val_cells must be comma-separated integers.")
+                return
+
+        self._ec_run_btn.setEnabled(False)
+        self._ec_status_lbl.setText("Extracting crops...")
+
+        result = {}
+
+        def _worker():
+            try:
+                result["summary"] = _crop.extract_crops(
+                    csv_path, img_path, lbl_path, pad=pad,
+                    out_subdir=out_subdir, val_cells=val_cells,
+                )
+            except Exception as exc:
+                traceback.print_exc()
+                result["error"] = str(exc)
+
+        thread = threading.Thread(target=_worker, daemon=True)
+        thread.start()
+
+        timer = QTimer(self)
+
+        def _poll():
+            if thread.is_alive():
+                return
+            timer.stop()
+            self._ec_run_btn.setEnabled(True)
+            if "error" in result:
+                self._ec_status_lbl.setText(f"ERROR: {result['error']}")
+                return
+            s = result["summary"]
+            train_total = sum(s["train"].values())
+            val_total = sum(s["val"].values())
+            self._ec_status_lbl.setText(
+                f"Done — {train_total} train + {val_total} val patches "
+                f"({s['dropped']} dropped, {s['skipped']} duplicate) -> {s['train_dir']}"
+            )
+            self._ct_data_dir_edit.setText(str(s["train_dir"].parent))
+            self._save_cfg(cellpose_crops_data_dir=str(s["train_dir"].parent))
+
+        timer.timeout.connect(_poll)
+        timer.start(500)
+
+    def _on_ct_browse_pretrained(self):
+        path_str, _ = QFileDialog.getOpenFileName(self, "Select Cellpose-SAM checkpoint", "", "All files (*)")
+        if path_str:
+            self._ct_pretrained_edit.setText(path_str)
+
+    def _start_cellpose_polling(self):
+        """Same coarse (8s) log-tail/status poll as MONAI (_start_monai_polling) —
+        see that method's docstring for why the interval is this coarse."""
+        timer = QTimer(self)
+
+        def _poll():
+            pid = self._cellpose_job.get("pid")
+            log_path = self._cellpose_job.get("log_path")
+            if log_path:
+                self._ct_log_view.setPlainText(_tj.tail_log(log_path))
+                sb = self._ct_log_view.verticalScrollBar()
+                sb.setValue(sb.maximum())
+            if pid and not _tj.is_running(pid):
+                timer.stop()
+                self._cellpose_job["timer"] = None
+                self._ct_status_lbl.setText(f"Training process (PID {pid}) has stopped.")
+                self._ct_launch_btn.setEnabled(True)
+                self._ct_stop_btn.setEnabled(False)
+
+        timer.timeout.connect(_poll)
+        timer.start(8000)
+        self._cellpose_job["timer"] = timer
+        _poll()
+
+    def _on_ct_launch_training(self):
+        if self._cellpose_job.get("pid") and _tj.is_running(self._cellpose_job["pid"]):
+            self._ct_status_lbl.setText("A training job is already running.")
+            return
+
+        script_path = self._state["config"].get("cellpose_train_script_path") or str(_ait.DEFAULT_CELLPOSE_TRAIN_SCRIPT)
+        if not Path(script_path).exists():
+            self._ct_status_lbl.setText(f"ERROR: train_xzyz.py not found at {script_path}")
+            return
+
+        data_dir = self._ct_data_dir_edit.text().strip()
+        if not data_dir:
+            self._ct_status_lbl.setText("ERROR: data dir required — run Extract Crops first or set it manually.")
+            return
+        pretrained = self._ct_pretrained_edit.text().strip() or "cpsam"
+        model_name = self._ct_modelname_edit.text().strip() or "cpsam_microglia_xzyz"
+
+        argv = _ait.build_cellpose_train_argv(
+            script_path, data_dir, model_name, pretrained,
+            self._ct_epochs_spin.value(), self._ct_batch_spin.value(),
+            self._ct_saveevery_spin.value(), self._ct_logevery_spin.value(),
+            self._ct_lr_spin.value(), self._ct_branchweight_spin.value(),
+            self._ct_branchradius_spin.value(),
+        )
+        conda_env = self._state["config"].get("cellpose_conda_env", "cellpose")
+        cwd = Path(script_path).parent
+        session = f"cellpose_train_{datetime.now():%Y%m%d_%H%M%S}"
+        log_dir = Path(data_dir) / "logs"
+        log_dir.mkdir(parents=True, exist_ok=True)
+        log_path = log_dir / f"gui_launch_{session}.log"
+
+        try:
+            pid = _tj.launch_detached(argv, cwd, log_path, conda_env)
+        except Exception as exc:
+            self._ct_status_lbl.setText(f"ERROR launching: {exc}")
+            return
+
+        self._cellpose_job["pid"] = pid
+        self._cellpose_job["log_path"] = str(log_path)
+        self._save_cfg(
+            cellpose_active_pid=pid, cellpose_active_log=str(log_path),
+            cellpose_crops_data_dir=data_dir,
+        )
+        self._ct_launch_btn.setEnabled(False)
+        self._ct_stop_btn.setEnabled(True)
+        self._ct_status_lbl.setText(f"Launched (PID {pid}) — log: {log_path}")
+        self._start_cellpose_polling()
+
+    def _on_ct_stop_training(self):
+        pid = self._cellpose_job.get("pid")
+        if not pid:
+            return
+        _tj.kill_process_tree(pid)
+        self._ct_status_lbl.setText(f"Stopped (PID {pid}).")
+        self._ct_launch_btn.setEnabled(True)
+        self._ct_stop_btn.setEnabled(False)
+        self._save_cfg(cellpose_active_pid=None, cellpose_active_log="")
+        if self._cellpose_job.get("timer"):
+            self._cellpose_job["timer"].stop()
+            self._cellpose_job["timer"] = None
+
+    def _resume_cellpose_job_if_active(self):
+        """Mirrors _resume_monai_job_if_active — see its docstring."""
+        cfg = self._state.get("config", {})
+        pid = cfg.get("cellpose_active_pid")
+        log_path = cfg.get("cellpose_active_log")
+        if pid and _tj.is_running(pid):
+            self._cellpose_job["pid"] = pid
+            self._cellpose_job["log_path"] = log_path
+            self._ct_launch_btn.setEnabled(False)
+            self._ct_stop_btn.setEnabled(True)
+            self._ct_status_lbl.setText(f"Resumed monitoring PID {pid} (already running).")
+            self._start_cellpose_polling()
 
     def _get_layer_scale(self):
         """

@@ -18,13 +18,17 @@
 7. [Tab 3 — Statistics](#7-tab-3--statistics)
    - [7a. Analysing cells by brain region (optic tectum / hindbrain)](#brain-regions-optional)
    - [7b. Intensity statistics per label](#intensity-statistics-optional)
-8. [Output files and folder structure](#8-output-files-and-folder-structure)
-9. [Statistics CSV — all columns explained](#9-statistics-csv--all-columns-explained)
-10. [Setting up description backends](#10-setting-up-description-backends)
-11. [Full workflow: from raw stack to labelled cells](#11-full-workflow-from-raw-stack-to-labelled-cells)
+8. [Tab 4 — AI Tools](#8-tab-4--ai-tools)
+   - [8a. GT Annotation](#8a-gt-annotation)
+   - [8b. MONAI Training](#8b-monai-training)
+   - [8c. Cellpose-SAM Training](#8c-cellpose-sam-training)
+9. [Output files and folder structure](#9-output-files-and-folder-structure)
+10. [Statistics CSV — all columns explained](#10-statistics-csv--all-columns-explained)
+11. [Setting up description backends](#11-setting-up-description-backends)
+12. [Full workflow: from raw stack to labelled cells](#12-full-workflow-from-raw-stack-to-labelled-cells)
     - [Step 8a. Assign cells to optic tectum / hindbrain](#step-8a--assign-cells-to-brain-regions-optional)
-12. [Reinstalling after an update](#12-reinstalling-after-an-update)
-13. [Troubleshooting](#13-troubleshooting)
+13. [Reinstalling after an update](#13-reinstalling-after-an-update)
+14. [Troubleshooting](#14-troubleshooting)
 
 ---
 
@@ -56,7 +60,7 @@ All dependencies (PyTorch, MONAI, scikit-image, etc.) are installed automaticall
 
 > **Mac with Apple Silicon (M1/M2/M3):** The plugin automatically uses your GPU via Metal (MPS). No extra steps needed.
 
-> **Windows / Linux with NVIDIA GPU:** CUDA is detected and used automatically for Tab 1 inference and Tab 2 GPU-accelerated labelling (`cupy-cuda12x`, which has wheels for both platforms). Tab 3's *fastest* statistics path additionally uses `cucim` for GPU batch regionprops — this only has Linux wheels (RAPIDS/cuCIM has no native Windows build), so on Windows Tab 3 automatically falls back to a CPU-threaded path instead; nothing breaks, statistics just run somewhat slower. See Section 13 for details.
+> **Windows / Linux with NVIDIA GPU:** CUDA is detected and used automatically for Tab 1 inference and Tab 2 GPU-accelerated labelling (`cupy-cuda12x`, which has wheels for both platforms). Tab 3's *fastest* statistics path additionally uses `cucim` for GPU batch regionprops — this only has Linux wheels (RAPIDS/cuCIM has no native Windows build), so on Windows Tab 3 automatically falls back to a CPU-threaded path instead; nothing breaks, statistics just run somewhat slower. See Section 14 for details.
 
 > **No GPU:** Works on CPU too, just slower (~30–60 minutes per stack for inference).
 
@@ -99,7 +103,7 @@ If you don't have a checkpoint yet, use the **Pixel Classifier** instead — it 
 1. Open a terminal and type `napari` to launch it.
 2. In the napari menu bar, click **Plugins**.
 3. Click **Main Panel (ZF-Microglia-AI)**.
-4. A panel appears on the right side with tabs: **Skin Remover**, **Create Labels**, and **Statistics** (Statistics only appears once at least one Labels layer exists in the viewer).
+4. A panel appears on the right side with tabs: **Skin Remover**, **Create Labels**, **Statistics** (only appears once at least one Labels layer exists in the viewer), and **AI Tools** (only appears on a machine with a CUDA GPU with ≥8GB VRAM — see [Section 8](#8-tab-4--ai-tools)).
 
 ---
 
@@ -115,7 +119,7 @@ Click this button to open your confocal stack (`.tif`, `.tiff`, or `.ims` format
   - Channel 2 → magenta
   - Channel 3 → cyan
 - Voxel size (physical scale in µm) is read automatically from the file metadata and applied to all layers.
-- The folder and filename are remembered for automatic output file naming (see Section 7).
+- The folder and filename are remembered for automatic output file naming (see Section 9).
 
 > **Important:** After loading, **click on the channel you want to process** in the Layers panel on the left. The plugin always runs on whichever image layer is currently selected (highlighted). For microglia, this is usually the green channel (ch1).
 
@@ -243,7 +247,7 @@ pixels  > threshold → kept (treated as signal)
 - **Save brain\_only.tif** (checked by default) — saves the brain-only volume with background removed
 - **Save brain\_mask.tif** (checked by default) — saves the binary mask as 0/255 uint8
 
-Both files are saved in the output folder (see Section 7). The `brain_only` filename includes a background-mode suffix:
+Both files are saved in the output folder (see Section 9). The `brain_only` filename includes a background-mode suffix:
 
 | Mode | Suffix | Example filename |
 |------|--------|-----------------|
@@ -425,7 +429,7 @@ A second, separate merge pass for large blobs that got split apart through a thi
 
 Click to start. `do_3D` inference is slow — it can take **hours** for a full-size fish — and runs in a background thread with live status updates, so napari itself stays responsive while it works. When complete, a `*_labels` layer appears, exactly as with the Pixel Classifier.
 
-> If this button errors with `No module named 'cellpose'`, install it in your environment: `pip install cellpose` (already listed in `environment.yml`/`environment-mac.yml` for fresh installs — see Section 13).
+> If this button errors with `No module named 'cellpose'`, install it in your environment: `pip install cellpose` (already listed in `environment.yml`/`environment-mac.yml` for fresh installs — see Section 14).
 
 ---
 
@@ -509,7 +513,7 @@ If the algorithm cannot find N distinct sub-volumes, an error message is shown. 
 
 ### Save Labels
 
-Opens a file-save dialog pre-filled with the output folder (see Section 7) and the current layer name as the filename. Choose a location and filename, then click Save.
+Opens a file-save dialog pre-filled with the output folder (see Section 9) and the current layer name as the filename. Choose a location and filename, then click Save.
 
 Labels are saved as `int32` TIFF. Each voxel value = label number (0 = background).
 
@@ -538,7 +542,7 @@ Selects the engine used to generate the plain-language `description` column in t
 | **OpenAI API (paid)** | Yes | Pay-per-token | GPT-4o-mini recommended for low cost |
 | **Claude API (paid)** | Yes | Pay-per-token | claude-haiku-4-5 recommended for low cost |
 
-See Section 10 for detailed setup instructions for each backend.
+See Section 11 for detailed setup instructions for each backend.
 
 ---
 
@@ -609,15 +613,66 @@ Two additional columns are added to the CSV:
 
 Click to compute. Runs in a background thread. When complete:
 
-- A CSV file is saved to the output folder (see Section 8), named `{source_file_stem}_statistics.csv`.
+- A CSV file is saved to the output folder (see Section 9), named `{source_file_stem}_statistics.csv`.
 - The status line shows how many labels were processed.
 
-The CSV contains one row per label with up to 45 columns depending on which optional features are enabled. See Section 9 for a full description of every column.
-
+The CSV contains one row per label with up to 45 columns depending on which optional features are enabled. See Section 10 for a full description of every column.
 
 ---
 
-## 8. Output files and folder structure
+## 8. Tab 4 — AI Tools
+
+Only appears when the plugin detects a CUDA GPU with **≥8GB VRAM** — checked once when napari starts. This is deliberate, not a bug: this tab launches multi-hour to multi-day training jobs and lets you draw ground-truth annotations, and both of those only make sense together with a GPU capable of actually training on the result. If your machine doesn't qualify, this whole tab — including GT Annotation, which itself needs no GPU — simply doesn't appear, so behavior stays consistent across machines rather than half-working on a CPU-only setup.
+
+A switch at the top of the tab picks one of two mutually-exclusive groups. Only one is shown at a time.
+
+---
+
+### 8a. GT Annotation
+
+Hand-draw polygon boundaries on key slices to create brain/skin ground-truth masks — the manual annotation step that produces training data for the MONAI model.
+
+1. **Image layer** — pick the Image layer to annotate from the dropdown (populated from whatever's open in the viewer — use **Open TIF / IMS file** in Tab 1 first if nothing is loaded yet). Selecting a layer here automatically creates a `brain_polygons` Shapes layer (yellow) if one doesn't already exist.
+2. **Draw polygons** — select the `brain_polygons` layer in the Layers panel, choose napari's polygon tool, and trace the brain boundary on key slices — roughly every 10 slices (e.g. 0, 10, 20, 30...). You don't need to draw every slice: the polygon on slice 90 is automatically propagated to all slices beyond it.
+3. **1. Interpolate Polygons** — smooths and resamples each drawn polygon to 96 points, then interpolates point-to-point between key slices along Z. Produces a `brain_polygons_interpolated` layer (cyan) — review it before continuing.
+4. **2. Generate Masks** — rasterizes the interpolated polygons into a brain mask, saves `brain_mask.tif`, `skin_mask.tif`, `original.tif`, `brain_only.tif`, `skin_only.tif`, and both polygon `.npz` files to `<source_folder>/<source_stem>/` (the same output-folder convention as every other tab — see Section 9). Also adds `brain_mask`, `skin_mask`, and a new `brain_only` layer to the viewer, without touching or hiding any of your other layers.
+
+> **Note:** unlike Tabs 1-3, this section doesn't have its own file-open button — it always annotates whichever file was most recently opened via **Open TIF / IMS file** in Tab 1, matching that same output-folder convention.
+
+---
+
+### 8b. MONAI Training
+
+Prepares training data and launches MONAI U-Net training — the model Tab 1 uses for skin removal.
+
+**Prepare Training Data** converts raw+GT fish folders (the output layout GT Annotation produces) into the HDF5 dataset the trainer needs. Leave the brain/skin directory fields blank to use the training script's own built-in defaults, or list your own comma-separated paths. Takes a few minutes; runs in the background without blocking the UI. On success, auto-fills the Train MONAI section's data directory.
+
+**Train MONAI U-Net** launches the actual training run — configure `epochs`/`batch_size`/`lr`/`patience`/`val_every`/`ckpt_every`/GPU index, optionally point `resume` at an existing checkpoint to continue training instead of starting fresh, then click **Launch Training**. See [How training launches work](#how-training-launches-work) below for what happens next.
+
+---
+
+### 8c. Cellpose-SAM Training
+
+Extracts fine-tuning crops and launches Cellpose-SAM training — the model Tab 2's Cellpose-SAM Segmentation uses.
+
+**Extract Training Crops** reads a `_statistics.csv` (from Tab 3) plus the matching brain_only image and labels TIFFs, and extracts single/double/triple/quadruple bounding-box crops per cell (the cell alone, plus its 1st/2nd/3rd nearest neighbours) — duplicate crops (same cell set) are saved only once. Optionally set `val_cells` (comma-separated cell IDs) for a cell-level train/val split. Takes seconds to a few minutes. On success, auto-fills the Train Cellpose-SAM section's data directory.
+
+**Train Cellpose-SAM** launches fine-tuning — configure `n_epochs`/`batch_size`/`save_every`/`log_every`/`lr`, then click **Launch Training**. The `pretrained` field defaults to whatever checkpoint is already loaded in Tab 2's Cellpose-SAM Segmentation section — i.e. by default this **continues training from where Tab 2 left off**, though you can browse to a different starting checkpoint (or type a builtin name like `cpsam`) if you want to start fresh. `branch_weight`/`branch_radius` control the project's branch-weighted loss (weights thin/branch-tip pixels more heavily during training so the model doesn't under-segment fine processes) — set `branch_weight` to `0` to disable it and use the standard Cellpose loss instead.
+
+---
+
+### How training launches work
+
+Both "Launch Training" buttons (MONAI and Cellpose-SAM) start a **detached background process** rather than running inside napari itself — the command runs via `conda run -n <env> --no-capture-output <script> ...`, launched so it keeps running even if you close napari (technically: `setsid()` on Linux/Mac, `CREATE_NEW_PROCESS_GROUP | DETACHED_PROCESS` on Windows). This works identically on all three platforms without needing `tmux` (which isn't available on Windows at all).
+
+- **Live status** — a log-tail view in the GUI refreshes every 8 seconds (deliberately coarse — there's no benefit to checking more often on an hours-to-days job).
+- **Reopening napari mid-training** — the plugin remembers the running job and automatically reconnects to it, so you don't lose visibility into a training run just because you closed and reopened napari. You'll see "Resumed monitoring PID ..." instead of an empty status.
+- **Stop Training** — kills the training process and everything it spawned (the `conda run` wrapper spawns a child `python` process, and both are terminated together).
+- **If a script isn't found** — the plugin guesses the location of `prepare_data.py`/`train.py`/`train_xzyz.py` based on this project's own folder layout; if that guess is wrong for your setup, override it via the `monai_prepare_script_path`/`monai_train_script_path`/`cellpose_train_script_path` keys in `~/.config/napari-zf-microglia-ai/config.json`.
+
+---
+
+## 9. Output files and folder structure
 
 All files saved by the plugin go into a dedicated folder named after your original input file:
 
@@ -644,7 +699,7 @@ The folder is created the first time a file is saved. If no input file has been 
 
 ---
 
-## 9. Statistics CSV — all columns explained
+## 10. Statistics CSV — all columns explained
 
 The CSV produced by Generate Statistics has one row per label, with up to 45 columns. The first 39 are always present; the remaining columns appear only when the corresponding optional feature is enabled.
 
@@ -786,7 +841,7 @@ These columns use all cell centroids together to compute neighbourhood statistic
 
 ---
 
-## 10. Setting up description backends
+## 11. Setting up description backends
 
 ### Rule-based (offline) — no setup needed
 
@@ -904,7 +959,7 @@ In **Tab 3 — Statistics**:
 
 ---
 
-## 11. Full workflow: from raw stack to labelled cells
+## 12. Full workflow: from raw stack to labelled cells
 
 ### Step 1 — Open your file
 
@@ -1066,7 +1121,7 @@ You can then filter the CSV in Excel or Python by `brain_region` to compare micr
 
 ---
 
-## 12. Reinstalling after an update
+## 13. Reinstalling after an update
 
 ```bash
 pip uninstall napari-zf-microglia-ai -y
@@ -1079,7 +1134,7 @@ Then **fully close and reopen napari**. If napari is running when you reinstall,
 
 ---
 
-## 13. Troubleshooting
+## 14. Troubleshooting
 
 ### `conda env create -f environment.yml` fails on Windows with `Didn't find wheel for cucim-cu12`
 
@@ -1103,6 +1158,18 @@ If you still hit this error:
 
 - Click `[...]` and browse to your `.pth` file.
 - Config path: `~/.config/napari-zf-microglia-ai/config.json`
+
+---
+
+### Tab 4 (AI Tools) doesn't appear
+
+Requires a CUDA GPU with **≥8GB VRAM**, checked once when napari starts — this is deliberate (see Section 8), not a bug. A GPU that's merely CUDA-capable but under 8GB (e.g. a 2GB card) still won't unlock the tab, since it can't realistically run the training jobs it launches.
+
+---
+
+### "Launch Training" errors that a script wasn't found
+
+The plugin guesses the location of `prepare_data.py`/`train.py`/`train_xzyz.py` from this project's own folder layout. If your checkout doesn't match, override the path in `~/.config/napari-zf-microglia-ai/config.json` — keys `monai_prepare_script_path`, `monai_train_script_path`, `cellpose_train_script_path`.
 
 ---
 
@@ -1257,6 +1324,21 @@ Shown automatically based on active layer suffix — `_ExtRm` → Cellpose-SAM, 
 | Boundary lines | Any Shapes layer / None | Assigns cells to named brain regions |
 | Region names | Comma-separated text | Names for each region (N lines → N+1 names) |
 | Generate Statistics | — | Computes up to 45 metrics per label, saves CSV |
+
+### Tab 4 — AI Tools
+
+Only shown with a CUDA GPU with ≥8GB VRAM. Switch at the top picks MONAI or Cellpose-SAM training.
+
+| Control | Default | What it does |
+|---------|---------|--------------|
+| n_val / n_test | 5 / 5 | (MONAI) fish held out for val/test in Prepare Training Data |
+| epochs | 1500 | (MONAI) training length |
+| patience | 50 | (MONAI) val cycles without improvement before early stop |
+| n_epochs | 200 | (Cellpose-SAM) training length |
+| branch_weight | 0 | (Cellpose-SAM) 0 = standard loss; >0 weights thin/branch pixels more heavily |
+| pretrained | Tab 2's checkpoint | (Cellpose-SAM) starting point — "continue training" by default |
+| Launch Training | — | Starts a detached process that survives closing napari; GUI reconnects automatically next time |
+| Stop Training | — | Kills the training process and its children |
 
 ---
 

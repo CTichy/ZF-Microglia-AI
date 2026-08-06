@@ -41,6 +41,10 @@ dependencies:
     - cellpose
     - superqt
 
+    # ── AI Tools (Tab 4 — GT annotation, MONAI/Cellpose-SAM training) ────
+    - pandas
+    - psutil
+
     # ── Napari + plugins ─────────────────────────────────────────────────
     - "napari[all]>=0.5"
     - napari-console
