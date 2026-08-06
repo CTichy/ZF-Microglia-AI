@@ -98,7 +98,7 @@ If you don't have a checkpoint yet, use the **Pixel Classifier** instead — it 
 
 1. Open a terminal and type `napari` to launch it.
 2. In the napari menu bar, click **Plugins**.
-3. Click **ZF-Microglia-AI**.
+3. Click **Main Panel (ZF-Microglia-AI)**.
 4. A panel appears on the right side with tabs: **Skin Remover**, **Create Labels**, and **Statistics** (Statistics only appears once at least one Labels layer exists in the viewer).
 
 ---
@@ -908,7 +908,7 @@ In **Tab 3 — Statistics**:
 
 ### Step 1 — Open your file
 
-1. Open the plugin (Plugins → ZF-Microglia-AI) in napari.
+1. Open the plugin (Plugins → Main Panel (ZF-Microglia-AI)) in napari.
 2. Click **Open TIF / IMS file** and select your confocal stack.
 3. All channels appear as layers.
 4. **Click the microglia channel** (usually ch1, green) in the Layers panel.
