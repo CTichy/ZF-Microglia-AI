@@ -1,4 +1,4 @@
-# MONAI Skin-Remover — Complete User Guide
+# ZF-Microglia-AI — Complete User Guide
 
 **For zebrafish confocal microscopy — step by step, from zero to microglia labels.**
 
@@ -49,7 +49,7 @@ This plugin does two things, in order:
 You need Python with napari already installed. Open a terminal and run:
 
 ```bash
-pip install git+https://github.com/CTichy/napari-skin-remover.git
+pip install git+https://github.com/CTichy/ZF-Microglia-AI.git
 ```
 
 All dependencies (PyTorch, MONAI, scikit-image, etc.) are installed automatically.
@@ -80,7 +80,7 @@ Save the file `best_model_fullstack.pth` anywhere on your computer that is easy 
 
 ```
 Documents/
-└── brain-peel-model/
+└── zf-microglia-ai-model/
     └── best_model_fullstack.pth
 ```
 
@@ -98,7 +98,7 @@ If you don't have a checkpoint yet, use the **Pixel Classifier** instead — it 
 
 1. Open a terminal and type `napari` to launch it.
 2. In the napari menu bar, click **Plugins**.
-3. Click **MONAI Skin-Remover**.
+3. Click **ZF-Microglia-AI**.
 4. A panel appears on the right side with tabs: **Skin Remover**, **Create Labels**, and **Statistics** (Statistics only appears once at least one Labels layer exists in the viewer).
 
 ---
@@ -129,7 +129,7 @@ Shows the path to the AI model file. If it says "— no model selected —":
 2. Navigate to where you saved the model file.
 3. Select `best_model_fullstack.pth` and click Open.
 
-The path is saved automatically to `~/.config/napari-skin-remover/config.json`. Next time you open the plugin, the model is already loaded.
+The path is saved automatically to `~/.config/napari-zf-microglia-ai/config.json`. Next time you open the plugin, the model is already loaded.
 
 ---
 
@@ -856,7 +856,7 @@ Go to [https://platform.openai.com](https://platform.openai.com) and sign up. Yo
 1. Log in to [https://platform.openai.com](https://platform.openai.com).
 2. Click your profile icon (top right) → **API keys**.
 3. Click **+ Create new secret key**.
-4. Give it a name (e.g. "napari-skin-remover").
+4. Give it a name (e.g. "napari-zf-microglia-ai").
 5. Copy the key immediately — it starts with `sk-` and you can only see it once.
 
 **Step 3 — Configure in the plugin**
@@ -908,7 +908,7 @@ In **Tab 3 — Statistics**:
 
 ### Step 1 — Open your file
 
-1. Open the plugin (Plugins → MONAI Skin-Remover) in napari.
+1. Open the plugin (Plugins → ZF-Microglia-AI) in napari.
 2. Click **Open TIF / IMS file** and select your confocal stack.
 3. All channels appear as layers.
 4. **Click the microglia channel** (usually ch1, green) in the Layers panel.
@@ -1069,13 +1069,13 @@ You can then filter the CSV in Excel or Python by `brain_region` to compare micr
 ## 12. Reinstalling after an update
 
 ```bash
-pip uninstall napari-skin-remover -y
-pip install git+https://github.com/CTichy/napari-skin-remover.git
+pip uninstall napari-zf-microglia-ai -y
+pip install git+https://github.com/CTichy/ZF-Microglia-AI.git
 ```
 
 Then **fully close and reopen napari**. If napari is running when you reinstall, it uses the old version until restarted.
 
-> **Your model path and settings are preserved** across reinstalls. The config is stored in `~/.config/napari-skin-remover/config.json`.
+> **Your model path and settings are preserved** across reinstalls. The config is stored in `~/.config/napari-zf-microglia-ai/config.json`.
 
 ---
 
@@ -1095,14 +1095,14 @@ If you still hit this error:
 ### The plugin does not appear in Plugins menu
 
 - Make sure napari is fully closed and reopened after installation.
-- Verify installation: `pip show napari-skin-remover`
+- Verify installation: `pip show napari-zf-microglia-ai`
 
 ---
 
 ### "No model selected" after reinstalling
 
 - Click `[...]` and browse to your `.pth` file.
-- Config path: `~/.config/napari-skin-remover/config.json`
+- Config path: `~/.config/napari-zf-microglia-ai/config.json`
 
 ---
 

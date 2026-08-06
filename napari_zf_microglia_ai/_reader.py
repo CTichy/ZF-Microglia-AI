@@ -1,8 +1,8 @@
 """
 _reader.py — npe2 reader contribution.
 
-Registers napari-brain-peel as a reader for .tif/.tiff/.ims files so they
-can be opened from napari's File menu with correct voxel scale applied.
+Registers napari-zf-microglia-ai as a reader for .tif/.tiff/.ims files so
+they can be opened from napari's File menu with correct voxel scale applied.
 """
 
 from pathlib import Path
@@ -42,7 +42,7 @@ def _read_file(path):
     meta = channels[0][2]
     scale = meta["scale"]
     print(
-        f"   napari-brain-peel reader: {len(channels)} channel(s)"
+        f"   napari-zf-microglia-ai reader: {len(channels)} channel(s)"
         f"  scale Z={scale[0]:.4f}  Y={scale[1]:.4f}  X={scale[2]:.4f} µm"
         f"  ({meta['source']})"
     )

@@ -49,4 +49,4 @@ dependencies:
     - requests
 
     # ── Plugin ───────────────────────────────────────────────────────────
-    - "napari-skin-remover @ git+https://github.com/CTichy/napari-skin-remover.git"
+    - "napari-zf-microglia-ai @ git+https://github.com/CTichy/ZF-Microglia-AI.git"

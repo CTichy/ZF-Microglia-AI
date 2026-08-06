@@ -1,6 +1,6 @@
-# napari-skin-remover
+# ZF-Microglia-AI
 
-A [napari](https://napari.org) plugin for automated 3D brain extraction and microglia labelling from zebrafish confocal stacks using a MONAI 3D U-Net.
+A [napari](https://napari.org) plugin for automated 3D brain extraction and AI-assisted microglia segmentation and analysis from *Danio rerio* (zebrafish) confocal stacks.
 
 Developed at **FH Technikum Wien** — Artificial Intelligence & Data Science.
 
@@ -21,8 +21,8 @@ Given a 3D confocal volume (TIF or IMS), the plugin provides three tabs:
 ### 1. Clone the repository
 
 ```bash
-git clone https://github.com/CTichy/napari-skin-remover.git
-cd napari-skin-remover
+git clone https://github.com/CTichy/ZF-Microglia-AI.git
+cd ZF-Microglia-AI
 ```
 
 ### 2. Create the environment
@@ -44,14 +44,14 @@ conda activate skin-seg
 napari
 ```
 
-Then: **Plugins → MONAI Skin-Remover**
+Then: **Plugins → ZF-Microglia-AI**
 
 ---
 
 ## Updating (subsequent runs)
 
 ```bash
-cd napari-skin-remover
+cd ZF-Microglia-AI
 git pull
 conda env update --name skin-seg -f environment.yml --prune   # or environment-mac.yml on Mac
 ```
@@ -71,7 +71,7 @@ conda env update --name skin-seg -f environment.yml --prune   # or environment-m
 The steps above install a fixed snapshot from GitHub — fine for using the plugin, but source edits won't take effect until you reinstall. For active development, install the local clone in editable mode instead:
 
 ```bash
-cd napari-skin-remover
+cd ZF-Microglia-AI
 conda activate skin-seg
 pip install -e .
 ```
@@ -79,10 +79,10 @@ pip install -e .
 Source edits now take effect the next time napari launches — no reinstall needed. Verify it's picking up the local clone (not a stale `site-packages` copy):
 
 ```bash
-python -c "import napari_skin_remover; print(napari_skin_remover.__file__)"
+python -c "import napari_zf_microglia_ai; print(napari_zf_microglia_ai.__file__)"
 ```
 
-This should print a path inside your cloned `napari-skin-remover/` folder, not inside `site-packages`.
+This should print a path inside your cloned `ZF-Microglia-AI/` folder, not inside `site-packages`.
 
 ---
 

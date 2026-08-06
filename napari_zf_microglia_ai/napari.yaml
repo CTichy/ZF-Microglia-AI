@@ -1,0 +1,20 @@
+name: napari-zf-microglia-ai
+display_name: ZF-Microglia-AI
+contributions:
+  commands:
+    - id: napari-zf-microglia-ai.zf_microglia_ai_widget
+      python_name: napari_zf_microglia_ai._widget:ZFMicrogliaAIWidget
+      title: ZF-Microglia-AI
+    - id: napari-zf-microglia-ai.get_reader
+      python_name: napari_zf_microglia_ai._reader:get_reader
+      title: Open confocal stack (TIF / IMS)
+  widgets:
+    - command: napari-zf-microglia-ai.zf_microglia_ai_widget
+      display_name: ZF-Microglia-AI
+  readers:
+    - command: napari-zf-microglia-ai.get_reader
+      filename_patterns:
+        - "*.tif"
+        - "*.tiff"
+        - "*.ims"
+      accepts_directories: false

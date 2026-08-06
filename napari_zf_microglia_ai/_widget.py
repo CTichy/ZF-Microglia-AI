@@ -1,5 +1,5 @@
 """
-_widget.py — SkinRemoverWidget napari dock panel.
+_widget.py — ZFMicrogliaAIWidget napari dock panel.
 """
 
 import json
@@ -27,7 +27,7 @@ from ._labeling import create_labels, resort_labels, split_label
 from ._statistics import compute_stats
 from ._cellpose_seg import run_full_pipeline as _run_cellpose_pipeline
 
-_CONFIG_PATH = Path.home() / ".config" / "napari-skin-remover" / "config.json"
+_CONFIG_PATH = Path.home() / ".config" / "napari-zf-microglia-ai" / "config.json"
 
 # Suffix added to brain_only filename for each background mode
 _BG_SUFFIX = {
@@ -179,9 +179,10 @@ def _extract_region_lines_um(shapes_lyr):
     return lines
 
 
-class SkinRemoverWidget(QWidget):
+class ZFMicrogliaAIWidget(QWidget):
     """
-    Napari dock panel for MONAI skin removal.
+    Napari dock panel for zebrafish brain extraction, microglia
+    segmentation, and statistics (ZF-Microglia-AI).
 
     Layout
     ------

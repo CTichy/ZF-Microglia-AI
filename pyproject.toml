@@ -3,21 +3,21 @@ requires = ["setuptools>=61", "wheel"]
 build-backend = "setuptools.build_meta"
 
 [project]
-name = "napari-skin-remover"
-version = "0.1.0"
-description = "MONAI Skin-Remover napari plugin — zebrafish confocal skin removal"
+name = "napari-zf-microglia-ai"
+version = "0.2.0"
+description = "ZF-Microglia-AI napari plugin — zebrafish brain extraction, microglia segmentation (Pixel Classifier / Cellpose-SAM), and AI-assisted statistics"
 requires-python = ">=3.8"
 dependencies = ["napari", "monai", "tifffile", "numpy", "qtpy", "superqt", "cellpose"]
 
 [project.scripts]
-skin-remover = "napari_skin_remover.__main__:main"
+zf-microglia-ai = "napari_zf_microglia_ai.__main__:main"
 
 [project.entry-points."napari.manifest"]
-napari-skin-remover = "napari_skin_remover:napari.yaml"
+napari-zf-microglia-ai = "napari_zf_microglia_ai:napari.yaml"
 
 [tool.setuptools.packages.find]
 where = ["."]
-include = ["napari_skin_remover*"]
+include = ["napari_zf_microglia_ai*"]
 
 [tool.setuptools.package-data]
-"napari_skin_remover" = ["napari.yaml"]
+"napari_zf_microglia_ai" = ["napari.yaml"]
