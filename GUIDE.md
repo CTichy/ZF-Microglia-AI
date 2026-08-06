@@ -1088,7 +1088,7 @@ Fixed in the current `environment.yml` (`cucim-cu12` is now Linux-only there —
 If you still hit this error:
 
 - You're on an older clone — `git pull` in the repo folder, then retry.
-- If the environment partially exists from the earlier failed attempt, remove it first: `conda env remove -n skin-seg`, then `conda env create -f environment.yml` again.
+- If the environment partially exists from the earlier failed attempt, remove it first: `conda env remove -n zf-microglia-ai`, then `conda env create -f environment.yml` again.
 
 ---
 
@@ -1197,7 +1197,7 @@ The blob doesn't have a clear separation into the requested number of parts.
 
 ### "Run Cellpose-SAM Segmentation" errors with `No module named 'cellpose'`
 
-Install it in your environment: `pip install cellpose`. Already included in `environment.yml`/`environment-mac.yml` for fresh installs — if you set up your environment before this feature was added, run `conda env update --name skin-seg -f environment.yml --prune` (or `environment-mac.yml`) and reinstall.
+Install it in your environment: `pip install cellpose`. Already included in `environment.yml`/`environment-mac.yml` for fresh installs — if you set up your environment before this feature was added, run `conda env update --name zf-microglia-ai -f environment.yml --prune` (or `environment-mac.yml`) and reinstall.
 
 ---
 

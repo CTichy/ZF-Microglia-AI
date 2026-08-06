@@ -1,4 +1,4 @@
-name: skin-seg
+name: zf-microglia-ai
 channels:
   - nvidia
   - conda-forge

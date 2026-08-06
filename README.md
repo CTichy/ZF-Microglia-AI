@@ -40,7 +40,7 @@ conda env create -f environment-mac.yml
 ### 3. Activate and launch
 
 ```bash
-conda activate skin-seg
+conda activate zf-microglia-ai
 napari
 ```
 
@@ -53,12 +53,12 @@ Then: **Plugins → ZF-Microglia-AI**
 ```bash
 cd ZF-Microglia-AI
 git pull
-conda env update --name skin-seg -f environment.yml --prune   # or environment-mac.yml on Mac
+conda env update --name zf-microglia-ai -f environment.yml --prune   # or environment-mac.yml on Mac
 ```
 
 > **Linux only:** after every `conda env update`, restore the correct torch:
 > ```bash
-> /home/carlos-eduardo-tichy/anaconda3/envs/skin-seg/bin/pip install \
+> /home/carlos-eduardo-tichy/anaconda3/envs/zf-microglia-ai/bin/pip install \
 >   "torch==2.7.0+cu126" "torchvision==0.22.0+cu126" \
 >   --index-url https://download.pytorch.org/whl/cu126
 > ```
@@ -72,7 +72,7 @@ The steps above install a fixed snapshot from GitHub — fine for using the plug
 
 ```bash
 cd ZF-Microglia-AI
-conda activate skin-seg
+conda activate zf-microglia-ai
 pip install -e .
 ```
 
@@ -227,7 +227,7 @@ CSV saved as `<stem>_statistics.csv` in the output folder.
 | `conda env create` fails on Windows with `Didn't find wheel for cucim-cu12` | Fixed as of this `environment.yml` — `cucim-cu12` (Linux/WSL2-only, no Windows wheels) is now Linux-only. `git pull` if you're on an older clone; only Tab 3's GPU-batch stats path needs it, and it falls back to CPU cleanly without it |
 | `.ims` files fail to open | `pip install imaris_ims_file_reader` |
 | `EnvironmentFileNotFound` on `conda env update` | You must `cd` into the repo folder first |
-| "Run Cellpose-SAM Segmentation" errors with `No module named 'cellpose'` | `pip install cellpose` in the `skin-seg` env (already in `environment.yml` for fresh installs) |
+| "Run Cellpose-SAM Segmentation" errors with `No module named 'cellpose'` | `pip install cellpose` in the `zf-microglia-ai` env (already in `environment.yml` for fresh installs) |
 | Neither Tab 2 section shows up | Active layer name must end in `_ExtRm` or `_NoBG` — reselect the correct Tab 1 output layer |
 | Source edits to the plugin don't take effect | You have a non-editable install — see "Developing the plugin" above |
 
