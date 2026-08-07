@@ -4,6 +4,8 @@ A [napari](https://napari.org) plugin for automated 3D brain extraction and AI-a
 
 Developed at **FH Technikum Wien** — Artificial Intelligence & Data Science.
 
+**Documentation:** this README (quick reference) · [GUIDE.md](GUIDE.md) (full user guide, GUIDE.pdf also available) · [STATISTICS_GUIDE.md](STATISTICS_GUIDE.md) (Tab 3 statistics — the algorithm/formula behind every CSV column, STATISTICS_GUIDE.pdf also available)
+
 ---
 
 ## What it does
@@ -217,7 +219,7 @@ Requires a **Cellpose-SAM checkpoint** — this is a project-specific fine-tuned
 
 ## Tab 3 — Statistics
 
-Computes up to 51 features per labelled cell and exports a CSV.
+Computes up to 51 features per labelled cell and exports a CSV. For what each column means, see [GUIDE.md §10](GUIDE.md#10-statistics-csv--all-columns-explained); for the algorithm/formula behind each one, see [STATISTICS_GUIDE.md](STATISTICS_GUIDE.md).
 
 - Select a Labels layer, optionally an Image layer (intensity stats) and a Shapes layer (brain region assignment)
 - Choose output columns via the per-column checklist

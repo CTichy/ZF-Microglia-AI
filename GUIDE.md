@@ -24,7 +24,7 @@
    - [8b. MONAI Training](#8b-monai-training)
    - [8c. Cellpose-SAM Training](#8c-cellpose-sam-training)
 9. [Output files and folder structure](#9-output-files-and-folder-structure)
-10. [Statistics CSV — all columns explained](#10-statistics-csv--all-columns-explained)
+10. [Statistics CSV — all columns explained](#10-statistics-csv--all-columns-explained) — for the algorithm/formula behind each column instead, see the separate [STATISTICS_GUIDE.md](STATISTICS_GUIDE.md)
 11. [Setting up description backends](#11-setting-up-description-backends)
     - [11a. Setting up email notification (Gmail App Password)](#11a-setting-up-email-notification-gmail-app-password)
 12. [Full workflow: from raw stack to labelled cells](#12-full-workflow-from-raw-stack-to-labelled-cells)
@@ -632,6 +632,8 @@ Labels are saved as `int32` TIFF. Each voxel value = label number (0 = backgroun
 
 This tab computes a comprehensive set of morphological, spatial, intensity, and brain-region measurements for every label and saves them to a CSV file. It is intentionally separate from Tab 2 so there is room to configure all options comfortably before clicking Generate.
 
+For what each output column means, see [Section 10](#10-statistics-csv--all-columns-explained) below. For the algorithm/formula/library behind each one — useful if you're auditing a result or citing the method — see the separate [STATISTICS_GUIDE.md](STATISTICS_GUIDE.md).
+
 > Make sure a Labels layer is selected in napari before using this tab.
 
 ---
@@ -868,7 +870,7 @@ The folder is created the first time a file is saved. If no input file has been 
 
 ## 10. Statistics CSV — all columns explained
 
-The CSV produced by Generate Statistics has one row per label, with up to 45 columns. The first 39 are always present; the remaining columns appear only when the corresponding optional feature is enabled.
+The CSV produced by Generate Statistics has one row per label, with up to 51 columns. 46 are always present; the remaining columns appear only when the corresponding optional feature is enabled. This section explains what each column *means*; for the algorithm/formula/library behind each one, see the separate [STATISTICS_GUIDE.md](STATISTICS_GUIDE.md).
 
 ---
 
