@@ -105,7 +105,7 @@ If you don't have a checkpoint yet, use the **Pixel Classifier** instead — it 
 1. Open a terminal and type `napari` to launch it.
 2. In the napari menu bar, click **Plugins**.
 3. Click **Main Panel (ZF-Microglia-AI)**.
-4. A panel appears on the right side with tabs: **Skin Remover**, **Create Labels**, **Statistics** (only appears once at least one Labels layer exists in the viewer), and **AI Tools** (only appears on a machine with a CUDA GPU with ≥8GB VRAM — see [Section 8](#8-tab-4--ai-tools)).
+4. A panel appears on the right side with tabs: **Skin Remover**, **Create Labels**, **Statistics** (only appears once at least one Labels layer exists in the viewer), and **AI Tools** (always available — shows a disclaimer instead of hiding the tab if your GPU is missing or under the recommended 8GB, see [Section 8](#8-tab-4--ai-tools)).
 
 ---
 
@@ -718,7 +718,15 @@ This is a genuinely different tool from the three GT-sweep tools elsewhere in th
 
 ## 8. Tab 4 — AI Tools
 
-Only appears when the plugin detects a CUDA GPU with **≥8GB VRAM** — checked once when napari starts. This is deliberate, not a bug: this tab launches multi-hour to multi-day training jobs and lets you draw ground-truth annotations, and both of those only make sense together with a GPU capable of actually training on the result. If your machine doesn't qualify, this whole tab — including GT Annotation, which itself needs no GPU — simply doesn't appear, so behavior stays consistent across machines rather than half-working on a CPU-only setup.
+Always visible, regardless of GPU. A banner at the top reports your GPU situation and adjusts its tone accordingly — checked once when napari starts:
+
+| Situation | Banner |
+|-----------|--------|
+| No CUDA GPU detected | Red, bold: training/inference will run on CPU — can take **days to months** for a full run instead of hours. Still usable for small experiments. |
+| CUDA GPU present, under 8GB VRAM | Amber, bold: training may still work with a **reduced `batch_size`** (try 2, or even 1) but could be slow or hit out-of-memory errors. |
+| CUDA GPU present, ≥8GB VRAM | Green, quiet confirmation — no action needed. |
+
+This used to be a hard gate — the whole tab was hidden below 8GB VRAM. Changed deliberately: a smaller GPU, or none at all, doesn't mean the tools are useless, just slower, or in need of a smaller `batch_size`. GT Annotation itself has never needed a GPU either way.
 
 ### Email notification (optional, shared by both groups)
 
@@ -1343,9 +1351,9 @@ If you still hit this error:
 
 ---
 
-### Tab 4 (AI Tools) doesn't appear
+### Tab 4 (AI Tools) is showing a red or amber warning banner
 
-Requires a CUDA GPU with **≥8GB VRAM**, checked once when napari starts — this is deliberate (see Section 8), not a bug. A GPU that's merely CUDA-capable but under 8GB (e.g. a 2GB card) still won't unlock the tab, since it can't realistically run the training jobs it launches.
+This is expected, not an error — see Section 8. The tab is always available regardless of GPU; the banner just tells you what to expect. No CUDA GPU means CPU fallback (days-months for a full training run instead of hours); a GPU under 8GB may still work with a lower `batch_size` (try 2, or even 1) before assuming something else is wrong.
 
 ---
 
@@ -1514,7 +1522,7 @@ Shown automatically based on active layer suffix — `_ExtRm` → Cellpose-SAM, 
 
 ### Tab 4 — AI Tools
 
-Only shown with a CUDA GPU with ≥8GB VRAM. Switch at the top picks MONAI or Cellpose-SAM training.
+Always shown — a banner at the top warns if your GPU is missing or under the recommended 8GB (see Section 8), but doesn't block anything. Switch below it picks MONAI or Cellpose-SAM training.
 
 | Control | Default | What it does |
 |---------|---------|--------------|

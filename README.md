@@ -13,7 +13,7 @@ Given a 3D confocal volume (TIF or IMS), the plugin provides four tabs:
 - **Tab 1 — Skin Remover:** runs a trained MONAI U-Net to predict the brain mask, removes the skin, and saves `brain_mask.tif` + `brain_only.tif`
 - **Tab 2 — Create Labels:** two interchangeable ways to detect and label individual microglia in 3D — a **Pixel Classifier** (Gaussian smooth → threshold → overlap-based union-find 3D stitching → volume filter) and a **Cellpose-SAM Segmentation** pipeline (`do_3D` inference → 3-component GMM cleanup → Krendl safe-merge → large-contact merge). The tab automatically shows whichever one matches your active layer's background-removal mode (see below) — no manual switching needed.
 - **Tab 3 — Statistics:** computes up to 51 morphological, spatial, and intensity features per labelled cell and exports a CSV. Only shown once at least one Labels layer exists.
-- **Tab 4 — AI Tools:** ground-truth polygon annotation plus launchers for MONAI and Cellpose-SAM training (dataset prep/crop extraction, hours-to-days training runs that survive napari closing). Only shown on a machine with a CUDA GPU with ≥8GB VRAM — see below.
+- **Tab 4 — AI Tools:** ground-truth polygon annotation plus launchers for MONAI and Cellpose-SAM training (dataset prep/crop extraction, hours-to-days training runs that survive napari closing). Always available — shows a disclaimer banner instead of hiding if your GPU is missing or under the recommended 8GB — see below.
 
 ---
 
@@ -216,7 +216,7 @@ CSV saved as `<stem>_statistics.csv` in the output folder.
 
 ## Tab 4 — AI Tools
 
-Only appears when a CUDA GPU with **≥8GB VRAM** is detected (checked once at plugin startup) — this includes GT annotation, even though it itself needs no GPU, so the tab behaves consistently across machines instead of half-working on CPU-only setups. If hidden, none of this tab's functionality is reachable from the GUI.
+Always visible, regardless of GPU (checked once at plugin startup). A banner at the top adjusts to your GPU situation instead of hiding the tab: red/bold with no CUDA GPU ("CPU fallback — days to months for a full training run instead of hours"), amber/bold with a GPU under the recommended 8GB ("may still work with a reduced `batch_size`"), or a quiet green confirmation once the recommendation is met. GT Annotation has never needed a GPU either way. This used to be a hard gate that hid the whole tab below 8GB VRAM — changed deliberately, since a smaller or absent GPU doesn't make the tools useless, just slower or in need of a smaller `batch_size`.
 
 An **Email notification (optional)** panel sits above the switch, shared by both groups: fill in a recipient address + SMTP server/port/username/password to get one email whenever a training run stops (finishes, crashes, or gets early-stopped). Leave the address blank to disable it (the default). The password is never persisted to disk, same policy as the LLM API key in Tab 3 — you'll re-enter it once per napari session. See [How training launches work](#how-training-launches-work) below for why this still works even if napari is never reopened.
 
@@ -286,7 +286,7 @@ Both "Launch Training" buttons start a **detached background process** — `cond
 | "Run Cellpose-SAM Segmentation" errors with `No module named 'cellpose'` | `pip install cellpose` in the `zf-microglia-ai` env (already in `environment.yml` for fresh installs) |
 | Neither Tab 2 section shows up | Active layer name must end in `_ExtRm` or `_NoBG` — reselect the correct Tab 1 output layer |
 | Source edits to the plugin don't take effect | You have a non-editable install — see "Developing the plugin" above |
-| Tab 4 (AI Tools) doesn't appear | Requires a CUDA GPU with ≥8GB VRAM, checked once at startup — this is deliberate, not a bug (see Tab 4 section above) |
+| Tab 4 (AI Tools) shows a red/amber banner | Expected, not an error — the tab is always available regardless of GPU; the banner just sets expectations (CPU fallback, or try a lower `batch_size`) — see Tab 4 section above |
 | Tab 4's "Launch Training" buttons error with script-not-found | The plugin's guessed script path is wrong for your layout — override it in `~/.config/napari-zf-microglia-ai/config.json` (see "Training scripts" above) |
 
 ---
