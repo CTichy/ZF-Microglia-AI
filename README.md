@@ -128,7 +128,7 @@ All numeric sliders in this plugin are directly editable — click the number bo
 | Parameter | Default | Notes |
 |-----------|---------|-------|
 | MONAI Threshold | 0.25 | Sigmoid cutoff. Keep low — post-processing cleans the rest. |
-| Erosion | 0 vox | Strips skin rim from `brain_only`. `brain_mask` always saved un-eroded. |
+| Erosion | 0 vox | Strips skin rim from `brain_only`. `brain_mask` always saved un-eroded. Composes correctly with any Background mode — a prior version silently discarded Erosion whenever a Background mode was active, fixed as of this version. |
 | Background mode | Off | 1 for Cellpose-SAM, 2 for Pixel Classifier (see Tab 2) |
 | BG Threshold | 1.40 | Validated for microglia stacks |
 
@@ -168,6 +168,8 @@ Fully self-contained: Gaussian smooth → threshold → per-slice 2D connected c
 | Smooth σ Z | 3.0 |
 | Min overlap (%) | 10 |
 | Min volume (vox) | 7500 |
+
+**Verify BG Threshold / Erosion (GT Sweep)** — same idea as Tab 4's "Verify Best Epoch," for this path instead: sweeps Tab 1's BG Threshold x Erosion (Background mode 2) against the N most complex cells in a GT-annotated fish, scoring each grid point's resulting Pixel Classifier labels against GT. Doesn't re-run MONAI inference (takes an already-computed `brain_mask.tif` as input), so a full grid finishes in minutes and works without a GPU (Create Labels already has a CPU fallback). Reports a 2D grid (Erosion x BG Threshold) with your current slider values marked. Depends on Erosion and BG Threshold actually composing in Tab 1's pipeline (see the Erosion row above) — a sweep run on an older build would show Erosion having no effect.
 
 ### Cellpose-SAM Segmentation
 

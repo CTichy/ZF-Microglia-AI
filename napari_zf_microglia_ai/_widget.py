@@ -29,6 +29,7 @@ from ._background import remove_outside_brain, remove_global, fill_outside_brain
 from ._labeling import create_labels, resort_labels, split_label
 from ._statistics import compute_stats
 from ._cellpose_seg import run_full_pipeline as _run_cellpose_pipeline
+from . import _pixel_sweep as _psw
 from ._gpu_check import GPU_OK, GPU_MSG
 if GPU_OK:
     from . import _gt_annotation as _gt
@@ -463,6 +464,156 @@ class ZFMicrogliaAIWidget(QWidget):
 
         self._pixel_classifier_group.setLayout(pcg)
         t2.addWidget(self._pixel_classifier_group)
+
+        # ── Verify BG Threshold / Erosion (GT sweep) — always visible, ──
+        # not tied to the active-layer auto-switch above: it works from
+        # explicit file paths, not the current viewer selection, and no
+        # GPU is required (Create Labels already has a CPU fallback), so
+        # it isn't grouped with Tab 4's GPU-gated tools either.
+        psg = QGroupBox("Verify BG Threshold / Erosion (GT Sweep)")
+        psl = QVBoxLayout()
+        psl.setSpacing(6)
+
+        ps_note = QLabel(
+            "Sweeps Tab 1's BG Threshold x Erosion (Background mode 2 — "
+            "\"Remove globally\") against the N most morphologically complex "
+            "cells in a ground-truth-annotated fish, using this section's own "
+            "σ XY / σ Z / Min volume above. Doesn't re-run MONAI inference — "
+            "needs a pre-computed brain_mask.tif from a normal Tab 1 run."
+        )
+        ps_note.setWordWrap(True)
+        ps_note.setStyleSheet("color: #888; font-size: 10px;")
+        psl.addWidget(ps_note)
+
+        ps_img_row = QHBoxLayout()
+        ps_img_row.addWidget(QLabel("GT image:"))
+        self._ps_img_edit = QLineEdit("")
+        ps_img_row.addWidget(self._ps_img_edit)
+        self._ps_img_browse_btn = QPushButton("...")
+        self._ps_img_browse_btn.setFixedWidth(32)
+        ps_img_row.addWidget(self._ps_img_browse_btn)
+        psl.addLayout(ps_img_row)
+
+        ps_mask_row = QHBoxLayout()
+        ps_mask_row.addWidget(QLabel("brain_mask.tif:"))
+        self._ps_mask_edit = QLineEdit("")
+        ps_mask_row.addWidget(self._ps_mask_edit)
+        self._ps_mask_browse_btn = QPushButton("...")
+        self._ps_mask_browse_btn.setFixedWidth(32)
+        ps_mask_row.addWidget(self._ps_mask_browse_btn)
+        psl.addLayout(ps_mask_row)
+
+        ps_lbl_row = QHBoxLayout()
+        ps_lbl_row.addWidget(QLabel("GT labels:"))
+        self._ps_lbl_edit = QLineEdit("")
+        ps_lbl_row.addWidget(self._ps_lbl_edit)
+        self._ps_lbl_browse_btn = QPushButton("...")
+        self._ps_lbl_browse_btn.setFixedWidth(32)
+        ps_lbl_row.addWidget(self._ps_lbl_browse_btn)
+        psl.addLayout(ps_lbl_row)
+        ps_gt_note = QLabel(
+            "  brain_mask.tif = the RAW (un-eroded) mask Tab 1 saves — same "
+            "fish as GT image/labels."
+        )
+        ps_gt_note.setStyleSheet("color: #aaa; font-size: 10px;")
+        ps_gt_note.setWordWrap(True)
+        psl.addWidget(ps_gt_note)
+
+        ps_bg_row = QHBoxLayout()
+        ps_bg_row.addWidget(QLabel("BG Threshold min:"))
+        self._ps_bgmin_spin = QDoubleSpinBox()
+        self._ps_bgmin_spin.setDecimals(2)
+        self._ps_bgmin_spin.setRange(0.0, 2.0)
+        self._ps_bgmin_spin.setValue(1.0)
+        ps_bg_row.addWidget(self._ps_bgmin_spin)
+        ps_bg_row.addWidget(QLabel("max:"))
+        self._ps_bgmax_spin = QDoubleSpinBox()
+        self._ps_bgmax_spin.setDecimals(2)
+        self._ps_bgmax_spin.setRange(0.0, 2.0)
+        self._ps_bgmax_spin.setValue(1.8)
+        ps_bg_row.addWidget(self._ps_bgmax_spin)
+        ps_bg_row.addWidget(QLabel("step:"))
+        self._ps_bgstep_spin = QDoubleSpinBox()
+        self._ps_bgstep_spin.setDecimals(2)
+        self._ps_bgstep_spin.setRange(0.01, 2.0)
+        self._ps_bgstep_spin.setValue(0.2)
+        ps_bg_row.addWidget(self._ps_bgstep_spin)
+        psl.addLayout(ps_bg_row)
+
+        ps_er_row = QHBoxLayout()
+        ps_er_row.addWidget(QLabel("Erosion min:"))
+        self._ps_ermin_spin = QSpinBox()
+        self._ps_ermin_spin.setRange(0, 15)
+        self._ps_ermin_spin.setValue(0)
+        ps_er_row.addWidget(self._ps_ermin_spin)
+        ps_er_row.addWidget(QLabel("max:"))
+        self._ps_ermax_spin = QSpinBox()
+        self._ps_ermax_spin.setRange(0, 15)
+        self._ps_ermax_spin.setValue(4)
+        ps_er_row.addWidget(self._ps_ermax_spin)
+        ps_er_row.addWidget(QLabel("step:"))
+        self._ps_erstep_spin = QSpinBox()
+        self._ps_erstep_spin.setRange(1, 15)
+        self._ps_erstep_spin.setValue(1)
+        ps_er_row.addWidget(self._ps_erstep_spin)
+        psl.addLayout(ps_er_row)
+
+        ps_cells_row = QHBoxLayout()
+        ps_cells_row.addWidget(QLabel("Complex cells to test:"))
+        self._ps_ncells_spin = QSpinBox()
+        self._ps_ncells_spin.setRange(1, 50)
+        self._ps_ncells_spin.setValue(5)
+        ps_cells_row.addWidget(self._ps_ncells_spin)
+        ps_cells_row.addWidget(QLabel("Pad Z:"))
+        self._ps_padz_spin = QSpinBox()
+        self._ps_padz_spin.setRange(0, 200)
+        self._ps_padz_spin.setValue(15)
+        ps_cells_row.addWidget(self._ps_padz_spin)
+        ps_cells_row.addWidget(QLabel("Pad XY:"))
+        self._ps_padxy_spin = QSpinBox()
+        self._ps_padxy_spin.setRange(0, 500)
+        self._ps_padxy_spin.setValue(40)
+        ps_cells_row.addWidget(self._ps_padxy_spin)
+        psl.addLayout(ps_cells_row)
+
+        ps_scale_row = QHBoxLayout()
+        ps_scale_row.addWidget(QLabel("Voxel scale Z (µm):"))
+        self._ps_scalez_spin = QDoubleSpinBox()
+        self._ps_scalez_spin.setDecimals(4)
+        self._ps_scalez_spin.setRange(0.0001, 100.0)
+        self._ps_scalez_spin.setValue(1.0)
+        ps_scale_row.addWidget(self._ps_scalez_spin)
+        ps_scale_row.addWidget(QLabel("XY (µm):"))
+        self._ps_scalexy_spin = QDoubleSpinBox()
+        self._ps_scalexy_spin.setDecimals(4)
+        self._ps_scalexy_spin.setRange(0.0001, 100.0)
+        self._ps_scalexy_spin.setValue(0.174)
+        ps_scale_row.addWidget(self._ps_scalexy_spin)
+        psl.addLayout(ps_scale_row)
+
+        ps_btn_row = QHBoxLayout()
+        self._ps_run_btn = QPushButton("Run BG/Erosion Sweep")
+        self._ps_run_btn.setStyleSheet("QPushButton { font-weight: bold; padding: 5px; }")
+        ps_btn_row.addWidget(self._ps_run_btn)
+        self._ps_stop_btn = QPushButton("Stop Sweep")
+        self._ps_stop_btn.setEnabled(False)
+        ps_btn_row.addWidget(self._ps_stop_btn)
+        psl.addLayout(ps_btn_row)
+
+        self._ps_status_lbl = QLabel("")
+        self._ps_status_lbl.setWordWrap(True)
+        psl.addWidget(self._ps_status_lbl)
+
+        self._ps_report_view = QTextEdit()
+        self._ps_report_view.setReadOnly(True)
+        self._ps_report_view.setStyleSheet("font-family: monospace; font-size: 9px;")
+        self._ps_report_view.setFixedHeight(160)
+        psl.addWidget(self._ps_report_view)
+
+        psg.setLayout(psl)
+        t2.addWidget(psg)
+
+        self._pixel_sweep_job = {"thread": None, "cancel_event": None, "timer": None}
 
         # ── Cellpose-SAM segmentation (do_3D + Krendl corrections) — shown for _ExtRm layers ── #
         self._cellpose_group = QGroupBox("Cellpose-SAM Segmentation")
@@ -1588,6 +1739,11 @@ class ZFMicrogliaAIWidget(QWidget):
         self._bg_group.buttonClicked.connect(self._on_bg_mode_changed)
         self._run_btn.clicked.connect(self._on_run)
         self._labels_btn.clicked.connect(self._on_create_labels)
+        self._ps_img_browse_btn.clicked.connect(self._on_ps_browse_img)
+        self._ps_mask_browse_btn.clicked.connect(self._on_ps_browse_mask)
+        self._ps_lbl_browse_btn.clicked.connect(self._on_ps_browse_lbl)
+        self._ps_run_btn.clicked.connect(self._on_ps_run_sweep)
+        self._ps_stop_btn.clicked.connect(self._on_ps_stop_sweep)
         self._cp_model_browse_btn.clicked.connect(self._on_browse_cp_model)
         self._cp_run_btn.clicked.connect(self._on_run_cellpose_seg)
         self._resort_btn.clicked.connect(self._on_resort_labels)
@@ -3240,6 +3396,155 @@ class ZFMicrogliaAIWidget(QWidget):
 
         timer.timeout.connect(_poll)
         timer.start(500)
+
+    def _on_ps_browse_img(self):
+        path_str, _ = QFileDialog.getOpenFileName(self, "Select GT fish's image", "", "TIFF files (*.tif *.tiff)")
+        if path_str:
+            self._ps_img_edit.setText(path_str)
+
+    def _on_ps_browse_mask(self):
+        path_str, _ = QFileDialog.getOpenFileName(self, "Select brain_mask.tif (raw, un-eroded)", "", "TIFF files (*.tif *.tiff)")
+        if path_str:
+            self._ps_mask_edit.setText(path_str)
+
+    def _on_ps_browse_lbl(self):
+        path_str, _ = QFileDialog.getOpenFileName(self, "Select GT label volume", "", "TIFF files (*.tif *.tiff)")
+        if path_str:
+            self._ps_lbl_edit.setText(path_str)
+
+    def _on_ps_run_sweep(self):
+        if self._pixel_sweep_job.get("thread") and self._pixel_sweep_job["thread"].is_alive():
+            self._ps_status_lbl.setText("A sweep is already running.")
+            return
+
+        img_path = self._ps_img_edit.text().strip()
+        mask_path = self._ps_mask_edit.text().strip()
+        lbl_path = self._ps_lbl_edit.text().strip()
+        if not (img_path and mask_path and lbl_path):
+            self._ps_status_lbl.setText("ERROR: set GT image, brain_mask.tif, and GT labels paths first.")
+            return
+        for label_str, p in (("GT image", img_path), ("brain_mask.tif", mask_path), ("GT labels", lbl_path)):
+            if not Path(p).exists():
+                self._ps_status_lbl.setText(f"ERROR: {label_str} not found: {p}")
+                return
+
+        bg_min = self._ps_bgmin_spin.value()
+        bg_max = self._ps_bgmax_spin.value()
+        bg_step = self._ps_bgstep_spin.value()
+        if bg_max < bg_min:
+            self._ps_status_lbl.setText("ERROR: BG Threshold max must be >= min.")
+            return
+        bg_thresholds = list(np.round(np.arange(bg_min, bg_max + bg_step / 2, bg_step), 4))
+
+        er_min = self._ps_ermin_spin.value()
+        er_max = self._ps_ermax_spin.value()
+        er_step = self._ps_erstep_spin.value()
+        if er_max < er_min:
+            self._ps_status_lbl.setText("ERROR: Erosion max must be >= min.")
+            return
+        erosions = list(range(er_min, er_max + 1, er_step))
+
+        scale_zyx = (self._ps_scalez_spin.value(), self._ps_scalexy_spin.value(), self._ps_scalexy_spin.value())
+        sigma_xy = self._sxy_slider.value()
+        sigma_z = self._sz_slider.value()
+        min_volume = self._area_slider.value()
+        n_cells = self._ps_ncells_spin.value()
+        pad_z = self._ps_padz_spin.value()
+        pad_xy = self._ps_padxy_spin.value()
+        current_bg = self._tol_slider.value()
+        current_erosion = self._erosion_slider.value()
+
+        cancel_event = threading.Event()
+        result = {}
+        progress = {"lines": []}
+        progress_lock = threading.Lock()
+
+        def _progress_cb(msg):
+            with progress_lock:
+                progress["lines"].append(msg)
+
+        def _worker():
+            try:
+                sweep = _psw.run_pixel_sweep(
+                    img_path, mask_path, lbl_path, bg_thresholds, erosions, scale_zyx,
+                    sigma_xy=sigma_xy, sigma_z=sigma_z, min_volume=min_volume,
+                    n_cells=n_cells, pad_z=pad_z, pad_xy=pad_xy,
+                    progress_cb=_progress_cb, cancel_event=cancel_event,
+                )
+                result["sweep"] = sweep
+            except Exception as exc:
+                result["error"] = f"{exc}\n{traceback.format_exc()}"
+
+        thread = threading.Thread(target=_worker, daemon=True)
+        self._pixel_sweep_job["thread"] = thread
+        self._pixel_sweep_job["cancel_event"] = cancel_event
+        self._pixel_sweep_job["result"] = result
+        self._pixel_sweep_job["progress"] = progress
+        self._pixel_sweep_job["progress_lock"] = progress_lock
+        self._pixel_sweep_job["current_bg"] = current_bg
+        self._pixel_sweep_job["current_erosion"] = current_erosion
+        self._ps_run_btn.setEnabled(False)
+        self._ps_stop_btn.setEnabled(True)
+        self._ps_report_view.clear()
+        self._ps_status_lbl.setText(
+            f"Sweeping {len(bg_thresholds)} BG Threshold x {len(erosions)} Erosion "
+            f"values across up to {n_cells} cells ..."
+        )
+        thread.start()
+        self._start_pixel_sweep_polling()
+
+    def _on_ps_stop_sweep(self):
+        cancel_event = self._pixel_sweep_job.get("cancel_event")
+        if cancel_event:
+            cancel_event.set()
+        self._ps_status_lbl.setText("Cancelling — finishing the current grid point, then stopping...")
+        self._ps_stop_btn.setEnabled(False)
+
+    def _start_pixel_sweep_polling(self):
+        """Same fast (500ms) poll and non-detached, doesn't-survive-napari-
+        closing contract as _start_epoch_sweep_polling — see its docstring."""
+        timer = QTimer(self)
+        job = self._pixel_sweep_job
+
+        def _poll():
+            with job["progress_lock"]:
+                lines = list(job["progress"]["lines"])
+                job["progress"]["lines"].clear()
+            if lines:
+                self._ps_report_view.append("\n".join(lines))
+                sb = self._ps_report_view.verticalScrollBar()
+                sb.setValue(sb.maximum())
+
+            if job["thread"].is_alive():
+                return
+            timer.stop()
+            job["timer"] = None
+            self._ps_run_btn.setEnabled(True)
+            self._ps_stop_btn.setEnabled(False)
+
+            result = job["result"]
+            if "error" in result:
+                self._ps_status_lbl.setText(f"ERROR during sweep: {result['error'].splitlines()[0]}")
+                self._ps_report_view.append("\n" + result["error"])
+                return
+
+            sweep = result["sweep"]
+            report = _psw.format_pixel_sweep_report(sweep, job["current_bg"], job["current_erosion"])
+            self._ps_report_view.setPlainText(report)
+            if sweep.get("cancelled"):
+                self._ps_status_lbl.setText("Sweep cancelled — partial results above.")
+            elif sweep["best_point"] is not None:
+                best_bt, best_er = sweep["best_point"]
+                self._ps_status_lbl.setText(
+                    f"Best: BG Threshold={best_bt}, Erosion={best_er} "
+                    f"(avg IoU={sweep['per_point_avg'][sweep['best_point']]['iou']:.1f}%)."
+                )
+            else:
+                self._ps_status_lbl.setText("Sweep finished but no grid points could be scored.")
+
+        timer.timeout.connect(_poll)
+        timer.start(500)
+        job["timer"] = timer
 
     def _on_run_cellpose_seg(self):
         target = self._active_layer()

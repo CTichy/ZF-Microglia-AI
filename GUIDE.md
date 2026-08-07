@@ -387,6 +387,24 @@ When done, a `*_labels` layer appears in napari with each detected cell shown in
 
 ---
 
+### Verify BG Threshold / Erosion (GT Sweep)
+
+Answers the same kind of question as Tab 4's "Verify Best Epoch" tool, but for the Pixel Classifier path instead of Cellpose-SAM: is the current **BG Threshold** (Tab 1) and **Erosion** (Tab 1) combination actually the one that produces microglia labels closest to ground truth, or does a nearby combination do better?
+
+1. **GT image** — the full-fish raw/brain_only image, same one Tab 1 ran on.
+2. **brain_mask.tif** — the *raw* (un-eroded) mask Tab 1 saves. MONAI inference itself is **not** re-run by this sweep — it only varies what happens *after* inference (erosion, background thresholding, labelling), so it needs an already-computed mask from a normal Tab 1 run rather than the model checkpoint.
+3. **GT labels** — the corrected ground-truth microglia label volume for that fish.
+4. **BG Threshold min/max/step** and **Erosion min/max/step** — define the grid. Defaults (1.0–1.8 step 0.2, 0–4 step 1) span 5×5=25 points centered loosely on the recommended BG Threshold.
+5. Click **Run BG/Erosion Sweep**. For each grid point, it: finds the N most complex GT cells (same branch-count ranking as the Cellpose-SAM sweep, computed once), applies that erosion + BG Threshold to each cell's cropped region, runs Create Labels (using this section's own σ XY / σ Z / Min volume above) on the crop, and best-IoU-matches the result against GT.
+
+This sweep is considerably cheaper than the Cellpose-SAM one: MONAI inference only ever runs once (outside this tool, via a normal Tab 1 run), and neither Erosion nor BG Threshold require reloading a model — Erosion is a cheap morphological operation and the background "mode" statistic is computed once per erosion value, not once per grid point. A full 25-point grid typically finishes in minutes. It also runs on CPU if no GPU is present (Create Labels already has a CPU fallback), unlike the Cellpose-SAM sweep.
+
+The report is a 2D grid (rows = Erosion, columns = BG Threshold, cells = average IoU%), with your current Tab 1 slider values marked and compared against whatever the sweep found best. As with the Cellpose-SAM sweep, a disagreement is reported clearly but nothing gets changed automatically — only a handful of cells and grid points are tested.
+
+> This tool depends on Erosion and BG Threshold actually composing correctly in Tab 1's own pipeline. An earlier version of `_on_run` silently discarded Erosion whenever any Background mode was active (the final mask always used the raw, un-eroded mask in that code path) — fixed as of this version, so Erosion now has a real, sweepable effect in the recommended Background mode 2 workflow this tool targets.
+
+---
+
 ### 6c. Cellpose-SAM Segmentation
 
 Shown when the active layer ends in `_ExtRm` (background removed only outside the brain — the interior is left intact for Cellpose-SAM to see). Runs `do_3D` Cellpose-SAM inference, then a 3-component-GMM cleanup pass, a Krendl safe-merge pass (rejoins sub-threshold fragments based on gap size and contact area), and a large-contact merge pass (catches cells accidentally split through a thick junction).
@@ -1379,6 +1397,7 @@ Shown automatically based on active layer suffix — `_ExtRm` → Cellpose-SAM, 
 | Smooth σ Z | 3.0 | Cross-slice blob connectivity |
 | Min overlap | 10% | Overlap needed to link blobs across slices |
 | Min volume | 7500 | Minimum voxels to keep a 3D object |
+| Verify BG Threshold / Erosion (GT Sweep) | 5x5 grid | Confirms current BG Threshold/Erosion against real GT IoU — CPU-OK, doesn't survive closing napari |
 
 **Cellpose-SAM Segmentation**
 
