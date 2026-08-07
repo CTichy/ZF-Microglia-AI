@@ -11,7 +11,7 @@ Developed at **FH Technikum Wien** — Artificial Intelligence & Data Science.
 Given a 3D confocal volume (TIF or IMS), the plugin provides four tabs:
 
 - **Tab 1 — Skin Remover:** runs a trained MONAI U-Net to predict the brain mask, removes the skin, and saves `brain_mask.tif` + `brain_only.tif`
-- **Tab 2 — Create Labels:** two interchangeable ways to detect and label individual microglia in 3D — a **Pixel Classifier** (Gaussian smooth → threshold → overlap-based union-find 3D stitching → volume filter) and a **Cellpose-SAM Segmentation** pipeline (`do_3D` inference → 3-component GMM cleanup → Krendl safe-merge → large-contact merge). The tab automatically shows whichever one matches your active layer's background-removal mode (see below) — no manual switching needed.
+- **Tab 2 — Create Labels:** two ways to detect and label individual microglia in 3D. **Cellpose-SAM Segmentation** (`do_3D` inference → 3-component GMM cleanup → Krendl safe-merge → large-contact merge) is the recommended path — a fine-tuned foundation model that handles branching/overlapping cells far better than classical thresholding. The **Pixel Classifier** (Gaussian smooth → threshold → overlap-based union-find 3D stitching → volume filter) is a lighter, older-technology fallback for machines with no GPU at all. The tab automatically shows whichever one matches your active layer's background-removal mode (see below) — no manual switching needed.
 - **Tab 3 — Statistics:** computes up to 51 morphological, spatial, and intensity features per labelled cell and exports a CSV. Only shown once at least one Labels layer exists.
 - **Tab 4 — AI Tools:** ground-truth polygon annotation plus launchers for MONAI and Cellpose-SAM training (dataset prep/crop extraction, hours-to-days training runs that survive napari closing). Always available — shows a disclaimer banner instead of hiding if your GPU is missing or under the recommended 8GB — see below.
 
@@ -110,15 +110,15 @@ A trained `.pth` checkpoint — **not included in this repo** (~220 MB).
 2. Move it into `models/MONAI/` (or anywhere else you prefer).
 3. In the plugin, Tab 1 → **Browse (...)** → select the file. The path is remembered across sessions.
 
-### Cellpose-SAM checkpoint (optional, Tab 2)
+### Cellpose-SAM checkpoint (recommended, Tab 2)
 
-Only needed if you plan to use **Cellpose-SAM Segmentation** rather than the Pixel Classifier. This is a project-specific fine-tuned Cellpose-SAM model (~580 MB), branch-weighted 3-fish checkpoint (`multi3_bw`, epoch 150).
+Needed for **Cellpose-SAM Segmentation**, the recommended labelling method (see above). This is a project-specific fine-tuned Cellpose-SAM model (~580 MB), branch-weighted 3-fish checkpoint (`multi3_bw`, epoch 150).
 
 1. Download [cpsam_microglia_512_multi3_bw_epoch_0150](https://cloud.technikum-wien.at/s/eFBJepk9DakDxyb).
 2. Move it into `models/Cellpose/`.
 3. In the plugin, Tab 2 → Cellpose-SAM Segmentation section → **Browse (...)** → select the file. The path is remembered across sessions.
 
-Until a checkpoint is available, use the **Pixel Classifier** instead — it needs no additional model file.
+If your machine has no GPU at all, use the **Pixel Classifier** instead — it needs no additional model file and no GPU, but is a lighter, older-technology approach; only fall back to it when a GPU genuinely isn't available.
 
 ### Training scripts (Tab 4 — AI Tools only)
 

@@ -42,7 +42,7 @@ This plugin does two things, in order:
 
 **Step A — Skin Removal (Tab 1):** Uses a trained AI model (MONAI 3D U-Net) to automatically detect and remove everything outside the brain, producing a clean `brain_only` image where only the cells of interest remain visible.
 
-**Step B — Label (Tab 2):** From the cleaned image, automatically finds and labels each individual cell as a separately numbered 3D region, using **one of two interchangeable methods** — a Pixel Classifier or a Cellpose-SAM segmentation pipeline. The tab shows whichever one matches your Tab 1 output automatically; see [Section 6a](#6a-which-tool-is-active--pixel-classifier-or-cellpose-sam). Lets you sort, split, and edit labels before saving.
+**Step B — Label (Tab 2):** From the cleaned image, automatically finds and labels each individual cell as a separately numbered 3D region, using one of two methods — **Cellpose-SAM Segmentation**, a fine-tuned AI foundation model and the recommended choice, or the **Pixel Classifier**, an older-technology, threshold-based fallback for machines with no GPU. The tab shows whichever one matches your Tab 1 output automatically; see [Section 6a](#6a-which-tool-is-active--pixel-classifier-or-cellpose-sam). Lets you sort, split, and edit labels before saving.
 
 **Step C — Analyse (Tab 3):** Computes a comprehensive set of shape statistics for each labelled cell and exports them to a CSV file, with an optional AI-generated plain-language description per cell.
 
@@ -315,6 +315,8 @@ The report is a 2D grid (rows = Erosion, columns = Threshold, cells = Dice%), wi
 ---
 
 ### 6a. Which tool is active — Pixel Classifier or Cellpose-SAM?
+
+**Use Cellpose-SAM Segmentation (6c) if you have a GPU.** It's a fine-tuned AI foundation model and handles branching, overlapping, and faint microglia far better than classical thresholding — it's the labelling method every real result in this project has actually used. The **Pixel Classifier (6b)** is an older, simpler threshold-and-stitch tool kept around as an initial aid for machines with no GPU at all; treat it as a fallback, not a first choice, when a GPU is available.
 
 Tab 2 shows **exactly one** of the two labelling methods below, chosen automatically from the active layer's filename suffix. Select a different layer in the Layers panel and Tab 2 switches live — no manual toggle needed.
 
