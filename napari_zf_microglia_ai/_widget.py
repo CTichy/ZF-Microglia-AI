@@ -29,6 +29,7 @@ from ._background import remove_outside_brain, remove_global, fill_outside_brain
 from ._labeling import create_labels, resort_labels, split_label
 from ._statistics import compute_stats
 from ._cellpose_seg import run_full_pipeline as _run_cellpose_pipeline
+from ._cellpose_seg import GT_MIN as _CELLPOSE_GT_MIN
 from . import _pixel_sweep as _psw
 from . import _brain_sweep as _bsw
 from . import _gt_score as _gts
@@ -42,6 +43,7 @@ from . import _crop_extraction as _crop
 from . import _xzyz_patches as _xzp
 from . import _crop_truncation as _ctr
 from . import _epoch_sweep as _esw
+from . import _branch_calibration as _bcal
 
 _CONFIG_PATH = Path.home() / ".config" / "napari-zf-microglia-ai" / "config.json"
 
@@ -258,6 +260,14 @@ class ZFMicrogliaAIWidget(QWidget):
         tabs = QTabWidget()
         self._tabs = tabs
 
+        # Sliders that the plugin's own GT-verification sweeps can now
+        # auto-apply their recommendation to (per explicit instruction:
+        # "report but set the values for the next use" -- otherwise
+        # what are the sweeps for). Persisted like any other setting, so
+        # a sweep's finding survives a napari restart, not just the rest
+        # of this session.
+        _root_cfg = self._state.get("config", {})
+
         # ============================================================ #
         # TAB 1 — Skin Remover
         # ============================================================ #
@@ -306,7 +316,7 @@ class ZFMicrogliaAIWidget(QWidget):
         self._thresh_slider.setMinimum(0.01)
         self._thresh_slider.setMaximum(0.99)
         self._thresh_slider.setSingleStep(0.01)
-        self._thresh_slider.setValue(0.25)
+        self._thresh_slider.setValue(_root_cfg.get("monai_threshold", 0.25))
         thresh_row.addWidget(self._thresh_slider)
         self._thresh_spin = _add_reliable_spinbox(
             thresh_row, self._thresh_slider, 0.01, 0.99, 0.01, decimals=2
@@ -318,7 +328,7 @@ class ZFMicrogliaAIWidget(QWidget):
         self._erosion_slider = QLabeledSlider(Qt.Horizontal)
         self._erosion_slider.setMinimum(0)
         self._erosion_slider.setMaximum(15)
-        self._erosion_slider.setValue(0)
+        self._erosion_slider.setValue(_root_cfg.get("erosion_voxels", 0))
         erosion_row.addWidget(self._erosion_slider)
         self._erosion_spin = _add_reliable_spinbox(
             erosion_row, self._erosion_slider, 0, 15, 1
@@ -357,7 +367,7 @@ class ZFMicrogliaAIWidget(QWidget):
         self._tol_slider.setMinimum(0.00)
         self._tol_slider.setMaximum(2.00)
         self._tol_slider.setSingleStep(0.01)
-        self._tol_slider.setValue(1.40)
+        self._tol_slider.setValue(_root_cfg.get("bg_tolerance", 1.40))
         tol_row.addWidget(self._tol_slider)
         self._tol_spin = _add_reliable_spinbox(
             tol_row, self._tol_slider, 0.00, 2.00, 0.01, decimals=2
@@ -763,7 +773,7 @@ class ZFMicrogliaAIWidget(QWidget):
         self._cp_cellprob_slider.setMinimum(-6.0)
         self._cp_cellprob_slider.setMaximum(6.0)
         self._cp_cellprob_slider.setSingleStep(0.1)
-        self._cp_cellprob_slider.setValue(-2.5)
+        self._cp_cellprob_slider.setValue(_root_cfg.get("cellpose_cellprob", -2.5))
         cp_cellprob_row.addWidget(self._cp_cellprob_slider)
         self._cp_cellprob_spin = _add_reliable_spinbox(
             cp_cellprob_row, self._cp_cellprob_slider, -6.0, 6.0, 0.1, decimals=2
@@ -808,12 +818,32 @@ class ZFMicrogliaAIWidget(QWidget):
         )
         cpg.addLayout(cp_mincontact_row)
 
+        cp_gtmin_row = QHBoxLayout()
+        cp_gtmin_row.addWidget(QLabel("Safe-merge GT-min volume (vox):"))
+        self._cp_gtmin_slider = QLabeledSlider(Qt.Horizontal)
+        self._cp_gtmin_slider.setMinimum(0)
+        self._cp_gtmin_slider.setMaximum(50000)
+        self._cp_gtmin_slider.setValue(_root_cfg.get("cellpose_gt_min", _CELLPOSE_GT_MIN))
+        cp_gtmin_row.addWidget(self._cp_gtmin_slider)
+        self._cp_gtmin_spin = _add_reliable_spinbox(
+            cp_gtmin_row, self._cp_gtmin_slider, 0, 50000, 500
+        )
+        cpg.addLayout(cp_gtmin_row)
+        cp_gtmin_note = QLabel(
+            "Smallest volume Safe-merge trusts as already a whole cell. "
+            "Recalibrated automatically from real GT statistics by the "
+            "Cellprob/Large-contact sweep below — no need to set by hand."
+        )
+        cp_gtmin_note.setWordWrap(True)
+        cp_gtmin_note.setStyleSheet("color: #888; font-size: 10px;")
+        cpg.addWidget(cp_gtmin_note)
+
         cp_largecontact_row = QHBoxLayout()
         cp_largecontact_row.addWidget(QLabel("Large-contact merge (vox):"))
         self._cp_largecontact_slider = QLabeledSlider(Qt.Horizontal)
         self._cp_largecontact_slider.setMinimum(1)
         self._cp_largecontact_slider.setMaximum(2000)
-        self._cp_largecontact_slider.setValue(20)
+        self._cp_largecontact_slider.setValue(_root_cfg.get("cellpose_large_contact", 20))
         cp_largecontact_row.addWidget(self._cp_largecontact_slider)
         self._cp_largecontact_spin = _add_reliable_spinbox(
             cp_largecontact_row, self._cp_largecontact_slider, 1, 2000, 10
@@ -845,7 +875,9 @@ class ZFMicrogliaAIWidget(QWidget):
             "labels volume, scored with the same whole-fish Hungarian-"
             "matched methodology as \"Score Against GT\" in Tab 3 (not a "
             "handful of proxy cells). Uses this section's model/Flow/"
-            "Safe-merge values above — only Cellprob and Large-contact vary."
+            "Safe-merge values above — only Cellprob and Large-contact vary. "
+            "Safe-merge GT-min volume is also recalibrated automatically "
+            "from this GT's own smallest labeled cell."
         )
         kr_note.setWordWrap(True)
         kr_note.setStyleSheet("color: #888; font-size: 10px;")
@@ -2058,13 +2090,51 @@ class ZFMicrogliaAIWidget(QWidget):
         ct_bw_row.addWidget(QLabel("branch_radius:"))
         self._ct_branchradius_spin = QSpinBox()
         self._ct_branchradius_spin.setRange(1, 20)
-        self._ct_branchradius_spin.setValue(3)
+        self._ct_branchradius_spin.setValue(_root_cfg.get("cellpose_branch_radius", 3))
         ct_bw_row.addWidget(self._ct_branchradius_spin)
         ctl.addLayout(ct_bw_row)
         ct_bw_note = QLabel("  branch_weight=0 disables the branch-weighted loss (standard Cellpose loss).")
         ct_bw_note.setStyleSheet("color: #aaa; font-size: 10px;")
         ct_bw_note.setWordWrap(True)
         ctl.addWidget(ct_bw_note)
+
+        ct_calib_row = QHBoxLayout()
+        ct_calib_row.addWidget(QLabel("Calibrate from GT:"))
+        self._ct_calib_gt_edit = QLineEdit("")
+        ct_calib_row.addWidget(self._ct_calib_gt_edit)
+        self._ct_calib_browse_btn = QPushButton("...")
+        self._ct_calib_browse_btn.setFixedWidth(32)
+        ct_calib_row.addWidget(self._ct_calib_browse_btn)
+        ctl.addLayout(ct_calib_row)
+
+        ct_calib_scale_row = QHBoxLayout()
+        ct_calib_scale_row.addWidget(QLabel("scale Z:"))
+        self._ct_calib_scalez_spin = QDoubleSpinBox()
+        self._ct_calib_scalez_spin.setDecimals(4)
+        self._ct_calib_scalez_spin.setRange(0.0001, 100.0)
+        self._ct_calib_scalez_spin.setValue(1.0)
+        ct_calib_scale_row.addWidget(self._ct_calib_scalez_spin)
+        ct_calib_scale_row.addWidget(QLabel("scale XY:"))
+        self._ct_calib_scalexy_spin = QDoubleSpinBox()
+        self._ct_calib_scalexy_spin.setDecimals(4)
+        self._ct_calib_scalexy_spin.setRange(0.0001, 100.0)
+        self._ct_calib_scalexy_spin.setValue(0.174)
+        ct_calib_scale_row.addWidget(self._ct_calib_scalexy_spin)
+        self._ct_calib_run_btn = QPushButton("Calibrate branch_radius")
+        ct_calib_scale_row.addWidget(self._ct_calib_run_btn)
+        ctl.addLayout(ct_calib_scale_row)
+        ct_calib_note = QLabel(
+            "  Measures real branch thickness (3D skeleton + distance transform) from a "
+            "GT labels volume and sets branch_radius above to the thinnest-quartile "
+            "(distal branch tip) radius in pixels — recalibrated from actual morphology "
+            "instead of a guessed value. Applied and saved automatically."
+        )
+        ct_calib_note.setStyleSheet("color: #aaa; font-size: 10px;")
+        ct_calib_note.setWordWrap(True)
+        ctl.addWidget(ct_calib_note)
+        self._ct_calib_status_lbl = QLabel("")
+        self._ct_calib_status_lbl.setWordWrap(True)
+        ctl.addWidget(self._ct_calib_status_lbl)
 
         ct_pat_row = QHBoxLayout()
         ct_pat_row.addWidget(QLabel("Patience (checkpoints):"))
@@ -2261,6 +2331,7 @@ class ZFMicrogliaAIWidget(QWidget):
         self._ai_cellpose_group_layout.addWidget(esg)
 
         self._epoch_sweep_job = {"thread": None, "cancel_event": None, "timer": None}
+        self._branch_calib_job = {"thread": None}
 
         self._cellpose_job = {"pid": None, "log_path": None, "timer": None}
 
@@ -2337,6 +2408,8 @@ class ZFMicrogliaAIWidget(QWidget):
         self._xz_out_browse_btn.clicked.connect(self._on_xz_browse_out)
         self._xz_run_btn.clicked.connect(self._on_xz_run)
         self._ct_pretrained_browse_btn.clicked.connect(self._on_ct_browse_pretrained)
+        self._ct_calib_browse_btn.clicked.connect(self._on_ct_calib_browse_gt)
+        self._ct_calib_run_btn.clicked.connect(self._on_ct_calib_run)
         self._ct_launch_btn.clicked.connect(self._on_ct_launch_training)
         self._ct_stop_btn.clicked.connect(self._on_ct_stop_training)
         self._es_img_browse_btn.clicked.connect(self._on_es_browse_img)
@@ -2771,6 +2844,73 @@ class ZFMicrogliaAIWidget(QWidget):
         if path_str:
             self._ct_pretrained_edit.setText(path_str)
 
+    def _on_ct_calib_browse_gt(self):
+        path_str, _ = QFileDialog.getOpenFileName(self, "Select GT label volume", "", "TIFF files (*.tif *.tiff)")
+        if path_str:
+            self._ct_calib_gt_edit.setText(path_str)
+
+    def _on_ct_calib_run(self):
+        if self._branch_calib_job.get("thread") and self._branch_calib_job["thread"].is_alive():
+            self._ct_calib_status_lbl.setText("A calibration is already running.")
+            return
+
+        gt_path = self._ct_calib_gt_edit.text().strip()
+        if not gt_path:
+            self._ct_calib_status_lbl.setText("ERROR: set a GT labels path first.")
+            return
+        if not Path(gt_path).exists():
+            self._ct_calib_status_lbl.setText(f"ERROR: GT labels not found: {gt_path}")
+            return
+
+        scale_zyx = (
+            self._ct_calib_scalez_spin.value(),
+            self._ct_calib_scalexy_spin.value(),
+            self._ct_calib_scalexy_spin.value(),
+        )
+        current_radius = self._ct_branchradius_spin.value()
+
+        result = {}
+
+        def _worker():
+            try:
+                gt_labels = tifffile.imread(gt_path).astype(np.int32)
+                stats = _bcal.recommend_branch_radius(gt_labels, scale_zyx=scale_zyx)
+                result["stats"] = stats
+            except Exception as exc:
+                result["error"] = f"{exc}\n{traceback.format_exc()}"
+
+        thread = threading.Thread(target=_worker, daemon=True)
+        self._branch_calib_job["thread"] = thread
+        self._branch_calib_job["result"] = result
+        self._branch_calib_job["current_radius"] = current_radius
+        self._ct_calib_run_btn.setEnabled(False)
+        self._ct_calib_status_lbl.setText("Measuring branch morphology from GT...")
+        thread.start()
+
+        timer = QTimer(self)
+
+        def _poll():
+            if thread.is_alive():
+                return
+            timer.stop()
+            self._ct_calib_run_btn.setEnabled(True)
+
+            if "error" in result:
+                self._ct_calib_status_lbl.setText(f"ERROR: {result['error'].splitlines()[0]}")
+                return
+
+            stats = result["stats"]
+            report = _bcal.format_branch_calibration_report(stats, self._branch_calib_job["current_radius"])
+            recommended = stats["recommended_branch_radius_px"]
+            self._ct_branchradius_spin.setValue(recommended)
+            self._save_cfg(cellpose_branch_radius=recommended)
+            self._ct_calib_status_lbl.setText(
+                f"{report.splitlines()[-1] if report else ''} branch_radius={recommended} applied and saved."
+            )
+
+        timer.timeout.connect(_poll)
+        timer.start(500)
+
     def _write_cellpose_best_pointer(self, job, best_epoch):
         """Write the best-checkpoint pointer file (see
         _tj.write_best_checkpoint_pointer) for `job` (a dict with
@@ -3075,6 +3215,8 @@ class ZFMicrogliaAIWidget(QWidget):
         self._epoch_sweep_job["progress"] = progress
         self._epoch_sweep_job["progress_lock"] = progress_lock
         self._epoch_sweep_job["recommended"] = recommended
+        self._epoch_sweep_job["models_dir"] = models_dir
+        self._epoch_sweep_job["model_name"] = model_name
         self._es_run_btn.setEnabled(False)
         self._es_stop_btn.setEnabled(True)
         self._es_report_view.clear()
@@ -3131,10 +3273,26 @@ class ZFMicrogliaAIWidget(QWidget):
                     f"(avg IoU={sweep['per_epoch_avg'][sweep['best_epoch']]['iou']:.1f}%)."
                 )
             else:
+                best_epoch = sweep["best_epoch"]
+                applied_msg = ""
+                # Rewrite the recommended-checkpoint pointer to the sweep-
+                # confirmed epoch (models_dir already resolved at launch
+                # time, so use _tj directly rather than the data_dir-based
+                # helper) and auto-load that checkpoint as Tab 2's active
+                # model -- same update sequence as _on_browse_cp_model.
+                try:
+                    pointer = _tj.write_best_checkpoint_pointer(job["models_dir"], job["model_name"], best_epoch)
+                    checkpoint_path = job["models_dir"] / f"{job['model_name']}_epoch_{best_epoch:04d}"
+                    self._state["cellpose_model_path"] = checkpoint_path
+                    self._cp_model_lbl.setText(str(checkpoint_path))
+                    self._save_cfg(cellpose_model_path=str(checkpoint_path))
+                    applied_msg = f" Pointer updated ({pointer.name}) and applied to Tab 2 as the active model."
+                except FileNotFoundError as exc:
+                    applied_msg = f" (could not update pointer/active model: {exc})"
                 self._es_status_lbl.setText(
-                    f"Sweep's best is epoch {sweep['best_epoch']} "
-                    f"(avg IoU={sweep['per_epoch_avg'][sweep['best_epoch']]['iou']:.1f}%), "
-                    f"not the recommended {job['recommended']} — see report below."
+                    f"Sweep's best is epoch {best_epoch} "
+                    f"(avg IoU={sweep['per_epoch_avg'][best_epoch]['iou']:.1f}%), "
+                    f"not the recommended {job['recommended']}.{applied_msg}"
                 )
 
         timer.timeout.connect(_poll)
@@ -3749,9 +3907,13 @@ class ZFMicrogliaAIWidget(QWidget):
                 self._bs_status_lbl.setText("Sweep cancelled — partial results above.")
             elif sweep["best_point"] is not None:
                 best_th, best_er = sweep["best_point"]
+                self._thresh_slider.setValue(best_th)
+                self._erosion_slider.setValue(best_er)
+                self._save_cfg(monai_threshold=best_th, erosion_voxels=best_er)
                 self._bs_status_lbl.setText(
                     f"Best: MONAI Threshold={best_th}, Erosion={best_er} "
-                    f"(Dice={sweep['results'][sweep['best_point']]['dice']:.1f}%)."
+                    f"(Dice={sweep['results'][sweep['best_point']]['dice']:.1f}%). "
+                    f"Applied to Tab 1 and saved."
                 )
             else:
                 self._bs_status_lbl.setText("Sweep finished but no grid points could be scored.")
@@ -4295,9 +4457,16 @@ class ZFMicrogliaAIWidget(QWidget):
                 self._ps_status_lbl.setText("Sweep cancelled — partial results above.")
             elif sweep["best_point"] is not None:
                 best_bt, best_er = sweep["best_point"]
+                # Auto-apply: report is not the point of running a sweep,
+                # using the finding is -- update the live Tab 1 sliders and
+                # persist so this survives a napari restart too.
+                self._tol_slider.setValue(best_bt)
+                self._erosion_slider.setValue(best_er)
+                self._save_cfg(bg_tolerance=best_bt, erosion_voxels=best_er)
                 self._ps_status_lbl.setText(
                     f"Best: BG Threshold={best_bt}, Erosion={best_er} "
-                    f"(avg IoU={sweep['per_point_avg'][sweep['best_point']]['iou']:.1f}%)."
+                    f"(avg IoU={sweep['per_point_avg'][sweep['best_point']]['iou']:.1f}%). "
+                    f"Applied to Tab 1 and saved."
                 )
             else:
                 self._ps_status_lbl.setText("Sweep finished but no grid points could be scored.")
@@ -4324,6 +4493,7 @@ class ZFMicrogliaAIWidget(QWidget):
         flow          = self._cp_flow_slider.value()
         max_gap       = self._cp_maxgap_slider.value()
         min_contact   = self._cp_mincontact_slider.value()
+        gt_min        = self._cp_gtmin_slider.value()
         large_contact = self._cp_largecontact_slider.value()
 
         stem  = target.name
@@ -4354,7 +4524,8 @@ class ZFMicrogliaAIWidget(QWidget):
                 labels, stats = _run_cellpose_pipeline(
                     volume, model_path,
                     cellprob=cellprob, flow=flow, anisotropy=anisotropy,
-                    max_gap=max_gap, min_contact=min_contact, large_contact=large_contact,
+                    max_gap=max_gap, min_contact=min_contact, gt_min=gt_min,
+                    large_contact=large_contact,
                     gpu=gpu, progress_cb=_progress,
                 )
                 result["labels"] = labels
@@ -4540,9 +4711,20 @@ class ZFMicrogliaAIWidget(QWidget):
                 self._kr_status_lbl.setText("Sweep cancelled — partial results above.")
             elif sweep["best_point"] is not None:
                 best_cp, best_lc = sweep["best_point"]
+                gt_min_used = sweep.get("gt_min_used")
+                self._cp_cellprob_slider.setValue(best_cp)
+                self._cp_largecontact_slider.setValue(best_lc)
+                cfg_kwargs = dict(cellpose_cellprob=best_cp, cellpose_large_contact=best_lc)
+                gt_min_note = ""
+                if gt_min_used is not None:
+                    self._cp_gtmin_slider.setValue(gt_min_used)
+                    cfg_kwargs["cellpose_gt_min"] = gt_min_used
+                    gt_min_note = f", gt_min={gt_min_used} (measured from this GT)"
+                self._save_cfg(**cfg_kwargs)
                 self._kr_status_lbl.setText(
-                    f"Best: cellprob={best_cp}, large_contact={best_lc} "
-                    f"(Score={sweep['results'][sweep['best_point']]['score']:+.1f})."
+                    f"Best: cellprob={best_cp}, large_contact={best_lc}{gt_min_note} "
+                    f"(Score={sweep['results'][sweep['best_point']]['score']:+.1f}). "
+                    f"Applied to Tab 2 and saved."
                 )
             else:
                 self._kr_status_lbl.setText("Sweep finished but no grid points could be scored.")

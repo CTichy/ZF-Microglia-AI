@@ -72,29 +72,44 @@ All dependencies (PyTorch, MONAI, scikit-image, etc.) are installed automaticall
 
 The plugin needs up to **two** trained checkpoints, depending on which labelling method you plan to use. Neither is bundled in the plugin.
 
+**Suggested layout** — not required (the plugin remembers whatever path you browse to), but a tidy default if you'd rather not decide where to put things:
+
+```
+Documents/
+└── zf-microglia-ai-models/
+    ├── MONAI/
+    │   └── best_model_fullstack.pth
+    └── Cellpose/
+        └── <your checkpoint>
+```
+
 ### MONAI skin-removal model (required — Tab 1)
 
 The AI model (~220 MB) that powers skin removal.
 
-**Download:**
+1. Download it:
 
-```
-https://cloud.technikum-wien.at/s/kYQ4qq3Jsn4xEyY
-```
+   ```
+   https://cloud.technikum-wien.at/s/kYQ4qq3Jsn4xEyY
+   ```
 
-Save the file `best_model_fullstack.pth` anywhere on your computer that is easy to find, for example:
+2. Save the file `best_model_fullstack.pth` into `MONAI/` (or anywhere else easy to find).
+3. Open the plugin, go to **Tab 1**, click the model `[...]` Browse button, and select the file — see "Model (.pth) — Browse button" under Section 5 below for the exact steps.
 
-```
-Documents/
-└── zf-microglia-ai-model/
-    └── best_model_fullstack.pth
-```
-
-You will point the plugin to this file the first time you use it. **The plugin remembers the path** — you only need to do this once per installation.
+**The plugin remembers the path** — you only need to do this once per installation.
 
 ### Cellpose-SAM checkpoint (optional — Tab 2, only if using Cellpose-SAM Segmentation)
 
-Only needed if you plan to label cells with **Cellpose-SAM Segmentation** rather than the **Pixel Classifier** (see [Section 6a](#6a-which-tool-is-active--pixel-classifier-or-cellpose-sam)). This is a project-specific fine-tuned Cellpose-SAM model — there is no fixed public download, since every lab trains its own on its own ground truth. Browse to whatever checkpoint you have using the **Browse `[...]`** button in the Cellpose-SAM Segmentation section of Tab 2. The path is remembered the same way as the MONAI model path.
+Only needed if you plan to label cells with **Cellpose-SAM Segmentation** rather than the **Pixel Classifier** (see [Section 6a](#6a-which-tool-is-active--pixel-classifier-or-cellpose-sam)). This is a project-specific fine-tuned Cellpose-SAM model (~580 MB), branch-weighted 3-fish checkpoint (`multi3_bw`, epoch 150).
+
+1. Download it:
+
+   ```
+   https://cloud.technikum-wien.at/s/eFBJepk9DakDxyb
+   ```
+
+2. Save the file `cpsam_microglia_512_multi3_bw_epoch_0150` into `Cellpose/` (or anywhere else easy to find).
+3. Open the plugin, go to **Tab 2**'s Cellpose-SAM Segmentation section, click the model **Browse `[...]`** button, and select the file. The path is remembered the same way as the MONAI model path.
 
 If you don't have a checkpoint yet, use the **Pixel Classifier** instead — it needs no additional model file.
 
@@ -289,7 +304,7 @@ Unlike the other two sweepers, this scores a single whole-volume mask, not multi
 
 This is the cheapest of the three sweepers: MONAI's sliding-window inference (the only genuinely expensive, GPU-bound step) runs **exactly once**, producing a raw probability map. Every threshold and erosion value in the grid is then just a cheap re-threshold + largest-component/fill-holes + optional erosion on that same probability map — no reloading the model, no repeat sliding-window passes. A full 25-point grid typically finishes in well under a minute on GPU, and still works (just slower) on CPU/MPS since it uses the same device selection as **Run Skin-Remover**.
 
-The report is a 2D grid (rows = Erosion, columns = Threshold, cells = Dice%), with your current Tab 1 slider values marked. Same policy as the other two sweepers: a disagreement with the current setting is reported clearly, nothing gets changed automatically.
+The report is a 2D grid (rows = Erosion, columns = Threshold, cells = Dice%), with your current Tab 1 slider values marked. Same policy as the other sweepers: once the sweep finishes, its best point is **applied directly to the Tab 1 Threshold/Erosion sliders and saved to config** — no manual copy-over needed, and the recalibrated values persist across napari restarts. The report still shows the full grid so you can see how confident the recommendation is.
 
 ---
 
@@ -416,7 +431,7 @@ Answers the same kind of question as Tab 4's "Verify Best Epoch" tool, but for t
 
 This sweep is considerably cheaper than the Cellpose-SAM one: MONAI inference only ever runs once (outside this tool, via a normal Tab 1 run), and neither Erosion nor BG Threshold require reloading a model — Erosion is a cheap morphological operation and the background "mode" statistic is computed once per erosion value, not once per grid point. A full 25-point grid typically finishes in minutes. It also runs on CPU if no GPU is present (Create Labels already has a CPU fallback), unlike the Cellpose-SAM sweep.
 
-The report is a 2D grid (rows = Erosion, columns = BG Threshold, cells = average IoU%), with your current Tab 1 slider values marked and compared against whatever the sweep found best. As with the Cellpose-SAM sweep, a disagreement is reported clearly but nothing gets changed automatically — only a handful of cells and grid points are tested.
+The report is a 2D grid (rows = Erosion, columns = BG Threshold, cells = average IoU%), with your current Tab 1 slider values marked and compared against whatever the sweep found best. Once the sweep finishes, its best point is **applied directly to the Tab 1 BG Threshold/Erosion sliders and saved to config**, the same way the MONAI Threshold/Erosion sweep does — the report is still shown in full so you can judge how confident the recommendation is (only a handful of cells and grid points are tested, so a narrow win shouldn't be trusted as blindly as a wide one).
 
 > This tool depends on Erosion and BG Threshold actually composing correctly in Tab 1's own pipeline. An earlier version of `_on_run` silently discarded Erosion whenever any Background mode was active (the final mask always used the raw, un-eroded mask in that code path) — fixed as of this version, so Erosion now has a real, sweepable effect in the recommended Background mode 2 workflow this tool targets.
 
@@ -456,6 +471,12 @@ During the Krendl safe-merge pass, two fragments separated by a gap up to this m
 
 Minimum shared-boundary voxel count required between two fragments before the safe-merge pass will join them. Higher values require a more substantial touching surface before merging.
 
+#### Safe-merge GT-min volume (vox)
+
+**Range:** 0 to 50000 — **Default: 10230** (the historical "smallest real microglia volume seen in validated GT data")
+
+The volume, in voxels, below which the safe-merge pass treats a fragment as *not yet* a whole cell and a candidate to merge into something else. Rather than trust a single frozen historical number forever, the **Verify Cellprob / Large-contact (GT Sweep)** tool below measures this directly from whatever GT labels volume you sweep against (the true minimum labeled-cell volume in that GT) and recalibrates it automatically — you shouldn't normally need to set this by hand.
+
 #### Large-contact merge (vox)
 
 **Range:** 1 to 2000 — **Default: 20**
@@ -482,6 +503,8 @@ Sweeps **Cellprob** × **Large-contact merge** against a full-fish GT labels vol
 **Cellprob requires a real `do_3D` re-inference per value** — it changes what Cellpose-SAM actually predicts, so this is the expensive, GPU-preferred dimension (same device fallback as Run Cellpose-SAM Segmentation). **Large-contact is cheap** — it's a post-processing merge threshold applied after `do_3D` + GMM cleanup + Krendl safe-merge, so the sweep runs `do_3D` (+ GMM + safe-merge) exactly once per Cellprob value, then varies Large-contact freely on that same intermediate result — the same shortcut this project's own research scripts have long used (`--skip_inference`).
 
 Because of that, total sweep time scales with the number of **Cellprob** values only, not the full grid size — a 5×5 grid costs about the same as 5 individual `do_3D` runs, not 25. **Stop Sweep** cancels between Cellprob values (not mid-inference or mid-Large-contact). The report is a 2D grid of Score (`TP − 0.5×(FP+FN)`), with your current Tab 2 slider values marked.
+
+**Safe-merge GT-min volume is also recalibrated every time you run this sweep** — measured directly from the GT labels volume's own smallest labeled cell, rather than a frozen historical constant (see the field's description above). Once the sweep finishes, its best Cellprob/Large-contact point **and** the measured GT-min are all applied directly to the Tab 2 sliders and saved to config — no manual copy-over needed.
 
 ---
 
@@ -781,6 +804,8 @@ Extracts fine-tuning crops and launches Cellpose-SAM training — the model Tab 
 
 **Train Cellpose-SAM** launches fine-tuning — configure `n_epochs`/`batch_size`/`save_every`/`log_every`/`lr`, then click **Launch Training**. The `pretrained` field defaults to whatever checkpoint is already loaded in Tab 2's Cellpose-SAM Segmentation section — i.e. by default this **continues training from where Tab 2 left off**, though you can browse to a different starting checkpoint (or type a builtin name like `cpsam`) if you want to start fresh. `branch_weight`/`branch_radius` control the project's branch-weighted loss (weights thin/branch-tip pixels more heavily during training so the model doesn't under-segment fine processes) — set `branch_weight` to `0` to disable it and use the standard Cellpose loss instead.
 
+**Calibrate branch_radius (from GT)** measures the real branch thickness of actual GT-labeled cells instead of guessing `branch_radius` by hand. Browse to a GT labels volume, set **scale Z**/**scale XY** to match its voxel scale, and click **Calibrate branch_radius**. The tool 3D-skeletonizes every labeled cell, decomposes each skeleton into branch segments, measures each segment's mean diameter via an anisotropic distance transform, and takes the **thinnest quartile** (the distal branch tips — the fine processes `branch_weight` exists to protect, as opposed to thick soma-adjacent segments) as the basis for the recommendation, converting that radius from microns to pixels at the given scale. The result is applied directly to the `branch_radius` field above and saved to config — no manual copy-over. This can take anywhere from several seconds to a couple of minutes depending on how many cells are in the GT volume; it runs in a background thread so napari stays responsive.
+
 **Verify Best Epoch (GT Sweep)** answers a specific question the recommended checkpoint alone can't: `test_loss` (what picks the recommendation) is a proxy for segmentation quality, not the real thing, and checkpoints often plateau within noise of each other. This tool checks the recommendation against actual ground truth on a small, deliberately hard sample:
 
 1. **GT image** / **GT labels** — browse to a full-fish raw/brain_only image and its corrected ground-truth label volume (the same pair used to build training crops). Doesn't need to be a fish the current model was trained on, but usually is — it's the same file pair you'd use to sanity-check any checkpoint.
@@ -793,7 +818,7 @@ Extracts fine-tuning crops and launches Cellpose-SAM training — the model Tab 
 
 This can take a while — each `do_3D` call is a few minutes, so a default 5×5 sweep is roughly 30 minutes to a couple of hours depending on cell/crop size and GPU. **Stop Sweep** cancels between checkpoints (not mid-inference) and still shows whatever completed. Unlike Launch Training, this does **not** run as a detached process and does **not** survive closing napari — it's meant to be watched, in the same tier as Extract Training Crops, not the multi-hour/day training jobs.
 
-If the sweep disagrees with the recommendation, that's a signal to look closer (only a handful of cells and epochs were tested), not an automatic override — the tool reports it clearly but doesn't rewrite the recommended-checkpoint pointer for you.
+If the sweep disagrees with the recommendation, it's applied automatically: the recommended-checkpoint pointer (`<model_name>_best_recommended.txt`) is rewritten to the sweep-confirmed epoch, and that checkpoint is loaded as Tab 2's active Cellpose-SAM model — the same effect as browsing to it by hand, but done for you. The report is still shown in full so you can judge how confident the disagreement actually is (only a handful of cells and epochs were tested).
 
 ---
 
@@ -1474,7 +1499,7 @@ The active layer's name must end in `_ExtRm` (Cellpose-SAM) or `_NoBG` (Pixel Cl
 | Erosion | 0 | Strips voxels from mask edge |
 | Background | Option 2 | Removes background globally (best for labels) |
 | BG Threshold | 1.40 | Fine-tunes background removal level |
-| Verify MONAI Threshold / Erosion (GT Sweep) | 5x5 grid | Confirms current values against a hand-corrected GT brain mask — MONAI runs once, rest is cheap |
+| Verify MONAI Threshold / Erosion (GT Sweep) | 5x5 grid | Confirms current values against a hand-corrected GT brain mask — MONAI runs once, rest is cheap — **best point auto-applied to the sliders and saved** |
 
 ### Tab 2 — Create Labels
 
@@ -1488,7 +1513,7 @@ Shown automatically based on active layer suffix — `_ExtRm` → Cellpose-SAM, 
 | Smooth σ Z | 3.0 | Cross-slice blob connectivity |
 | Min overlap | 10% | Overlap needed to link blobs across slices |
 | Min volume | 7500 | Minimum voxels to keep a 3D object |
-| Verify BG Threshold / Erosion (GT Sweep) | 5x5 grid | Confirms current BG Threshold/Erosion against real GT IoU — CPU-OK, doesn't survive closing napari |
+| Verify BG Threshold / Erosion (GT Sweep) | 5x5 grid | Confirms current BG Threshold/Erosion against real GT IoU — CPU-OK, doesn't survive closing napari — **best point auto-applied to the sliders and saved** |
 
 **Cellpose-SAM Segmentation**
 
@@ -1498,8 +1523,9 @@ Shown automatically based on active layer suffix — `_ExtRm` → Cellpose-SAM, 
 | Flow threshold | 0.4 | Rejects self-inconsistent flow predictions |
 | Safe-merge max gap | 2 vox | Max gap allowed when merging fragments |
 | Safe-merge min contact | 10 vox | Min touching surface required to merge |
+| Safe-merge GT-min volume | 10230 vox | Smallest volume trusted as already a whole cell — recalibrated from real GT by the sweep below, not usually set by hand |
 | Large-contact merge | 20 vox | Second merge pass for thick-junction splits |
-| Verify Cellprob / Large-contact (GT Sweep) | 5x5 grid | Confirms against whole-fish GT — Cellprob needs re-inference (GPU-preferred), Large-contact is cheap |
+| Verify Cellprob / Large-contact (GT Sweep) | 5x5 grid | Confirms against whole-fish GT — Cellprob needs re-inference (GPU-preferred), Large-contact is cheap — **best point + measured GT-min auto-applied to the sliders and saved** |
 | Build GT-Correction Package | — | Zips Krendl output + stats CSV + creation guide for external manual correction |
 
 **Both methods (once labels exist)**
@@ -1532,12 +1558,14 @@ Always shown — a banner at the top warns if your GPU is missing or under the r
 | epochs | 1500 | (MONAI) training length |
 | n_epochs | 200 | (Cellpose-SAM) training length |
 | branch_weight | 0 | (Cellpose-SAM) 0 = standard loss; >0 weights thin/branch pixels more heavily |
+| branch_radius | 3 px | (Cellpose-SAM) erosion-survival distance threshold for the branch-weighted loss — measurable from real GT via Calibrate branch_radius below |
+| Calibrate branch_radius (from GT) | — | (Cellpose-SAM) measures real branch thickness from a GT labels volume (3D skeleton + distance transform) — **recommendation auto-applied to branch_radius and saved** |
 | pretrained | Tab 2's checkpoint | (Cellpose-SAM) starting point — "continue training" by default |
 | Extract XZYZ Patches | crop_size=512 | (Cellpose-SAM) current production crop method — 3 orientations, cleans truncated labels by default |
 | Patience (checkpoints) | 5 | Both — stop after N checkpoints with no improvement (Dice/test_loss); 0 disables |
 | Launch Training | — | Starts a detached process that survives closing napari; GUI reconnects automatically next time |
 | *(on stop, Cellpose-SAM only)* | — | Writes `<model_name>_best_recommended.txt` in `models/` — a pointer, not a copy, to the best-test_loss checkpoint |
-| Verify Best Epoch (GT Sweep) | 5 cells, ±2 checkpoints | (Cellpose-SAM) confirms the recommendation against real GT IoU/Dice, not just test_loss — doesn't survive closing napari |
+| Verify Best Epoch (GT Sweep) | 5 cells, ±2 checkpoints | (Cellpose-SAM) confirms the recommendation against real GT IoU/Dice, not just test_loss — doesn't survive closing napari — **if the sweep disagrees, rewrites the pointer to the confirmed epoch and loads it as Tab 2's active model** |
 | Stop Training | — | Kills the training process and its children |
 
 ---
