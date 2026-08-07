@@ -62,9 +62,15 @@ def run_inference(volume, model_path, threshold, device, erosion_voxels=0):
 
     Returns
     -------
-    brain_mask : (Z, Y, X) uint8   — raw predicted mask (0/1), no erosion
-    brain_only : (Z, Y, X) same dtype as input
-                 volume × eroded_mask  (skin + outer-rim tissue zeroed out)
+    brain_mask  : (Z, Y, X) uint8   — raw predicted mask (0/1), no erosion.
+                  Always the un-eroded mask, e.g. for saving brain_mask.tif.
+    brain_only  : (Z, Y, X) same dtype as input
+                  volume × eroded_mask  (skin + outer-rim tissue zeroed out)
+    eroded_mask : (Z, Y, X) uint8   — the mask actually used to build
+                  brain_only (== brain_mask when erosion_voxels == 0).
+                  Callers doing further mask-based processing on brain_only
+                  (e.g. background removal) should use this, not brain_mask,
+                  or erosion is silently discarded downstream.
     """
     model = _load_model(model_path, device)
 
@@ -125,11 +131,12 @@ def run_inference(volume, model_path, threshold, device, erosion_voxels=0):
     # ------------------------------------------------------------------ #
     if erosion_voxels > 0:
         print(f"   Eroding mask by {erosion_voxels} voxel(s)...")
-        eroded = binary_erosion(clean, iterations=erosion_voxels).astype(np.uint8)
-        vox_removed = int(brain_mask.sum()) - int(eroded.sum())
+        eroded_mask = binary_erosion(clean, iterations=erosion_voxels).astype(np.uint8)
+        vox_removed = int(brain_mask.sum()) - int(eroded_mask.sum())
         print(f"   Erosion removed {vox_removed:,} voxels from brain_only mask.")
-        brain_only = (volume * eroded).astype(volume.dtype)
+        brain_only = (volume * eroded_mask).astype(volume.dtype)
     else:
+        eroded_mask = brain_mask
         brain_only = (volume * brain_mask).astype(volume.dtype)
 
-    return brain_mask, brain_only
+    return brain_mask, brain_only, eroded_mask

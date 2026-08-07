@@ -2777,24 +2777,29 @@ class ZFMicrogliaAIWidget(QWidget):
         def _worker():
             try:
                 # Step 1: inference on original volume (never bg-removed)
-                brain_mask, brain_only = run_inference(
+                brain_mask, brain_only, eroded_mask = run_inference(
                     volume, model_path, threshold, device, erosion_voxels
                 )
 
-                # Step 2: optional background processing
+                # Step 2: optional background processing -- uses eroded_mask,
+                # not brain_mask, so Erosion still takes effect here. (Using
+                # brain_mask -- the always-un-eroded mask meant only for
+                # saving brain_mask.tif -- would silently discard whatever
+                # the Erosion slider is set to whenever a background mode is
+                # active, which is every recommended labeling workflow.)
                 if bg_mode == 1:
                     vol_proc, *_ = remove_outside_brain(
-                        volume, brain_mask, tolerance_pct=bg_tolerance_pct
+                        volume, eroded_mask, tolerance_pct=bg_tolerance_pct
                     )
-                    brain_only = (vol_proc * brain_mask).astype(volume.dtype)
+                    brain_only = (vol_proc * eroded_mask).astype(volume.dtype)
                 elif bg_mode == 2:
                     vol_proc, *_ = remove_global(
-                        volume, brain_mask, tolerance_pct=bg_tolerance_pct
+                        volume, eroded_mask, tolerance_pct=bg_tolerance_pct
                     )
-                    brain_only = (vol_proc * brain_mask).astype(volume.dtype)
+                    brain_only = (vol_proc * eroded_mask).astype(volume.dtype)
                 elif bg_mode == 3:
                     brain_only, _ = fill_outside_brain_random(
-                        volume, brain_mask
+                        volume, eroded_mask
                     )
 
                 result["brain_mask"] = brain_mask
