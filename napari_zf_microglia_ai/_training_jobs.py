@@ -49,12 +49,115 @@ CELLPOSE_METRIC = dict(
 )
 
 
-def launch_detached(argv, cwd, log_path, conda_env):
+# Generated verbatim into a standalone .py file when `notify` is used (see
+# launch_detached) -- stdlib only (subprocess/smtplib/email/re), no
+# dependency on this package being importable, since it has to keep
+# running under whatever conda_env the training script itself uses. All
+# variable values are embedded via repr() (not string interpolation of
+# raw text), so paths containing spaces/quotes round-trip safely as valid
+# Python literals; the template body itself uses %-formatting rather than
+# f-strings/braces so it survives being passed through str.format().
+_NOTIFY_SUPERVISOR_TEMPLATE = '''\
+import re, smtplib, subprocess, sys
+from email.mime.text import MIMEText
+
+argv = {argv!r}
+cwd = {cwd!r}
+log_path = {log_path!r}
+conda_env = {conda_env!r}
+to_addr = {to_addr!r}
+smtp_host = {smtp_host!r}
+smtp_port = {smtp_port!r}
+smtp_user = {smtp_user!r}
+smtp_password = {smtp_password!r}
+job_label = {job_label!r}
+pattern = {pattern!r}
+flags = {flags!r}
+higher_is_better = {higher_is_better!r}
+metric_label = {metric_label!r}
+
+full_argv = ["conda", "run", "-n", conda_env, "--no-capture-output"] + argv
+with open(log_path, "wb") as log_f:
+    proc = subprocess.run(full_argv, cwd=cwd, stdout=log_f, stderr=subprocess.STDOUT)
+
+try:
+    text = open(log_path, "r", errors="replace").read()
+except Exception:
+    text = ""
+matches = list(re.finditer(pattern, text, flags))
+if matches:
+    series = [(int(m.group(1)), float(m.group(2))) for m in matches]
+    best = max(series, key=lambda t: t[1]) if higher_is_better else min(series, key=lambda t: t[1])
+    metric_line = "Best %s = %.4f at epoch %d (of %d checkpoints logged)." % (
+        metric_label, best[1], best[0], len(series))
+else:
+    metric_line = "No checkpoints were logged -- check the log file for errors."
+
+status_word = "finished" if proc.returncode == 0 else ("stopped (exit code %s)" % proc.returncode)
+subject = "[napari-zf-microglia-ai] %s training %s" % (job_label, status_word)
+body = (
+    "%s training has stopped.\\n\\n"
+    "Status: %s\\n"
+    "%s\\n\\n"
+    "Log file: %s\\n"
+) % (job_label, status_word, metric_line, log_path)
+
+try:
+    msg = MIMEText(body)
+    msg["Subject"] = subject
+    msg["From"] = smtp_user
+    msg["To"] = to_addr
+    with smtplib.SMTP_SSL(smtp_host, smtp_port, timeout=30) as server:
+        server.login(smtp_user, smtp_password)
+        server.sendmail(smtp_user, [to_addr], msg.as_string())
+except Exception as exc:
+    sys.stderr.write("email notification failed: %s\\n" % exc)
+'''
+
+
+def launch_detached(argv, cwd, log_path, conda_env, notify=None):
     """
     Launch `argv` inside `conda run -n <conda_env> --no-capture-output`,
     detached so it survives this process (napari) exiting. stdout+stderr
     are redirected to log_path. Returns the PID of the launched process.
+
+    If `notify` is given -- dict with to_addr/smtp_host/smtp_port/
+    smtp_user/smtp_password/job_label/metric_cfg -- the training command
+    is wrapped in a small self-contained supervisor script that becomes
+    the detached process instead of `argv` directly: the supervisor runs
+    the real command (still writing the same log_path the GUI tails
+    live), waits for it to exit, then emails a completion report. Because
+    the supervisor itself is what's detached, the email still gets sent
+    even if napari closes and never reopens before the job finishes --
+    the same "survives napari closing" guarantee as the training run
+    itself, extended to the notification.
+
+    kill_process_tree(pid) needs no changes for this: the real training
+    process is a descendant of the supervisor (conda run -> supervisor.py
+    -> conda run -> training script), and kill_process_tree already walks
+    all descendants recursively -- killing the tree kills the supervisor
+    too, before it reaches the email step, so an explicit Stop Training
+    click correctly sends no "stopped" email.
     """
+    if notify:
+        supervisor_path = Path(f"{log_path}.supervisor.py")
+        metric_cfg = notify["metric_cfg"]
+        supervisor_path.write_text(_NOTIFY_SUPERVISOR_TEMPLATE.format(
+            argv=list(argv), cwd=str(cwd), log_path=str(log_path), conda_env=conda_env,
+            to_addr=notify["to_addr"], smtp_host=notify["smtp_host"], smtp_port=notify["smtp_port"],
+            smtp_user=notify["smtp_user"], smtp_password=notify["smtp_password"],
+            job_label=notify["job_label"], pattern=metric_cfg["pattern"],
+            flags=int(metric_cfg.get("flags", 0)), higher_is_better=metric_cfg["higher_is_better"],
+            metric_label=metric_cfg["label"],
+        ))
+        supervisor_log = Path(f"{log_path}.supervisor_log")
+        return _popen_detached(["python", str(supervisor_path)], cwd, supervisor_log, conda_env)
+    return _popen_detached(argv, cwd, log_path, conda_env)
+
+
+def _popen_detached(argv, cwd, log_path, conda_env):
+    """Shared by launch_detached's two paths (direct, and notify-wrapped
+    via the supervisor script) -- see launch_detached's docstring."""
     full_argv = ["conda", "run", "-n", conda_env, "--no-capture-output", *argv]
     kwargs = {}
     if platform.system() == "Windows":

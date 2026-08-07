@@ -19,6 +19,7 @@
    - [7a. Analysing cells by brain region (optic tectum / hindbrain)](#brain-regions-optional)
    - [7b. Intensity statistics per label](#intensity-statistics-optional)
 8. [Tab 4 — AI Tools](#8-tab-4--ai-tools)
+   - [Email notification (optional)](#email-notification-optional-shared-by-both-groups)
    - [8a. GT Annotation](#8a-gt-annotation)
    - [8b. MONAI Training](#8b-monai-training)
    - [8c. Cellpose-SAM Training](#8c-cellpose-sam-training)
@@ -624,7 +625,19 @@ The CSV contains one row per label with up to 45 columns depending on which opti
 
 Only appears when the plugin detects a CUDA GPU with **≥8GB VRAM** — checked once when napari starts. This is deliberate, not a bug: this tab launches multi-hour to multi-day training jobs and lets you draw ground-truth annotations, and both of those only make sense together with a GPU capable of actually training on the result. If your machine doesn't qualify, this whole tab — including GT Annotation, which itself needs no GPU — simply doesn't appear, so behavior stays consistent across machines rather than half-working on a CPU-only setup.
 
-A switch at the top of the tab picks one of two mutually-exclusive groups. Only one is shown at a time.
+### Email notification (optional, shared by both groups)
+
+A small panel at the top of the tab, above the MONAI/Cellpose-SAM switch, applying to whichever group you launch: **Notify email**, **SMTP server**/**port**, **SMTP username**, **SMTP password**. Leave **Notify email** blank to disable it entirely — that's the default.
+
+When set, one email is sent whenever a training run stops — finishes normally, crashes, or gets early-stopped — with the best checkpoint's epoch/metric value and the exit status. Free with any Gmail account: server `smtp.gmail.com`, port `465`, username = your Gmail address, password = a **Google App Password** (`myaccount.google.com/apppasswords`, requires 2-Step Verification to be enabled first) — not your normal Gmail password, which won't work here. Any other SMTP-over-SSL provider works the same way, just with different server/port.
+
+Only the address/server/port/username are saved between napari sessions — the password never is (same policy as the API key in the Statistics tab), so you'll need to re-enter it before each launch. If **Notify email** is filled in but username/password is missing, Launch Training refuses to start until you either fill both in or clear the email field.
+
+**Why this works even if napari is closed the whole time:** the notification isn't sent by the GUI's live polling (which only runs while napari is open) — instead, the launched background process itself is a small wrapper that runs the real training command, waits for it to finish, *then* sends the email, before exiting. That wrapper is what's detached and survives napari closing, exactly like the training script itself, so the email still arrives on schedule whether or not you ever reopen napari to see it. Clicking **Stop Training** kills the whole thing (wrapper included) before it reaches the email step, so a manual stop doesn't send one — only unattended completions/crashes do.
+
+---
+
+A switch below that picks one of two mutually-exclusive groups. Only one is shown at a time.
 
 ---
 
@@ -669,6 +682,7 @@ Both "Launch Training" buttons (MONAI and Cellpose-SAM) start a **detached backg
 - **Patience (checkpoints)** — an integer field in both groups, and it's the *same rule* for both: stop automatically once N checkpoints in a row pass with no improvement in the model-selection metric (Full-brain Dice for MONAI — higher is better; `test_loss` for Cellpose-SAM — lower is better; the plugin handles the direction per metric automatically). `0` disables early stopping entirely. This is enforced by the plugin itself, reading each checkpoint as it lands in the log — `train.py`'s own built-in `--patience` flag is always overridden to an effectively-infinite value so it can't quietly stop training before the GUI's check does; there's exactly one early-stopping mechanism, not two that happen to look the same in the UI.
 - **Reopening napari mid-training** — the plugin remembers the running job (including the patience setting) and automatically reconnects to it, so you don't lose visibility into a training run just because you closed and reopened napari. You'll see "Resumed monitoring PID ..." instead of an empty status.
 - **Reopening napari *after* the job already finished** — if the training process is no longer running by the time you reopen napari (e.g. it ran to completion, or crashed, while napari was closed), the status line reports that immediately: "Training (PID ...) finished while napari was closed. Best ... at epoch ...". For Cellpose-SAM this is also the point where the recommended-checkpoint pointer (see below) gets written, if it wasn't already. Either way you don't need to have napari open at the exact moment a run finishes — the next time you open it, it tells you what happened.
+- **Email notification** — see [Email notification (optional)](#email-notification-optional-shared-by-both-groups) above. Unlike the previous two bullets, this one doesn't depend on ever reopening napari at all — the email arrives on its own schedule regardless.
 - **Stop Training** — kills the training process and everything it spawned (the `conda run` wrapper spawns a child `python` process, and both are terminated together). Early stopping uses this same kill mechanism internally.
 - **Which checkpoint to use afterwards** — MONAI's `train.py` already tracks and saves its own best checkpoint as `best_model_fullstack.pth`, so nothing extra is needed there. `train_xzyz.py` (Cellpose-SAM) has no such tracking — it only saves periodic epoch checkpoints — so whenever the plugin observes a Cellpose-SAM run has stopped (finished on its own, early-stopped, or discovered already-finished the next time you reopen napari — see above), it writes a small pointer file, `<model_name>_best_recommended.txt`, into the run's `models/` folder next to the checkpoints. It's a one-line text file naming the best-scoring checkpoint (by `test_loss`), e.g. `cpsam_microglia_xzyz_epoch_0150` — not a copy of the (often 100s-of-MB) checkpoint itself, and not an OS symlink either (those need elevated privileges/Developer Mode on Windows), so it works the same way on every platform with no special permissions. The GUI's status line also reports the best epoch directly once the run stops.
 - **If a script isn't found** — the plugin guesses the location of `prepare_data.py`/`train.py`/`train_xzyz.py` based on this project's own folder layout; if that guess is wrong for your setup, override it via the `monai_prepare_script_path`/`monai_train_script_path`/`cellpose_train_script_path` keys in `~/.config/napari-zf-microglia-ai/config.json`.
@@ -1334,6 +1348,8 @@ Only shown with a CUDA GPU with ≥8GB VRAM. Switch at the top picks MONAI or Ce
 
 | Control | Default | What it does |
 |---------|---------|--------------|
+| Notify email | *(blank = off)* | Shared — one email when a run stops (finish/crash/early-stop), even if napari never reopens |
+| SMTP server / port / username / password | `smtp.gmail.com` / `465` / — / — | Shared — password never persisted, re-enter each session |
 | n_val / n_test | 5 / 5 | (MONAI) fish held out for val/test in Prepare Training Data |
 | epochs | 1500 | (MONAI) training length |
 | n_epochs | 200 | (Cellpose-SAM) training length |

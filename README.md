@@ -208,7 +208,9 @@ CSV saved as `<stem>_statistics.csv` in the output folder.
 
 Only appears when a CUDA GPU with **≥8GB VRAM** is detected (checked once at plugin startup) — this includes GT annotation, even though it itself needs no GPU, so the tab behaves consistently across machines instead of half-working on CPU-only setups. If hidden, none of this tab's functionality is reachable from the GUI.
 
-A switch at the top selects one of two mutually-exclusive groups:
+An **Email notification (optional)** panel sits above the switch, shared by both groups: fill in a recipient address + SMTP server/port/username/password (defaults to `smtp.gmail.com:465` — works with any Gmail account plus a free [App Password](https://myaccount.google.com/apppasswords), no other SMTP server needed) to get one email whenever a training run stops. Leave the address blank to disable it (the default). The password is never persisted to disk, same policy as the LLM API key in Tab 3. See [How training launches work](#how-training-launches-work) below for why this still works even if napari is never reopened.
+
+A switch below that selects one of two mutually-exclusive groups:
 
 ### MONAI Training
 
@@ -228,6 +230,8 @@ Both "Launch Training" buttons start a **detached background process** — `cond
 **Patience (checkpoints)** — both groups have this field, and it's the *same* early-stopping rule for both: stop once N checkpoints in a row show no improvement in the model-selection metric (Full-brain Dice for MONAI, `test_loss` for Cellpose-SAM — direction handled automatically, higher-better vs. lower-better). `0` disables it. This is enforced externally by the GUI itself (parsing each script's log as checkpoints land), not by `train.py`'s own built-in `--patience` flag — the plugin always overrides that to an effectively-infinite value so there's exactly one early-stopping mechanism in play, not two different ones that happen to look similar in the UI. Also persists and resumes correctly across a napari restart, same as the rest of the job state.
 
 **Recommended checkpoint (Cellpose-SAM only)** — MONAI's `train.py` already saves its own best checkpoint as `best_model_fullstack.pth`, so nothing extra is needed there. `train_xzyz.py` only saves periodic epoch checkpoints with no best-tracking, so whenever a Cellpose-SAM run stops (naturally or via early-stop), the GUI writes `<model_name>_best_recommended.txt` into the run's `models/` folder — a one-line pointer naming the best-`test_loss` checkpoint (e.g. `cpsam_microglia_xzyz_epoch_0150`), not a copy of the checkpoint itself and not an OS symlink (those need elevated privileges on Windows) — so it works identically cross-platform with no special permissions.
+
+**Email notification** — unlike the log-tail/patience/recommended-checkpoint features above, this one doesn't depend on the GUI polling loop at all, and so doesn't require ever reopening napari. When a recipient is set, the launched process is actually a small self-contained supervisor script (stdlib-only: `subprocess`/`smtplib`/`re`) that runs the real training command, waits for it to exit, parses the same log for the best checkpoint, and emails a completion report — *then* exits. Since the supervisor itself is what's detached, the email fires on its own schedule regardless of whether napari is running at that moment. Clicking "Stop Training" kills the whole process tree (supervisor included) before it reaches the email step, so a manual stop correctly sends no notification — only unattended completions/crashes do.
 
 ---
 

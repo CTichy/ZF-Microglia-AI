@@ -883,6 +883,67 @@ class ZFMicrogliaAIWidget(QWidget):
 
         t4.addWidget(_sep())
 
+        # ── Email notification (optional, shared by both groups) ────────── #
+        # Wraps the launched training command in a small self-contained
+        # supervisor script (see _training_jobs.launch_detached's `notify`
+        # param) that IS the detached process -- so the completion email
+        # still gets sent even if napari (and this whole plugin process)
+        # isn't running when the job finishes, same guarantee as the
+        # training itself surviving napari closing.
+        cfg = self._state.get("config", {})
+        ng = QGroupBox("Email notification (optional)")
+        nl = QVBoxLayout()
+        nl.setSpacing(6)
+
+        nto_row = QHBoxLayout()
+        nto_row.addWidget(QLabel("Notify email:"))
+        self._notify_to_edit = QLineEdit(cfg.get("notify_email_to", ""))
+        self._notify_to_edit.setPlaceholderText("leave blank to disable — e.g. you@example.com")
+        nto_row.addWidget(self._notify_to_edit)
+        nl.addLayout(nto_row)
+
+        nsmtp_row = QHBoxLayout()
+        nsmtp_row.addWidget(QLabel("SMTP server:"))
+        self._notify_smtp_host_edit = QLineEdit(cfg.get("notify_smtp_host", "smtp.gmail.com"))
+        nsmtp_row.addWidget(self._notify_smtp_host_edit)
+        nsmtp_row.addWidget(QLabel("port:"))
+        self._notify_smtp_port_spin = QSpinBox()
+        self._notify_smtp_port_spin.setRange(1, 65535)
+        self._notify_smtp_port_spin.setValue(int(cfg.get("notify_smtp_port", 465)))
+        nsmtp_row.addWidget(self._notify_smtp_port_spin)
+        nl.addLayout(nsmtp_row)
+
+        nuser_row = QHBoxLayout()
+        nuser_row.addWidget(QLabel("SMTP username:"))
+        self._notify_smtp_user_edit = QLineEdit(cfg.get("notify_smtp_user", ""))
+        nuser_row.addWidget(self._notify_smtp_user_edit)
+        nl.addLayout(nuser_row)
+
+        npass_row = QHBoxLayout()
+        npass_row.addWidget(QLabel("SMTP password:"))
+        self._notify_smtp_password_edit = QLineEdit("")
+        self._notify_smtp_password_edit.setEchoMode(QLineEdit.Password)
+        self._notify_smtp_password_edit.setPlaceholderText("never saved to disk — re-enter each session")
+        npass_row.addWidget(self._notify_smtp_password_edit)
+        nl.addLayout(npass_row)
+
+        notify_note = QLabel(
+            "Sends one email when a training run stops (finishes, crashes, or is early-stopped), "
+            "even if napari is closed at the time. Free with any Gmail account: smtp.gmail.com, "
+            "port 465, username = your Gmail address, password = a Google App Password "
+            "(myaccount.google.com/apppasswords — requires 2-Step Verification), not your normal "
+            "Gmail password. Only the address/server/username are saved between sessions — the "
+            "password never is, same as the API key in the Statistics tab."
+        )
+        notify_note.setWordWrap(True)
+        notify_note.setStyleSheet("color: #888; font-size: 10px;")
+        nl.addWidget(notify_note)
+
+        ng.setLayout(nl)
+        t4.addWidget(ng)
+
+        t4.addWidget(_sep())
+
         # ── Group switch ──────────────────────────────────────────────── #
         switch_row = QHBoxLayout()
         self._ai_monai_radio = QRadioButton("MONAI Training")
@@ -1667,8 +1728,13 @@ class ZFMicrogliaAIWidget(QWidget):
         session = f"monai_train_{datetime.now():%Y%m%d_%H%M%S}"
         log_path = Path(model_dir) / f"gui_launch_{session}.log"
 
+        notify, notify_err = self._build_notify_cfg("MONAI U-Net", _tj.MONAI_METRIC)
+        if notify_err:
+            self._mt_status_lbl.setText(notify_err)
+            return
+
         try:
-            pid = _tj.launch_detached(argv, cwd, log_path, conda_env)
+            pid = _tj.launch_detached(argv, cwd, log_path, conda_env, notify=notify)
         except Exception as exc:
             self._mt_status_lbl.setText(f"ERROR launching: {exc}")
             return
@@ -1924,8 +1990,13 @@ class ZFMicrogliaAIWidget(QWidget):
         log_dir.mkdir(parents=True, exist_ok=True)
         log_path = log_dir / f"gui_launch_{session}.log"
 
+        notify, notify_err = self._build_notify_cfg("Cellpose-SAM", _tj.CELLPOSE_METRIC)
+        if notify_err:
+            self._ct_status_lbl.setText(notify_err)
+            return
+
         try:
-            pid = _tj.launch_detached(argv, cwd, log_path, conda_env)
+            pid = _tj.launch_detached(argv, cwd, log_path, conda_env, notify=notify)
         except Exception as exc:
             self._ct_status_lbl.setText(f"ERROR launching: {exc}")
             return
@@ -2235,6 +2306,36 @@ class ZFMicrogliaAIWidget(QWidget):
             out = Path(".")
         out.mkdir(parents=True, exist_ok=True)
         return out
+
+    def _build_notify_cfg(self, job_label, metric_cfg):
+        """Read the shared Email notification fields (Tab 4, above the
+        MONAI/Cellpose-SAM switch) and return (notify_dict_or_None,
+        error_or_None) for _tj.launch_detached's `notify` param.
+        notify is None when the feature is disabled (recipient left
+        blank) -- not an error. Persists address/server/username so
+        they're prefilled next session; the password is never persisted,
+        same policy as the Statistics tab's LLM API key."""
+        to_addr = self._notify_to_edit.text().strip()
+        if not to_addr:
+            return None, None
+        smtp_host = self._notify_smtp_host_edit.text().strip() or "smtp.gmail.com"
+        smtp_port = self._notify_smtp_port_spin.value()
+        smtp_user = self._notify_smtp_user_edit.text().strip()
+        smtp_password = self._notify_smtp_password_edit.text()
+        if not smtp_user or not smtp_password:
+            return None, (
+                "ERROR: Notify email is set but SMTP username/password is missing "
+                "— fill both in, or clear the Notify email field to launch without notification."
+            )
+        self._save_cfg(
+            notify_email_to=to_addr, notify_smtp_host=smtp_host,
+            notify_smtp_port=smtp_port, notify_smtp_user=smtp_user,
+        )
+        return dict(
+            to_addr=to_addr, smtp_host=smtp_host, smtp_port=smtp_port,
+            smtp_user=smtp_user, smtp_password=smtp_password,
+            job_label=job_label, metric_cfg=metric_cfg,
+        ), None
 
     def _save_cfg(self, **kwargs) -> None:
         """Merge kwargs into the config and persist."""
