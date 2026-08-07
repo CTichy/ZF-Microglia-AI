@@ -40,6 +40,8 @@ if GPU_OK:
     from . import _ai_tools as _ait
     from . import _training_jobs as _tj
     from . import _crop_extraction as _crop
+    from . import _xzyz_patches as _xzp
+    from . import _crop_truncation as _ctr
     from . import _epoch_sweep as _esw
 
 _CONFIG_PATH = Path.home() / ".config" / "napari-zf-microglia-ai" / "config.json"
@@ -1755,7 +1757,9 @@ class ZFMicrogliaAIWidget(QWidget):
             ec_note = QLabel(
                 "Extracts single/double/triple/quadruple bbox crops per\n"
                 "cell (plus nearest neighbours) from a _statistics.csv +\n"
-                "image + labels triple, for Cellpose-SAM fine-tuning."
+                "image + labels triple, for Cellpose-SAM fine-tuning.\n"
+                "Older extraction method — see \"Extract XZYZ Patches\" below\n"
+                "for the one actually used by every real training run since May 2026."
             )
             ec_note.setWordWrap(True)
             ec_note.setStyleSheet("color: #aaa; font-size: 10px;")
@@ -1817,6 +1821,137 @@ class ZFMicrogliaAIWidget(QWidget):
             ecg.setLayout(ecl)
             self._ai_cellpose_group_layout.addWidget(ecg)
             self._ai_cellpose_group_layout.addWidget(_sep())
+
+            # ── Extract XZYZ Patches (generate_xzyz_patches.py) ─────────── #
+            # The crop-generation method every real Cellpose-SAM training
+            # run has actually used since May 2026 (train_cellpose_512,
+            # _multi, _multi3 -- including the branch-weighted-loss runs).
+            # Cleanup is on by default, not a separate manual step, per
+            # explicit instruction: crops should only ever train on cells
+            # that are substantially complete, going forward.
+            xzg = QGroupBox("Extract XZYZ Patches (current production method)")
+            xzl = QVBoxLayout()
+            xzl.setSpacing(6)
+
+            xz_note = QLabel(
+                "Generates 2D training crops in all 3 orientations (XY native, "
+                "XZ/YZ Z-stretched by anisotropy) from a full-fish image + GT "
+                "labels pair — the method actually used for every real "
+                "Cellpose-SAM training run in this project."
+            )
+            xz_note.setWordWrap(True)
+            xz_note.setStyleSheet("color: #888; font-size: 10px;")
+            xzl.addWidget(xz_note)
+
+            xz_img_row = QHBoxLayout()
+            xz_img_row.addWidget(QLabel("Image:"))
+            self._xz_img_edit = QLineEdit("")
+            xz_img_row.addWidget(self._xz_img_edit)
+            self._xz_img_browse_btn = QPushButton("...")
+            self._xz_img_browse_btn.setFixedWidth(32)
+            xz_img_row.addWidget(self._xz_img_browse_btn)
+            xzl.addLayout(xz_img_row)
+
+            xz_gt_row = QHBoxLayout()
+            xz_gt_row.addWidget(QLabel("GT labels:"))
+            self._xz_gt_edit = QLineEdit("")
+            xz_gt_row.addWidget(self._xz_gt_edit)
+            self._xz_gt_browse_btn = QPushButton("...")
+            self._xz_gt_browse_btn.setFixedWidth(32)
+            xz_gt_row.addWidget(self._xz_gt_browse_btn)
+            xzl.addLayout(xz_gt_row)
+
+            xz_out_row = QHBoxLayout()
+            xz_out_row.addWidget(QLabel("Output folder:"))
+            self._xz_out_edit = QLineEdit("")
+            xz_out_row.addWidget(self._xz_out_edit)
+            self._xz_out_browse_btn = QPushButton("...")
+            self._xz_out_browse_btn.setFixedWidth(32)
+            xz_out_row.addWidget(self._xz_out_browse_btn)
+            xzl.addLayout(xz_out_row)
+
+            xz_scale_row = QHBoxLayout()
+            xz_scale_row.addWidget(QLabel("Voxel scale Z (µm):"))
+            self._xz_scalez_spin = QDoubleSpinBox()
+            self._xz_scalez_spin.setDecimals(4)
+            self._xz_scalez_spin.setRange(0.0001, 100.0)
+            self._xz_scalez_spin.setValue(1.0)
+            xz_scale_row.addWidget(self._xz_scalez_spin)
+            xz_scale_row.addWidget(QLabel("XY (µm):"))
+            self._xz_scalexy_spin = QDoubleSpinBox()
+            self._xz_scalexy_spin.setDecimals(4)
+            self._xz_scalexy_spin.setRange(0.0001, 100.0)
+            self._xz_scalexy_spin.setValue(0.174)
+            xz_scale_row.addWidget(self._xz_scalexy_spin)
+            xzl.addLayout(xz_scale_row)
+
+            xz_opts_row = QHBoxLayout()
+            xz_opts_row.addWidget(QLabel("crop_size:"))
+            self._xz_cropsize_spin = QSpinBox()
+            self._xz_cropsize_spin.setRange(32, 4096)
+            self._xz_cropsize_spin.setValue(512)
+            xz_opts_row.addWidget(self._xz_cropsize_spin)
+            xz_opts_row.addWidget(QLabel("crops/slice:"))
+            self._xz_ncrops_spin = QSpinBox()
+            self._xz_ncrops_spin.setRange(1, 100)
+            self._xz_ncrops_spin.setValue(5)
+            xz_opts_row.addWidget(self._xz_ncrops_spin)
+            xz_opts_row.addWidget(QLabel("max/orientation:"))
+            self._xz_maxn_spin = QSpinBox()
+            self._xz_maxn_spin.setRange(1, 100000)
+            self._xz_maxn_spin.setValue(320)
+            xz_opts_row.addWidget(self._xz_maxn_spin)
+            xzl.addLayout(xz_opts_row)
+
+            xz_opts2_row = QHBoxLayout()
+            xz_opts2_row.addWidget(QLabel("min_gt_pixels:"))
+            self._xz_mingt_spin = QSpinBox()
+            self._xz_mingt_spin.setRange(1, 100000)
+            self._xz_mingt_spin.setValue(10)
+            xz_opts2_row.addWidget(self._xz_mingt_spin)
+            xz_opts2_row.addWidget(QLabel("seed:"))
+            self._xz_seed_spin = QSpinBox()
+            self._xz_seed_spin.setRange(0, 999999)
+            self._xz_seed_spin.setValue(42)
+            xz_opts2_row.addWidget(self._xz_seed_spin)
+            xzl.addLayout(xz_opts2_row)
+
+            self._xz_clean_cb = QCheckBox("Clean truncated labels after generation (recommended)")
+            self._xz_clean_cb.setChecked(True)
+            xzl.addWidget(self._xz_clean_cb)
+
+            xz_thresh_row = QHBoxLayout()
+            xz_thresh_row.addWidget(QLabel("Minimum visible fraction to keep a label:"))
+            self._xz_threshold_spin = QDoubleSpinBox()
+            self._xz_threshold_spin.setDecimals(2)
+            self._xz_threshold_spin.setRange(0.05, 1.0)
+            self._xz_threshold_spin.setValue(0.9)
+            xz_thresh_row.addWidget(self._xz_threshold_spin)
+            xzl.addLayout(xz_thresh_row)
+            xz_clean_note = QLabel(
+                "  Any label whose crop-visible pixel count is below this fraction of "
+                "its true full-slice size gets zeroed out — an incidental neighbor "
+                "grazed by the crop edge, not the crop's own intended cell (which is "
+                "essentially always well above this already). On by default: crops "
+                "should only ever train on substantially complete cells going forward."
+            )
+            xz_clean_note.setStyleSheet("color: #aaa; font-size: 10px;")
+            xz_clean_note.setWordWrap(True)
+            xzl.addWidget(xz_clean_note)
+
+            self._xz_run_btn = QPushButton("Extract XZYZ Patches")
+            self._xz_run_btn.setStyleSheet("QPushButton { font-weight: bold; padding: 5px; }")
+            xzl.addWidget(self._xz_run_btn)
+
+            self._xz_status_lbl = QLabel("")
+            self._xz_status_lbl.setWordWrap(True)
+            xzl.addWidget(self._xz_status_lbl)
+
+            xzg.setLayout(xzl)
+            self._ai_cellpose_group_layout.addWidget(xzg)
+            self._ai_cellpose_group_layout.addWidget(_sep())
+
+            self._xz_patches_job = {"thread": None, "timer": None}
 
             # ── Train Cellpose-SAM (train_xzyz.py) ──────────────────────── #
             ctg = QGroupBox("Train Cellpose-SAM")
@@ -2171,6 +2306,10 @@ class ZFMicrogliaAIWidget(QWidget):
             self._ec_img_browse_btn.clicked.connect(self._on_ec_browse_img)
             self._ec_lbl_browse_btn.clicked.connect(self._on_ec_browse_lbl)
             self._ec_run_btn.clicked.connect(self._on_extract_crops)
+            self._xz_img_browse_btn.clicked.connect(self._on_xz_browse_img)
+            self._xz_gt_browse_btn.clicked.connect(self._on_xz_browse_gt)
+            self._xz_out_browse_btn.clicked.connect(self._on_xz_browse_out)
+            self._xz_run_btn.clicked.connect(self._on_xz_run)
             self._ct_pretrained_browse_btn.clicked.connect(self._on_ct_browse_pretrained)
             self._ct_launch_btn.clicked.connect(self._on_ct_launch_training)
             self._ct_stop_btn.clicked.connect(self._on_ct_stop_training)
@@ -4482,4 +4621,105 @@ class ZFMicrogliaAIWidget(QWidget):
         timer.timeout.connect(_poll)
         timer.start(500)
         self._gt_package_job["timer"] = timer
+
+    def _on_xz_browse_img(self):
+        path_str, _ = QFileDialog.getOpenFileName(self, "Select source image", "", "TIFF files (*.tif *.tiff)")
+        if path_str:
+            self._xz_img_edit.setText(path_str)
+
+    def _on_xz_browse_gt(self):
+        path_str, _ = QFileDialog.getOpenFileName(self, "Select GT label volume", "", "TIFF files (*.tif *.tiff)")
+        if path_str:
+            self._xz_gt_edit.setText(path_str)
+
+    def _on_xz_browse_out(self):
+        path_str = QFileDialog.getExistingDirectory(self, "Select output folder")
+        if path_str:
+            self._xz_out_edit.setText(path_str)
+
+    def _on_xz_run(self):
+        """Generates XZYZ patches, then (by default -- see _xz_clean_cb)
+        immediately cleans truncated incidental-neighbor labels in the
+        same background thread, so a fresh extraction is clean by
+        construction rather than needing a separate remembered step."""
+        if self._xz_patches_job.get("thread") and self._xz_patches_job["thread"].is_alive():
+            self._xz_status_lbl.setText("An extraction is already running.")
+            return
+
+        img_path = self._xz_img_edit.text().strip()
+        gt_path = self._xz_gt_edit.text().strip()
+        out_dir = self._xz_out_edit.text().strip()
+        if not (img_path and gt_path and out_dir):
+            self._xz_status_lbl.setText("ERROR: set Image, GT labels, and Output folder.")
+            return
+        for label_str, p in (("Image", img_path), ("GT labels", gt_path)):
+            if not Path(p).exists():
+                self._xz_status_lbl.setText(f"ERROR: {label_str} not found: {p}")
+                return
+
+        anisotropy = self._xz_scalez_spin.value() / self._xz_scalexy_spin.value()
+        crop_size = self._xz_cropsize_spin.value()
+        ncrops_per_slice = self._xz_ncrops_spin.value()
+        max_per_orientation = self._xz_maxn_spin.value()
+        min_gt_pixels = self._xz_mingt_spin.value()
+        seed = self._xz_seed_spin.value()
+        do_clean = self._xz_clean_cb.isChecked()
+        threshold = self._xz_threshold_spin.value()
+
+        self._xz_run_btn.setEnabled(False)
+        self._xz_status_lbl.setText("Extracting XZYZ patches...")
+
+        result = {}
+
+        def _worker():
+            try:
+                gen = _xzp.generate_xzyz_patches(
+                    img_path, gt_path, out_dir, anisotropy,
+                    crop_size=crop_size, ncrops_per_slice=ncrops_per_slice,
+                    max_per_orientation=max_per_orientation, min_gt_pixels=min_gt_pixels,
+                    seed=seed, progress_cb=lambda msg: result.update(_progress=msg),
+                )
+                result["gen"] = gen
+                if do_clean and not gen.get("cancelled"):
+                    clean = _ctr.clean_crop_truncation(
+                        gen["out_dir"], gt_path, anisotropy, threshold=threshold,
+                        progress_cb=lambda msg: result.update(_progress=f"cleanup: {msg}"),
+                    )
+                    result["clean"] = clean
+            except Exception as exc:
+                result["error"] = f"{exc}\n{traceback.format_exc()}"
+
+        thread = threading.Thread(target=_worker, daemon=True)
+        self._xz_patches_job["thread"] = thread
+        self._xz_patches_job["result"] = result
+        thread.start()
+
+        timer = QTimer(self)
+
+        def _poll():
+            if "_progress" in result:
+                self._xz_status_lbl.setText(result["_progress"])
+            if thread.is_alive():
+                return
+            timer.stop()
+            self._xz_patches_job["timer"] = None
+            self._xz_run_btn.setEnabled(True)
+
+            if "error" in result:
+                self._xz_status_lbl.setText(f"ERROR: {result['error'].splitlines()[0]}")
+                print(result["error"])
+                return
+
+            gen = result["gen"]
+            n_total = gen["n_xy"] + gen["n_xz"] + gen["n_yz"]
+            msg = f"Extracted {n_total} crops (xy={gen['n_xy']}, xz={gen['n_xz']}, yz={gen['n_yz']})."
+            if "clean" in result:
+                c = result["clean"]
+                msg += (f" Cleanup: {c['n_files_modified']}/{c['n_files_scanned']} files modified, "
+                        f"{c['n_labels_zeroed']} truncated labels zeroed.")
+            self._xz_status_lbl.setText(msg)
+
+        timer.timeout.connect(_poll)
+        timer.start(500)
+        self._xz_patches_job["timer"] = timer
 
