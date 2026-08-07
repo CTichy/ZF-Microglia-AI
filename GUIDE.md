@@ -673,6 +673,20 @@ Extracts fine-tuning crops and launches Cellpose-SAM training — the model Tab 
 
 **Train Cellpose-SAM** launches fine-tuning — configure `n_epochs`/`batch_size`/`save_every`/`log_every`/`lr`, then click **Launch Training**. The `pretrained` field defaults to whatever checkpoint is already loaded in Tab 2's Cellpose-SAM Segmentation section — i.e. by default this **continues training from where Tab 2 left off**, though you can browse to a different starting checkpoint (or type a builtin name like `cpsam`) if you want to start fresh. `branch_weight`/`branch_radius` control the project's branch-weighted loss (weights thin/branch-tip pixels more heavily during training so the model doesn't under-segment fine processes) — set `branch_weight` to `0` to disable it and use the standard Cellpose loss instead.
 
+**Verify Best Epoch (GT Sweep)** answers a specific question the recommended checkpoint alone can't: `test_loss` (what picks the recommendation) is a proxy for segmentation quality, not the real thing, and checkpoints often plateau within noise of each other. This tool checks the recommendation against actual ground truth on a small, deliberately hard sample:
+
+1. **GT image** / **GT labels** — browse to a full-fish raw/brain_only image and its corrected ground-truth label volume (the same pair used to build training crops). Doesn't need to be a fish the current model was trained on, but usually is — it's the same file pair you'd use to sanity-check any checkpoint.
+2. **Recommended epoch** — click **Read from pointer file** to pull it from `<model_name>_best_recommended.txt` (uses this section's own Data dir/model_name from Train Cellpose-SAM above), or type it in manually if no pointer exists yet.
+3. Click **Run Epoch Sweep**. The tool:
+   - Finds the **N most morphologically complex cells** in the GT volume (default 5) — ranked by skeleton branch count (most-branched first), sphericity as a tiebreak, *not* by cell size. A large cell is often simple/amoeboid; a genuinely branchy one is what actually stresses the branch-weighted loss.
+   - Crops each to its bounding box + padding (default 15 vox Z, 40 vox XY).
+   - Runs `do_3D` inference at the recommended epoch plus **N checkpoints below and above it** (default 2 and 2 — a 5-epoch × 5-cell = 25-inference sweep by default), best-IoU-matches each prediction against its GT cell, and averages.
+   - Reports a table (same format as the project's earlier manual sweeps) plus a plain confirm/disagree verdict against the recommended epoch.
+
+This can take a while — each `do_3D` call is a few minutes, so a default 5×5 sweep is roughly 30 minutes to a couple of hours depending on cell/crop size and GPU. **Stop Sweep** cancels between checkpoints (not mid-inference) and still shows whatever completed. Unlike Launch Training, this does **not** run as a detached process and does **not** survive closing napari — it's meant to be watched, in the same tier as Extract Training Crops, not the multi-hour/day training jobs.
+
+If the sweep disagrees with the recommendation, that's a signal to look closer (only a handful of cells and epochs were tested), not an automatic override — the tool reports it clearly but doesn't rewrite the recommended-checkpoint pointer for you.
+
 ---
 
 ### How training launches work
@@ -1409,6 +1423,7 @@ Only shown with a CUDA GPU with ≥8GB VRAM. Switch at the top picks MONAI or Ce
 | Patience (checkpoints) | 5 | Both — stop after N checkpoints with no improvement (Dice/test_loss); 0 disables |
 | Launch Training | — | Starts a detached process that survives closing napari; GUI reconnects automatically next time |
 | *(on stop, Cellpose-SAM only)* | — | Writes `<model_name>_best_recommended.txt` in `models/` — a pointer, not a copy, to the best-test_loss checkpoint |
+| Verify Best Epoch (GT Sweep) | 5 cells, ±2 checkpoints | (Cellpose-SAM) confirms the recommendation against real GT IoU/Dice, not just test_loss — doesn't survive closing napari |
 | Stop Training | — | Kills the training process and its children |
 
 ---

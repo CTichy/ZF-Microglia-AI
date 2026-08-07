@@ -230,6 +230,7 @@ A switch below that selects one of two mutually-exclusive groups:
 
 - **Extract Training Crops** — from a `_statistics.csv` + brain_only image + labels triple, extracts single/double/triple/quadruple bbox crops per cell (cell + nearest neighbours) for fine-tuning.
 - **Train Cellpose-SAM** — launches fine-tuning (~20h for 200 epochs), defaulting the pretrained-checkpoint field to whatever's already loaded in Tab 2 — "continue training from where Tab 2 left off." Includes the project's branch-weighted loss option (`branch_weight`/`branch_radius`; `branch_weight=0` disables it, using the standard Cellpose loss).
+- **Verify Best Epoch (GT Sweep)** — automates the project's manual GT-verification methodology: `test_loss` (what the recommended-checkpoint pointer is based on) is only a proxy for real segmentation quality, so this finds the N most morphologically complex cells in a GT-annotated fish (ranked by skeleton branch count, not size — a large cell is often simple/amoeboid), crops each to its bounding box, and runs `do_3D` inference at the recommended epoch plus N checkpoints below/above it (default 5 cells × 5 epochs = 25 inferences), best-IoU-matching each prediction against GT. Reports a table plus a confirm/disagree verdict — a disagreement is a signal to look closer, not an automatic override. Takes roughly 30 minutes to a couple of hours depending on cell size and GPU; runs as a plain background thread (not detached), so unlike Launch Training it does **not** survive closing napari.
 
 ### How training launches work
 

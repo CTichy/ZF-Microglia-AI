@@ -35,6 +35,7 @@ if GPU_OK:
     from . import _ai_tools as _ait
     from . import _training_jobs as _tj
     from . import _crop_extraction as _crop
+    from . import _epoch_sweep as _esw
 
 _CONFIG_PATH = Path.home() / ".config" / "napari-zf-microglia-ai" / "config.json"
 
@@ -1402,6 +1403,164 @@ class ZFMicrogliaAIWidget(QWidget):
 
             ctg.setLayout(ctl)
             self._ai_cellpose_group_layout.addWidget(ctg)
+            self._ai_cellpose_group_layout.addWidget(_sep())
+
+            # ── Verify Best Epoch (GT sweep) ────────────────────────────── #
+            esg = QGroupBox("Verify Best Epoch (GT Sweep)")
+            esl = QVBoxLayout()
+            esl.setSpacing(6)
+
+            es_note = QLabel(
+                "Automates the manual GT-verification sweep: finds the N most "
+                "morphologically complex cells in a ground-truth-annotated fish "
+                "(most skeleton branches, not simply the largest), crops each to "
+                "its bounding box, and runs do_3D inference at the recommended "
+                "epoch plus checkpoints below/above it to confirm which epoch "
+                "actually scores best against real GT — test_loss is only a proxy."
+            )
+            es_note.setWordWrap(True)
+            es_note.setStyleSheet("color: #888; font-size: 10px;")
+            esl.addWidget(es_note)
+
+            es_img_row = QHBoxLayout()
+            es_img_row.addWidget(QLabel("GT image:"))
+            self._es_img_edit = QLineEdit("")
+            es_img_row.addWidget(self._es_img_edit)
+            self._es_img_browse_btn = QPushButton("...")
+            self._es_img_browse_btn.setFixedWidth(32)
+            es_img_row.addWidget(self._es_img_browse_btn)
+            esl.addLayout(es_img_row)
+
+            es_lbl_row = QHBoxLayout()
+            es_lbl_row.addWidget(QLabel("GT labels:"))
+            self._es_lbl_edit = QLineEdit("")
+            es_lbl_row.addWidget(self._es_lbl_edit)
+            self._es_lbl_browse_btn = QPushButton("...")
+            self._es_lbl_browse_btn.setFixedWidth(32)
+            es_lbl_row.addWidget(self._es_lbl_browse_btn)
+            esl.addLayout(es_lbl_row)
+            es_gt_note = QLabel(
+                "  A full-fish raw/brain_only image + its corrected ground-truth "
+                "label volume — the same pair used to create training crops."
+            )
+            es_gt_note.setStyleSheet("color: #aaa; font-size: 10px;")
+            es_gt_note.setWordWrap(True)
+            esl.addWidget(es_gt_note)
+
+            es_rec_row = QHBoxLayout()
+            es_rec_row.addWidget(QLabel("Recommended epoch:"))
+            self._es_recepoch_spin = QSpinBox()
+            self._es_recepoch_spin.setRange(0, 1000000)
+            es_rec_row.addWidget(self._es_recepoch_spin)
+            self._es_readrec_btn = QPushButton("Read from pointer file")
+            es_rec_row.addWidget(self._es_readrec_btn)
+            esl.addLayout(es_rec_row)
+            es_rec_note = QLabel(
+                "  Reads <model_name>_best_recommended.txt (see Train Cellpose-SAM "
+                "above) using this section's Data dir/model_name — or set manually."
+            )
+            es_rec_note.setStyleSheet("color: #aaa; font-size: 10px;")
+            es_rec_note.setWordWrap(True)
+            esl.addWidget(es_rec_note)
+
+            es_span_row = QHBoxLayout()
+            es_span_row.addWidget(QLabel("Checkpoints below:"))
+            self._es_below_spin = QSpinBox()
+            self._es_below_spin.setRange(0, 20)
+            self._es_below_spin.setValue(2)
+            es_span_row.addWidget(self._es_below_spin)
+            es_span_row.addWidget(QLabel("above:"))
+            self._es_above_spin = QSpinBox()
+            self._es_above_spin.setRange(0, 20)
+            self._es_above_spin.setValue(2)
+            es_span_row.addWidget(self._es_above_spin)
+            es_span_row.addWidget(QLabel("save_every:"))
+            self._es_saveevery_spin = QSpinBox()
+            self._es_saveevery_spin.setRange(1, 1000)
+            self._es_saveevery_spin.setValue(10)
+            es_span_row.addWidget(self._es_saveevery_spin)
+            esl.addLayout(es_span_row)
+
+            es_cells_row = QHBoxLayout()
+            es_cells_row.addWidget(QLabel("Complex cells to test:"))
+            self._es_ncells_spin = QSpinBox()
+            self._es_ncells_spin.setRange(1, 50)
+            self._es_ncells_spin.setValue(5)
+            es_cells_row.addWidget(self._es_ncells_spin)
+            es_cells_row.addWidget(QLabel("Pad Z:"))
+            self._es_padz_spin = QSpinBox()
+            self._es_padz_spin.setRange(0, 200)
+            self._es_padz_spin.setValue(15)
+            es_cells_row.addWidget(self._es_padz_spin)
+            es_cells_row.addWidget(QLabel("Pad XY:"))
+            self._es_padxy_spin = QSpinBox()
+            self._es_padxy_spin.setRange(0, 500)
+            self._es_padxy_spin.setValue(40)
+            es_cells_row.addWidget(self._es_padxy_spin)
+            esl.addLayout(es_cells_row)
+
+            es_scale_row = QHBoxLayout()
+            es_scale_row.addWidget(QLabel("Voxel scale Z (µm):"))
+            self._es_scalez_spin = QDoubleSpinBox()
+            self._es_scalez_spin.setDecimals(4)
+            self._es_scalez_spin.setRange(0.0001, 100.0)
+            self._es_scalez_spin.setValue(1.0)
+            es_scale_row.addWidget(self._es_scalez_spin)
+            es_scale_row.addWidget(QLabel("XY (µm):"))
+            self._es_scalexy_spin = QDoubleSpinBox()
+            self._es_scalexy_spin.setDecimals(4)
+            self._es_scalexy_spin.setRange(0.0001, 100.0)
+            self._es_scalexy_spin.setValue(0.174)
+            es_scale_row.addWidget(self._es_scalexy_spin)
+            esl.addLayout(es_scale_row)
+            es_scale_note = QLabel(
+                "  Independent of whatever's currently open in the viewer — set explicitly "
+                "for the GT fish above (defaults match this project's standard 0.174µm/1.0µm)."
+            )
+            es_scale_note.setStyleSheet("color: #aaa; font-size: 10px;")
+            es_scale_note.setWordWrap(True)
+            esl.addWidget(es_scale_note)
+
+            es_inf_row = QHBoxLayout()
+            es_inf_row.addWidget(QLabel("Cellprob threshold:"))
+            self._es_cellprob_spin = QDoubleSpinBox()
+            self._es_cellprob_spin.setDecimals(2)
+            self._es_cellprob_spin.setRange(-6.0, 6.0)
+            self._es_cellprob_spin.setSingleStep(0.1)
+            self._es_cellprob_spin.setValue(self._cp_cellprob_spin.value())
+            es_inf_row.addWidget(self._es_cellprob_spin)
+            es_inf_row.addWidget(QLabel("Flow threshold:"))
+            self._es_flow_spin = QDoubleSpinBox()
+            self._es_flow_spin.setDecimals(2)
+            self._es_flow_spin.setRange(0.0, 1.0)
+            self._es_flow_spin.setSingleStep(0.05)
+            self._es_flow_spin.setValue(self._cp_flow_spin.value())
+            es_inf_row.addWidget(self._es_flow_spin)
+            esl.addLayout(es_inf_row)
+
+            es_btn_row = QHBoxLayout()
+            self._es_run_btn = QPushButton("Run Epoch Sweep")
+            self._es_run_btn.setStyleSheet("QPushButton { font-weight: bold; padding: 5px; }")
+            es_btn_row.addWidget(self._es_run_btn)
+            self._es_stop_btn = QPushButton("Stop Sweep")
+            self._es_stop_btn.setEnabled(False)
+            es_btn_row.addWidget(self._es_stop_btn)
+            esl.addLayout(es_btn_row)
+
+            self._es_status_lbl = QLabel("")
+            self._es_status_lbl.setWordWrap(True)
+            esl.addWidget(self._es_status_lbl)
+
+            self._es_report_view = QTextEdit()
+            self._es_report_view.setReadOnly(True)
+            self._es_report_view.setStyleSheet("font-family: monospace; font-size: 9px;")
+            self._es_report_view.setFixedHeight(160)
+            esl.addWidget(self._es_report_view)
+
+            esg.setLayout(esl)
+            self._ai_cellpose_group_layout.addWidget(esg)
+
+            self._epoch_sweep_job = {"thread": None, "cancel_event": None, "timer": None}
 
             self._cellpose_job = {"pid": None, "log_path": None, "timer": None}
 
@@ -1457,6 +1616,11 @@ class ZFMicrogliaAIWidget(QWidget):
             self._ct_pretrained_browse_btn.clicked.connect(self._on_ct_browse_pretrained)
             self._ct_launch_btn.clicked.connect(self._on_ct_launch_training)
             self._ct_stop_btn.clicked.connect(self._on_ct_stop_training)
+            self._es_img_browse_btn.clicked.connect(self._on_es_browse_img)
+            self._es_lbl_browse_btn.clicked.connect(self._on_es_browse_lbl)
+            self._es_readrec_btn.clicked.connect(self._on_es_read_recommended)
+            self._es_run_btn.clicked.connect(self._on_es_run_sweep)
+            self._es_stop_btn.clicked.connect(self._on_es_stop_sweep)
         self._viewer.layers.events.inserted.connect(self._refresh_layer_info)
         self._viewer.layers.events.removed.connect(self._refresh_layer_info)
         self._viewer.layers.selection.events.changed.connect(self._refresh_layer_info)
@@ -2067,6 +2231,193 @@ class ZFMicrogliaAIWidget(QWidget):
                 )
             else:
                 self._ct_status_lbl.setText(f"Training (PID {pid}) is no longer running.")
+
+    def _on_es_browse_img(self):
+        path_str, _ = QFileDialog.getOpenFileName(self, "Select GT fish's image", "", "TIFF files (*.tif *.tiff)")
+        if path_str:
+            self._es_img_edit.setText(path_str)
+
+    def _on_es_browse_lbl(self):
+        path_str, _ = QFileDialog.getOpenFileName(self, "Select GT label volume", "", "TIFF files (*.tif *.tiff)")
+        if path_str:
+            self._es_lbl_edit.setText(path_str)
+
+    def _on_es_read_recommended(self):
+        """Reads <model_name>_best_recommended.txt (written by the Train
+        Cellpose-SAM section on stop -- see _write_cellpose_best_pointer)
+        and fills the Recommended epoch spinbox from it."""
+        data_dir = self._ct_data_dir_edit.text().strip()
+        model_name = self._ct_modelname_edit.text().strip()
+        if not (data_dir and model_name):
+            self._es_status_lbl.setText("ERROR: set Data dir/model_name in Train Cellpose-SAM above first.")
+            return
+        models_dir = Path(data_dir) / "models"
+        target = _tj.read_best_checkpoint_pointer(models_dir, model_name)
+        if target is None:
+            self._es_status_lbl.setText(
+                f"No recommended-checkpoint pointer found yet for '{model_name}' in {models_dir} "
+                "— it's written once a training run stops. Set the epoch manually instead."
+            )
+            return
+        try:
+            epoch = int(target.name.rsplit("_epoch_", 1)[1])
+        except (IndexError, ValueError):
+            self._es_status_lbl.setText(f"Could not parse an epoch number from pointer target: {target.name}")
+            return
+        self._es_recepoch_spin.setValue(epoch)
+        self._es_status_lbl.setText(f"Read epoch {epoch} from {target.name}.")
+
+    def _on_es_run_sweep(self):
+        if self._epoch_sweep_job.get("thread") and self._epoch_sweep_job["thread"].is_alive():
+            self._es_status_lbl.setText("A sweep is already running.")
+            return
+
+        img_path = self._es_img_edit.text().strip()
+        lbl_path = self._es_lbl_edit.text().strip()
+        if not (img_path and lbl_path):
+            self._es_status_lbl.setText("ERROR: set GT image and GT labels paths first.")
+            return
+        if not Path(img_path).exists():
+            self._es_status_lbl.setText(f"ERROR: GT image not found: {img_path}")
+            return
+        if not Path(lbl_path).exists():
+            self._es_status_lbl.setText(f"ERROR: GT labels not found: {lbl_path}")
+            return
+
+        data_dir = self._ct_data_dir_edit.text().strip()
+        model_name = self._ct_modelname_edit.text().strip()
+        if not (data_dir and model_name):
+            self._es_status_lbl.setText("ERROR: set Data dir/model_name in Train Cellpose-SAM above first.")
+            return
+        models_dir = Path(data_dir) / "models"
+
+        recommended = self._es_recepoch_spin.value()
+        save_every = self._es_saveevery_spin.value()
+        available = []
+        prefix = f"{model_name}_epoch_"
+        if models_dir.exists():
+            for p in models_dir.iterdir():
+                if p.name.startswith(prefix) and p.is_file():
+                    try:
+                        available.append(int(p.name[len(prefix):]))
+                    except ValueError:
+                        pass
+        if recommended not in available:
+            self._es_status_lbl.setText(
+                f"ERROR: no checkpoint '{model_name}_epoch_{recommended:04d}' in {models_dir} "
+                "— set Recommended epoch to a value that actually has a checkpoint on disk."
+            )
+            return
+
+        try:
+            epochs = _esw.pick_sweep_epochs(
+                recommended, save_every, available,
+                n_below=self._es_below_spin.value(), n_above=self._es_above_spin.value(),
+            )
+        except ValueError as exc:
+            self._es_status_lbl.setText(f"ERROR: {exc}")
+            return
+
+        scale_zyx = (self._es_scalez_spin.value(), self._es_scalexy_spin.value(), self._es_scalexy_spin.value())
+        cellprob = self._es_cellprob_spin.value()
+        flow = self._es_flow_spin.value()
+        n_cells = self._es_ncells_spin.value()
+        pad_z = self._es_padz_spin.value()
+        pad_xy = self._es_padxy_spin.value()
+
+        cancel_event = threading.Event()
+        result = {}
+        progress = {"lines": []}
+        progress_lock = threading.Lock()
+
+        def _progress_cb(msg):
+            with progress_lock:
+                progress["lines"].append(msg)
+
+        def _worker():
+            try:
+                sweep = _esw.run_epoch_sweep(
+                    img_path, lbl_path, models_dir, model_name, epochs, scale_zyx,
+                    cellprob=cellprob, flow=flow, n_cells=n_cells,
+                    pad_z=pad_z, pad_xy=pad_xy, gpu=torch.cuda.is_available(),
+                    progress_cb=_progress_cb, cancel_event=cancel_event,
+                )
+                result["sweep"] = sweep
+            except Exception as exc:
+                result["error"] = f"{exc}\n{traceback.format_exc()}"
+
+        thread = threading.Thread(target=_worker, daemon=True)
+        self._epoch_sweep_job["thread"] = thread
+        self._epoch_sweep_job["cancel_event"] = cancel_event
+        self._epoch_sweep_job["result"] = result
+        self._epoch_sweep_job["progress"] = progress
+        self._epoch_sweep_job["progress_lock"] = progress_lock
+        self._epoch_sweep_job["recommended"] = recommended
+        self._es_run_btn.setEnabled(False)
+        self._es_stop_btn.setEnabled(True)
+        self._es_report_view.clear()
+        self._es_status_lbl.setText(f"Sweeping epochs {epochs} across up to {n_cells} cells ...")
+        thread.start()
+        self._start_epoch_sweep_polling()
+
+    def _on_es_stop_sweep(self):
+        cancel_event = self._epoch_sweep_job.get("cancel_event")
+        if cancel_event:
+            cancel_event.set()
+        self._es_status_lbl.setText("Cancelling — finishing the current checkpoint's inferences, then stopping...")
+        self._es_stop_btn.setEnabled(False)
+
+    def _start_epoch_sweep_polling(self):
+        """Fast (500ms) poll matching other bounded, minutes-to-an-hour-class
+        background jobs in this tab (Extract Crops, Prepare Training Data) --
+        this one is not launched as a detached process, so it does not
+        survive napari closing; unlike Launch Training, it's meant to be
+        watched, and is short enough not to need that guarantee."""
+        timer = QTimer(self)
+        job = self._epoch_sweep_job
+
+        def _poll():
+            with job["progress_lock"]:
+                lines = list(job["progress"]["lines"])
+                job["progress"]["lines"].clear()
+            if lines:
+                self._es_report_view.append("\n".join(lines))
+                sb = self._es_report_view.verticalScrollBar()
+                sb.setValue(sb.maximum())
+
+            if job["thread"].is_alive():
+                return
+            timer.stop()
+            job["timer"] = None
+            self._es_run_btn.setEnabled(True)
+            self._es_stop_btn.setEnabled(False)
+
+            result = job["result"]
+            if "error" in result:
+                self._es_status_lbl.setText(f"ERROR during sweep: {result['error'].splitlines()[0]}")
+                self._es_report_view.append("\n" + result["error"])
+                return
+
+            sweep = result["sweep"]
+            report = _esw.format_sweep_report(sweep, job["recommended"])
+            self._es_report_view.setPlainText(report)
+            if sweep.get("cancelled"):
+                self._es_status_lbl.setText("Sweep cancelled — partial results above.")
+            elif sweep["best_epoch"] == job["recommended"]:
+                self._es_status_lbl.setText(
+                    f"Confirmed: epoch {job['recommended']} is the sweep's best "
+                    f"(avg IoU={sweep['per_epoch_avg'][sweep['best_epoch']]['iou']:.1f}%)."
+                )
+            else:
+                self._es_status_lbl.setText(
+                    f"Sweep's best is epoch {sweep['best_epoch']} "
+                    f"(avg IoU={sweep['per_epoch_avg'][sweep['best_epoch']]['iou']:.1f}%), "
+                    f"not the recommended {job['recommended']} — see report below."
+                )
+
+        timer.timeout.connect(_poll)
+        timer.start(500)
+        job["timer"] = timer
 
     def _get_layer_scale(self):
         """
