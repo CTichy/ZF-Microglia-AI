@@ -20,4 +20,4 @@ where = ["."]
 include = ["napari_zf_microglia_ai*"]
 
 [tool.setuptools.package-data]
-"napari_zf_microglia_ai" = ["napari.yaml"]
+"napari_zf_microglia_ai" = ["napari.yaml", "training_scripts/*.py"]

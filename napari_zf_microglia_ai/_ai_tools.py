@@ -1,25 +1,36 @@
 """
-_ai_tools.py — argv builders + best-effort default script-path resolution
-for the AI Tools tab's external training scripts.
+_ai_tools.py — argv builders + default script-path resolution for the AI
+Tools tab's training scripts.
 
-These scripts (prepare_data.py, train.py, train_xzyz.py) are not part of
-the plugin package and aren't distributed with it — they live in sibling
-research-project folders on this specific machine. The default paths
-below are a best-effort guess based on this project's own directory
-layout (same pattern as _inference.py's DEFAULT_MODEL / _SKIN_SEG_DIR),
-always overridable via a Browse button; nothing here assumes the guess
-is correct.
+These scripts (prepare_data.py, train.py, train_xzyz.py) are project-
+specific research code, launched as separate subprocesses rather than
+imported — but they ship *inside the installed package*, under
+training_scripts/ next to this file, and are declared as package-data in
+pyproject.toml. That placement matters: this project's main documented
+install path (environment.yml's pip section) installs straight from
+`git+https://github.com/...` into a throwaway build directory, not from
+whatever local clone the user happens to have on disk — so anything
+living outside the actual Python package (e.g. a training_scripts/ folder
+at the repo root, sibling to napari_zf_microglia_ai/) never survives that
+install and would 404 at runtime. Living *inside* the package directory
+means these scripts travel with it into site-packages regardless of
+whether the install is editable (`pip install -e .`) or the normal
+git+https install. (An earlier version of this file pointed at sibling
+folders in this project's private monorepo, which only existed on the
+original dev machine and were never published at all — anyone else's
+Tab 4 launchers failed with "script not found" out of the box.) Still
+always overridable via a Browse button / the config file, e.g. to point
+at a locally modified copy.
 """
 
 from pathlib import Path
 
-_PLUGIN_DIR = Path(__file__).resolve().parents[1]        # .../skin_segmentation/napari-skin-remover
-_SKIN_SEG_DIR = _PLUGIN_DIR.parent                        # .../skin_segmentation
-_MASTER_PROJECT_DIR = _SKIN_SEG_DIR.parent                # .../MasterProject
+_PLUGIN_DIR = Path(__file__).resolve().parent             # .../napari_zf_microglia_ai (package dir)
+_TRAINING_SCRIPTS_DIR = _PLUGIN_DIR / "training_scripts"
 
-DEFAULT_PREPARE_DATA_SCRIPT = _SKIN_SEG_DIR / "prepare_data.py"
-DEFAULT_MONAI_TRAIN_SCRIPT = _SKIN_SEG_DIR / "train.py"
-DEFAULT_CELLPOSE_TRAIN_SCRIPT = _MASTER_PROJECT_DIR / "microglia_segmentation" / "train_xzyz.py"
+DEFAULT_PREPARE_DATA_SCRIPT = _TRAINING_SCRIPTS_DIR / "prepare_data.py"
+DEFAULT_MONAI_TRAIN_SCRIPT = _TRAINING_SCRIPTS_DIR / "train.py"
+DEFAULT_CELLPOSE_TRAIN_SCRIPT = _TRAINING_SCRIPTS_DIR / "train_xzyz.py"
 
 
 def build_prepare_data_argv(script_path, brain_dirs, skin_dirs, output_dir,

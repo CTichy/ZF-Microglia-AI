@@ -122,7 +122,7 @@ If your machine has no GPU at all, use the **Pixel Classifier** instead — it n
 
 ### Training scripts (Tab 4 — AI Tools only)
 
-Tab 4 launches three external, project-specific research scripts (`prepare_data.py`, `train.py`, `train_xzyz.py`) that aren't part of the plugin package or distributed with it. The plugin guesses their location based on this project's own directory layout; if that guess is wrong for your setup, the config file (`~/.config/napari-zf-microglia-ai/config.json`) has `monai_prepare_script_path`/`monai_train_script_path`/`cellpose_train_script_path` keys to override.
+Tab 4 launches three project-specific research scripts (`prepare_data.py`, `train.py`, `train_xzyz.py`) as separate subprocesses. They ship with the plugin — bundled under `napari_zf_microglia_ai/training_scripts/` and installed as package data — so they're present for every install method (plain `git+https://` install or editable). If you want to point at a locally modified copy instead, the config file (`~/.config/napari-zf-microglia-ai/config.json`) has `monai_prepare_script_path`/`monai_train_script_path`/`cellpose_train_script_path` keys to override.
 
 ---
 
