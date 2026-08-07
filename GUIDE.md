@@ -657,6 +657,22 @@ The CSV contains one row per label with up to 45 columns depending on which opti
 
 ---
 
+### Score Against GT
+
+Whole-fish instance-segmentation scoring: Hungarian-matched TP/FP/FN/Score plus mean IoU/Dice (over matched pairs only), between any two Labels layers already loaded in the viewer. This is the same methodology (`compare_pred_gt.py`) this project has used to validate essentially every real modeling decision — checkpoint picks, cellprob/large_contact tuning, before/after model comparisons — ported into the plugin instead of staying a CLI-only script.
+
+1. **Predicted labels** / **GT labels** — pick any two Labels layers from the dropdowns (same shape required).
+2. **IoU threshold for a match** — the minimum IoU for a predicted object to count as a true positive for a given GT object (default 0.5, matching this project's historical convention).
+3. Click **Score Against GT**.
+
+Runs synchronously (pure CPU, `scipy.optimize.linear_sum_assignment`) — fast enough at typical whole-fish object counts (tens to low hundreds) that a background thread isn't needed. Object pairs are only compared when their bounding boxes actually intersect (IoU is necessarily 0 otherwise), so this stays fast without ever missing a possible match.
+
+**Score = TP − 0.5×(FP + FN)**, matching the exact formula used throughout this project's historical result tables. The report lists every matched pair (IoU%, Dice%, voxel counts, size delta), plus the FN (missed GT) and FP (spurious predicted) object IDs.
+
+This is a genuinely different tool from the three GT-sweep tools elsewhere in the plugin (Tab 1/2/4): those each test a handful of parameter combinations against a handful of complex cells (or one mask) as a fast proxy; this scores one specific pair of label volumes completely, the way a final reported result would be scored.
+
+---
+
 ## 8. Tab 4 — AI Tools
 
 Only appears when the plugin detects a CUDA GPU with **≥8GB VRAM** — checked once when napari starts. This is deliberate, not a bug: this tab launches multi-hour to multi-day training jobs and lets you draw ground-truth annotations, and both of those only make sense together with a GPU capable of actually training on the result. If your machine doesn't qualify, this whole tab — including GT Annotation, which itself needs no GPU — simply doesn't appear, so behavior stays consistent across machines rather than half-working on a CPU-only setup.
@@ -1443,6 +1459,7 @@ Shown automatically based on active layer suffix — `_ExtRm` → Cellpose-SAM, 
 | Boundary lines | Any Shapes layer / None | Assigns cells to named brain regions |
 | Region names | Comma-separated text | Names for each region (N lines → N+1 names) |
 | Generate Statistics | — | Computes up to 45 metrics per label, saves CSV |
+| Score Against GT | any 2 Labels layers | Whole-fish Hungarian-matched TP/FP/FN/Score/MeanIoU/MeanDice — synchronous, no GPU needed |
 
 ### Tab 4 — AI Tools
 

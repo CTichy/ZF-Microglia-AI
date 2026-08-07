@@ -206,6 +206,8 @@ Computes up to 51 features per labelled cell and exports a CSV.
 
 CSV saved as `<stem>_statistics.csv` in the output folder.
 
+**Score Against GT** — whole-fish, Hungarian-matched instance scoring (TP/FP/FN/Score + mean IoU/Dice over matched pairs) between any two Labels layers already in the viewer. This is the `compare_pred_gt.py` methodology this project has used to validate essentially every real modeling decision, ported as a reusable tool instead of staying CLI-only. `Score = TP − 0.5×(FP + FN)`, matching this project's established convention. Runs synchronously — pure CPU (`scipy.optimize.linear_sum_assignment`), no GPU needed, fast at typical whole-fish object counts. Distinct from the three GT-*sweep* tools elsewhere (Tab 1/2/4): those test parameter grids against a handful of proxy cells; this scores one specific pair of label volumes completely.
+
 ---
 
 ## Tab 4 — AI Tools

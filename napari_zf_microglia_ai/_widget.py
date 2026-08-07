@@ -31,6 +31,7 @@ from ._statistics import compute_stats
 from ._cellpose_seg import run_full_pipeline as _run_cellpose_pipeline
 from . import _pixel_sweep as _psw
 from . import _brain_sweep as _bsw
+from . import _gt_score as _gts
 from ._gpu_check import GPU_OK, GPU_MSG
 if GPU_OK:
     from . import _gt_annotation as _gt
@@ -1122,6 +1123,68 @@ class ZFMicrogliaAIWidget(QWidget):
         self._stats_status_lbl.setWordWrap(True)
         t3.addWidget(self._stats_status_lbl)
 
+        t3.addWidget(_sep())
+
+        # ── Score Against GT — whole-fish Hungarian-matched scoring ────── #
+        # The compare_pred_gt.py methodology this project has used to
+        # validate essentially every real modeling decision, ported as a
+        # reusable scorer instead of remaining a CLI-only script. No GPU
+        # needed -- pure Hungarian matching (scipy) between two already-
+        # computed Labels layers.
+        gtg = QGroupBox("Score Against GT")
+        gtl = QVBoxLayout()
+        gtl.setSpacing(6)
+
+        gt_note = QLabel(
+            "Whole-fish, Hungarian-matched instance scoring (TP/FP/FN/Score + "
+            "mean IoU/Dice on matched pairs) between any predicted Labels layer "
+            "and a ground-truth Labels layer — same methodology used throughout "
+            "this project's own model comparisons, not an approximation."
+        )
+        gt_note.setWordWrap(True)
+        gt_note.setStyleSheet("color: #888; font-size: 10px;")
+        gtl.addWidget(gt_note)
+
+        gt_pred_row = QHBoxLayout()
+        gt_pred_row.addWidget(QLabel("Predicted labels:"))
+        self._gtscore_pred_combo = QComboBox()
+        self._gtscore_pred_combo.addItem("None", None)
+        gt_pred_row.addWidget(self._gtscore_pred_combo)
+        gtl.addLayout(gt_pred_row)
+
+        gt_gt_row = QHBoxLayout()
+        gt_gt_row.addWidget(QLabel("GT labels:"))
+        self._gtscore_gt_combo = QComboBox()
+        self._gtscore_gt_combo.addItem("None", None)
+        gt_gt_row.addWidget(self._gtscore_gt_combo)
+        gtl.addLayout(gt_gt_row)
+
+        gt_thresh_row = QHBoxLayout()
+        gt_thresh_row.addWidget(QLabel("IoU threshold for a match:"))
+        self._gtscore_thresh_spin = QDoubleSpinBox()
+        self._gtscore_thresh_spin.setDecimals(2)
+        self._gtscore_thresh_spin.setRange(0.05, 0.95)
+        self._gtscore_thresh_spin.setValue(0.5)
+        gt_thresh_row.addWidget(self._gtscore_thresh_spin)
+        gtl.addLayout(gt_thresh_row)
+
+        self._gtscore_btn = QPushButton("Score Against GT")
+        self._gtscore_btn.setStyleSheet("QPushButton { font-weight: bold; padding: 5px; }")
+        gtl.addWidget(self._gtscore_btn)
+
+        self._gtscore_status_lbl = QLabel("")
+        self._gtscore_status_lbl.setWordWrap(True)
+        gtl.addWidget(self._gtscore_status_lbl)
+
+        self._gtscore_report_view = QTextEdit()
+        self._gtscore_report_view.setReadOnly(True)
+        self._gtscore_report_view.setStyleSheet("font-family: monospace; font-size: 9px;")
+        self._gtscore_report_view.setFixedHeight(160)
+        gtl.addWidget(self._gtscore_report_view)
+
+        gtg.setLayout(gtl)
+        t3.addWidget(gtg)
+
         t3.addStretch()
         tab3.setLayout(t3)
         tabs.addTab(tab3, "Statistics")
@@ -1867,6 +1930,7 @@ class ZFMicrogliaAIWidget(QWidget):
         self._save_labels_btn.clicked.connect(self._on_save_labels)
         self._stats_backend_combo.currentIndexChanged.connect(self._on_stats_backend_changed)
         self._stats_btn.clicked.connect(self._on_generate_stats)
+        self._gtscore_btn.clicked.connect(self._on_gtscore_run)
         if GPU_OK:
             self._ai_mode_group.buttonClicked.connect(self._on_ai_tools_mode_changed)
             self._gt_image_combo.currentIndexChanged.connect(self._on_gt_image_changed)
@@ -2769,6 +2833,19 @@ class ZFMicrogliaAIWidget(QWidget):
                     )
         self._stats_shapes_combo.blockSignals(False)
 
+        # Labels layers (Score Against GT)
+        for combo in (self._gtscore_pred_combo, self._gtscore_gt_combo):
+            cur = combo.currentData()
+            combo.blockSignals(True)
+            combo.clear()
+            combo.addItem("None", None)
+            for lyr in self._viewer.layers:
+                if isinstance(lyr, napari.layers.Labels):
+                    combo.addItem(lyr.name, lyr.name)
+                    if lyr.name == cur:
+                        combo.setCurrentIndex(combo.count() - 1)
+            combo.blockSignals(False)
+
     def _refresh_layer_info(self, *_):
         lyr = self._active_layer()
         if lyr is None:
@@ -3580,6 +3657,42 @@ class ZFMicrogliaAIWidget(QWidget):
 
         timer.timeout.connect(_poll)
         timer.start(500)
+
+    def _on_gtscore_run(self):
+        """Whole-fish Hungarian-matched scoring -- pure CPU (scipy), fast
+        enough at typical whole-fish object counts (tens to low hundreds)
+        to run synchronously without a background thread."""
+        pred_name = self._gtscore_pred_combo.currentData()
+        gt_name = self._gtscore_gt_combo.currentData()
+        if not pred_name or not gt_name:
+            self._gtscore_status_lbl.setText("ERROR: select both a Predicted labels and a GT labels layer.")
+            return
+        if pred_name not in self._viewer.layers or gt_name not in self._viewer.layers:
+            self._gtscore_status_lbl.setText("ERROR: selected layer no longer exists — refresh the dropdowns.")
+            return
+
+        pred_labels = np.asarray(self._viewer.layers[pred_name].data)
+        gt_labels = np.asarray(self._viewer.layers[gt_name].data)
+        if pred_labels.shape != gt_labels.shape:
+            self._gtscore_status_lbl.setText(
+                f"ERROR: shape mismatch — {pred_name} is {pred_labels.shape}, {gt_name} is {gt_labels.shape}."
+            )
+            return
+
+        threshold = self._gtscore_thresh_spin.value()
+        try:
+            result = _gts.score_against_gt(pred_labels, gt_labels, iou_threshold=threshold)
+        except Exception as exc:
+            self._gtscore_status_lbl.setText(f"ERROR: {exc}")
+            traceback.print_exc()
+            return
+
+        report = _gts.format_gt_score_report(result, pred_name=pred_name, gt_name=gt_name)
+        self._gtscore_report_view.setPlainText(report)
+        self._gtscore_status_lbl.setText(
+            f"TP={result['tp']}  FP={result['fp']}  FN={result['fn']}  Score={result['score']:+.1f}  "
+            f"MeanIoU={result['mean_iou']:.1f}%  MeanDice={result['mean_dice']:.1f}%"
+        )
 
     def _on_create_labels(self):
         # Read active layer
