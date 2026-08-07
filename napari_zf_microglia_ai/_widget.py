@@ -33,6 +33,7 @@ from . import _pixel_sweep as _psw
 from . import _brain_sweep as _bsw
 from . import _gt_score as _gts
 from . import _krendl_sweep as _ksw
+from . import _gt_package as _gtp
 from ._gpu_check import GPU_OK, GPU_MSG
 if GPU_OK:
     from . import _gt_annotation as _gt
@@ -944,6 +945,101 @@ class ZFMicrogliaAIWidget(QWidget):
         t2.addWidget(krg)
 
         self._krendl_sweep_job = {"thread": None, "cancel_event": None, "timer": None}
+
+        # ── Build GT-Correction Package — always visible, no GPU needed ── #
+        # Packages a Krendl segmentation result for external manual
+        # correction, matching the exact file layout this project has
+        # produced by hand for every fish sent out (D1F1, D1F2, D1F4x2):
+        # GROUND_TRUTH_CREATION_GUIDE.md + masks_corrected.tif (the Krendl
+        # output, correction starting point) + cp_masks_3D.tif (raw,
+        # reference) + a per-cell statistics CSV + the source image,
+        # zipped together.
+        gtpg = QGroupBox("Build GT-Correction Package")
+        gtpl = QVBoxLayout()
+        gtpl.setSpacing(6)
+
+        gtp_note = QLabel(
+            "Packages a Krendl segmentation result for external manual "
+            "correction — same layout this project has hand-assembled for "
+            "every fish sent out so far. The corrected result becomes future "
+            "training/GT data."
+        )
+        gtp_note.setWordWrap(True)
+        gtp_note.setStyleSheet("color: #888; font-size: 10px;")
+        gtpl.addWidget(gtp_note)
+
+        gtp_stem_row = QHBoxLayout()
+        gtp_stem_row.addWidget(QLabel("Fish stem:"))
+        self._gtp_stem_edit = QLineEdit("")
+        gtp_stem_row.addWidget(self._gtp_stem_edit)
+        gtpl.addLayout(gtp_stem_row)
+        gtp_stem_note = QLabel("  Used to name every file in the package, e.g. NT39-3dpf-D1F4_2024-...")
+        gtp_stem_note.setStyleSheet("color: #aaa; font-size: 10px;")
+        gtp_stem_note.setWordWrap(True)
+        gtpl.addWidget(gtp_stem_note)
+
+        gtp_img_row = QHBoxLayout()
+        gtp_img_row.addWidget(QLabel("Source image:"))
+        self._gtp_img_edit = QLineEdit("")
+        gtp_img_row.addWidget(self._gtp_img_edit)
+        self._gtp_img_browse_btn = QPushButton("...")
+        self._gtp_img_browse_btn.setFixedWidth(32)
+        gtp_img_row.addWidget(self._gtp_img_browse_btn)
+        gtpl.addLayout(gtp_img_row)
+
+        gtp_masks_row = QHBoxLayout()
+        gtp_masks_row.addWidget(QLabel("Krendl masks:"))
+        self._gtp_masks_edit = QLineEdit("")
+        gtp_masks_row.addWidget(self._gtp_masks_edit)
+        self._gtp_masks_browse_btn = QPushButton("...")
+        self._gtp_masks_browse_btn.setFixedWidth(32)
+        gtp_masks_row.addWidget(self._gtp_masks_browse_btn)
+        gtpl.addLayout(gtp_masks_row)
+        gtp_masks_note = QLabel("  The Run Cellpose-SAM Segmentation output — becomes masks_corrected.tif (\"start here\").")
+        gtp_masks_note.setStyleSheet("color: #aaa; font-size: 10px;")
+        gtp_masks_note.setWordWrap(True)
+        gtpl.addWidget(gtp_masks_note)
+
+        gtp_raw_row = QHBoxLayout()
+        gtp_raw_row.addWidget(QLabel("Raw Cellpose masks (optional):"))
+        self._gtp_raw_edit = QLineEdit("")
+        gtp_raw_row.addWidget(self._gtp_raw_edit)
+        self._gtp_raw_browse_btn = QPushButton("...")
+        self._gtp_raw_browse_btn.setFixedWidth(32)
+        gtp_raw_row.addWidget(self._gtp_raw_browse_btn)
+        gtpl.addLayout(gtp_raw_row)
+
+        gtp_guide_row = QHBoxLayout()
+        gtp_guide_row.addWidget(QLabel("Creation guide (optional override):"))
+        self._gtp_guide_edit = QLineEdit("")
+        self._gtp_guide_edit.setPlaceholderText(str(_gtp.DEFAULT_GT_GUIDE_PATH))
+        gtp_guide_row.addWidget(self._gtp_guide_edit)
+        self._gtp_guide_browse_btn = QPushButton("...")
+        self._gtp_guide_browse_btn.setFixedWidth(32)
+        gtp_guide_row.addWidget(self._gtp_guide_browse_btn)
+        gtpl.addLayout(gtp_guide_row)
+
+        gtp_out_row = QHBoxLayout()
+        gtp_out_row.addWidget(QLabel("Output folder:"))
+        self._gtp_out_edit = QLineEdit("")
+        gtp_out_row.addWidget(self._gtp_out_edit)
+        self._gtp_out_browse_btn = QPushButton("...")
+        self._gtp_out_browse_btn.setFixedWidth(32)
+        gtp_out_row.addWidget(self._gtp_out_browse_btn)
+        gtpl.addLayout(gtp_out_row)
+
+        self._gtp_run_btn = QPushButton("Build GT-Correction Package")
+        self._gtp_run_btn.setStyleSheet("QPushButton { font-weight: bold; padding: 5px; }")
+        gtpl.addWidget(self._gtp_run_btn)
+
+        self._gtp_status_lbl = QLabel("")
+        self._gtp_status_lbl.setWordWrap(True)
+        gtpl.addWidget(self._gtp_status_lbl)
+
+        gtpg.setLayout(gtpl)
+        t2.addWidget(gtpg)
+
+        self._gt_package_job = {"thread": None, "timer": None}
 
         t2.addWidget(_sep())
 
@@ -2045,6 +2141,12 @@ class ZFMicrogliaAIWidget(QWidget):
         self._kr_gt_browse_btn.clicked.connect(self._on_kr_browse_gt)
         self._kr_run_btn.clicked.connect(self._on_kr_run_sweep)
         self._kr_stop_btn.clicked.connect(self._on_kr_stop_sweep)
+        self._gtp_img_browse_btn.clicked.connect(self._on_gtp_browse_img)
+        self._gtp_masks_browse_btn.clicked.connect(self._on_gtp_browse_masks)
+        self._gtp_raw_browse_btn.clicked.connect(self._on_gtp_browse_raw)
+        self._gtp_guide_browse_btn.clicked.connect(self._on_gtp_browse_guide)
+        self._gtp_out_browse_btn.clicked.connect(self._on_gtp_browse_out)
+        self._gtp_run_btn.clicked.connect(self._on_gtp_run)
         self._resort_btn.clicked.connect(self._on_resort_labels)
         self._split_use_sel_btn.clicked.connect(self._on_use_selected_label)
         self._split_btn.clicked.connect(self._on_split_label)
@@ -4284,3 +4386,100 @@ class ZFMicrogliaAIWidget(QWidget):
         timer.timeout.connect(_poll)
         timer.start(500)
         job["timer"] = timer
+
+    def _on_gtp_browse_img(self):
+        path_str, _ = QFileDialog.getOpenFileName(self, "Select source image", "", "TIFF files (*.tif *.tiff)")
+        if path_str:
+            self._gtp_img_edit.setText(path_str)
+
+    def _on_gtp_browse_masks(self):
+        path_str, _ = QFileDialog.getOpenFileName(self, "Select Krendl segmentation output", "", "TIFF files (*.tif *.tiff)")
+        if path_str:
+            self._gtp_masks_edit.setText(path_str)
+
+    def _on_gtp_browse_raw(self):
+        path_str, _ = QFileDialog.getOpenFileName(self, "Select raw pre-merge Cellpose masks (optional)", "", "TIFF files (*.tif *.tiff)")
+        if path_str:
+            self._gtp_raw_edit.setText(path_str)
+
+    def _on_gtp_browse_guide(self):
+        path_str, _ = QFileDialog.getOpenFileName(self, "Select GROUND_TRUTH_CREATION_GUIDE.md", "", "Markdown files (*.md)")
+        if path_str:
+            self._gtp_guide_edit.setText(path_str)
+
+    def _on_gtp_browse_out(self):
+        path_str = QFileDialog.getExistingDirectory(self, "Select output folder")
+        if path_str:
+            self._gtp_out_edit.setText(path_str)
+
+    def _on_gtp_run(self):
+        if self._gt_package_job.get("thread") and self._gt_package_job["thread"].is_alive():
+            self._gtp_status_lbl.setText("A package build is already running.")
+            return
+
+        stem = self._gtp_stem_edit.text().strip()
+        img_path = self._gtp_img_edit.text().strip()
+        masks_path = self._gtp_masks_edit.text().strip()
+        out_dir = self._gtp_out_edit.text().strip()
+        if not (stem and img_path and masks_path and out_dir):
+            self._gtp_status_lbl.setText("ERROR: set Fish stem, Source image, Krendl masks, and Output folder.")
+            return
+        for label_str, p in (("Source image", img_path), ("Krendl masks", masks_path)):
+            if not Path(p).exists():
+                self._gtp_status_lbl.setText(f"ERROR: {label_str} not found: {p}")
+                return
+        raw_path = self._gtp_raw_edit.text().strip() or None
+        if raw_path and not Path(raw_path).exists():
+            self._gtp_status_lbl.setText(f"ERROR: Raw Cellpose masks not found: {raw_path}")
+            return
+        guide_path = self._gtp_guide_edit.text().strip() or None
+
+        scale = self._get_layer_scale()
+
+        self._gtp_run_btn.setEnabled(False)
+        self._gtp_status_lbl.setText("Building GT-correction package...")
+
+        result = {}
+
+        def _worker():
+            try:
+                package_dir, zip_path, n_cells = _gtp.build_gt_package(
+                    stem, out_dir, img_path, masks_path,
+                    raw_cellpose_masks_path=raw_path, scale_zyx=scale, guide_path=guide_path,
+                    progress_cb=lambda msg: result.update(_progress=msg),
+                )
+                result["package_dir"] = package_dir
+                result["zip_path"] = zip_path
+                result["n_cells"] = n_cells
+            except Exception as exc:
+                result["error"] = f"{exc}\n{traceback.format_exc()}"
+
+        thread = threading.Thread(target=_worker, daemon=True)
+        self._gt_package_job["thread"] = thread
+        self._gt_package_job["result"] = result
+        thread.start()
+
+        timer = QTimer(self)
+
+        def _poll():
+            if "_progress" in result:
+                self._gtp_status_lbl.setText(result["_progress"])
+            if thread.is_alive():
+                return
+            timer.stop()
+            self._gt_package_job["timer"] = None
+            self._gtp_run_btn.setEnabled(True)
+
+            if "error" in result:
+                self._gtp_status_lbl.setText(f"ERROR: {result['error'].splitlines()[0]}")
+                print(result["error"])
+                return
+
+            self._gtp_status_lbl.setText(
+                f"Done — {result['n_cells']} cells. Package: {result['zip_path']}"
+            )
+
+        timer.timeout.connect(_poll)
+        timer.start(500)
+        self._gt_package_job["timer"] = timer
+

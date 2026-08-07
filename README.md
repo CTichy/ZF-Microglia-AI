@@ -189,6 +189,8 @@ Requires a **Cellpose-SAM checkpoint** — this is a project-specific fine-tuned
 
 **Verify Cellprob / Large-contact (GT Sweep)** — sweeps Cellprob x Large-contact against a full-fish GT labels volume, scored with the same whole-fish Hungarian-matched methodology as Tab 3's "Score Against GT" — how the current defaults were actually found historically, now automated. Cellprob needs a real `do_3D` re-inference per value (GPU-preferred, same fallback as Run Cellpose-SAM Segmentation); Large-contact is a cheap post-processing merge threshold swept on top of one `do_3D` result per Cellprob value (reusing this project's own `--skip_inference` shortcut), so total time scales with the Cellprob axis only, not the full grid size.
 
+**Build GT-Correction Package** — packages a Krendl segmentation result (source image + `masks_corrected.tif` + optional raw pre-merge masks + a lightweight per-cell CSV + `GROUND_TRUTH_CREATION_GUIDE.md`) into a folder + zip, matching the exact layout this project has hand-assembled for every fish sent out for manual GT correction (D1F1, D1F2, two D1F4 fish so far). The corrected result becomes future training data via Tab 4's Extract Training Crops.
+
 ### Additional tools
 
 - **Resort Labels** — renumber 1…N by size, centroid Z/Y/X

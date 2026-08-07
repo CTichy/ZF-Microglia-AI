@@ -485,6 +485,34 @@ Because of that, total sweep time scales with the number of **Cellprob** values 
 
 ---
 
+### Build GT-Correction Package
+
+Packages a Krendl segmentation result for external manual correction — the exact file layout this project has assembled by hand for every fish sent out for ground-truth creation. The corrected result becomes future training/GT data, closing the loop between inference and the training tools in Tab 4.
+
+1. **Fish stem** — the identifier used to name every file in the package (e.g. `NT39-3dpf-D1F4_2024-09-05_15.38.01`).
+2. **Source image** — the `brain_only` image the segmentation ran on.
+3. **Krendl masks** — the output of **Run Cellpose-SAM Segmentation** above. Becomes `<stem>_masks_corrected.tif` — the file the reviewer edits first ("start here" per the guide).
+4. **Raw Cellpose masks** (optional) — the pre-merge `do_3D` output, if you have it, included as `<stem>_cp_masks_3D.tif` for reference only (not corrected).
+5. **Creation guide** (optional override) — defaults to this project's own `GROUND_TRUTH_CREATION_GUIDE.md`; only set this if it lives somewhere else on your machine.
+6. **Output folder** — where the package folder and `.zip` are created.
+
+Click **Build GT-Correction Package**. Output:
+
+```
+<output folder>/
+├── <stem>_GT_package/
+│   ├── GROUND_TRUTH_CREATION_GUIDE.md
+│   ├── <stem>_masks_corrected.tif
+│   ├── <stem>_cp_masks_3D.tif        (only if provided)
+│   ├── <stem>_cell_statistics.csv    (label/volume/centroid/bbox — quick reference, not the full Tab 3 output)
+│   └── <stem>_brain_only_ExtRm.tif
+└── <stem>_GT_package.zip             (the folder above, zipped)
+```
+
+The statistics CSV is deliberately minimal (label, volume, centroid, bounding box) — a quick reference for someone correcting labels, not the full ~51-column Tab 3 Statistics output.
+
+---
+
 ### Sort by / Reverse order / Resort Labels
 
 After creating (or loading) labels, you can renumber them by a criterion of your choice.
@@ -1458,6 +1486,7 @@ Shown automatically based on active layer suffix — `_ExtRm` → Cellpose-SAM, 
 | Safe-merge min contact | 10 vox | Min touching surface required to merge |
 | Large-contact merge | 20 vox | Second merge pass for thick-junction splits |
 | Verify Cellprob / Large-contact (GT Sweep) | 5x5 grid | Confirms against whole-fish GT — Cellprob needs re-inference (GPU-preferred), Large-contact is cheap |
+| Build GT-Correction Package | — | Zips Krendl output + stats CSV + creation guide for external manual correction |
 
 **Both methods (once labels exist)**
 
