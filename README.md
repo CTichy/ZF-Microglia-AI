@@ -227,6 +227,8 @@ Both "Launch Training" buttons start a **detached background process** — `cond
 
 **Patience (checkpoints)** — both groups have this field, and it's the *same* early-stopping rule for both: stop once N checkpoints in a row show no improvement in the model-selection metric (Full-brain Dice for MONAI, `test_loss` for Cellpose-SAM — direction handled automatically, higher-better vs. lower-better). `0` disables it. This is enforced externally by the GUI itself (parsing each script's log as checkpoints land), not by `train.py`'s own built-in `--patience` flag — the plugin always overrides that to an effectively-infinite value so there's exactly one early-stopping mechanism in play, not two different ones that happen to look similar in the UI. Also persists and resumes correctly across a napari restart, same as the rest of the job state.
 
+**Recommended checkpoint (Cellpose-SAM only)** — MONAI's `train.py` already saves its own best checkpoint as `best_model_fullstack.pth`, so nothing extra is needed there. `train_xzyz.py` only saves periodic epoch checkpoints with no best-tracking, so whenever a Cellpose-SAM run stops (naturally or via early-stop), the GUI writes `<model_name>_best_recommended.txt` into the run's `models/` folder — a one-line pointer naming the best-`test_loss` checkpoint (e.g. `cpsam_microglia_xzyz_epoch_0150`), not a copy of the checkpoint itself and not an OS symlink (those need elevated privileges on Windows) — so it works identically cross-platform with no special permissions.
+
 ---
 
 ## Typical voxel dimensions (zebrafish 4 dpf, 25× objective)

@@ -19,6 +19,7 @@ content, and `tail -f <log_path>` still works manually if wanted.
 import platform
 import re
 import subprocess
+from pathlib import Path
 
 import psutil
 
@@ -27,13 +28,22 @@ import psutil
 # between the two training scripts, but the counting/comparison logic that
 # consumes these values is the same function for both -- this is the only
 # place the two scripts' early-stopping behavior actually differs.
+#
+# Both patterns capture (epoch, metric_value) as groups 1/2, so the "best
+# checkpoint" can always be reported/located by its real training epoch,
+# not just its position in the log. MONAI's epoch and Dice value are on
+# separate lines ("Epoch N Summary:" ... "Full-brain Dice: X [MODEL
+# SELECTION]"), hence DOTALL to span them; Cellpose-SAM has both on one
+# line ("N, train_loss=..., test_loss=X, ...").
 MONAI_METRIC = dict(
-    pattern=r"Full-brain Dice:\s*([\d.]+)\s*\[MODEL SELECTION\]",
+    pattern=r"Epoch (\d+) Summary:.*?Full-brain Dice:\s*([\d.]+)\s*\[MODEL SELECTION\]",
+    flags=re.DOTALL,
     higher_is_better=True,
     label="Full-brain Dice",
 )
 CELLPOSE_METRIC = dict(
-    pattern=r"test_loss=([\d.]+)",
+    pattern=r"(\d+), train_loss=[\d.]+, test_loss=([\d.]+)",
+    flags=0,
     higher_is_better=False,
     label="test_loss",
 )
@@ -121,15 +131,19 @@ def tail_log(log_path, n_bytes=8192) -> str:
         return f"(could not read log: {exc})"
 
 
-def _parse_metric_series(log_path, pattern):
-    """Return every value of the metric captured by `pattern` (one capture
-    group) found in log_path, in the order they were printed."""
+def _parse_metric_series(log_path, metric_cfg):
+    """Return [(epoch, value), ...] for every checkpoint matched by
+    metric_cfg['pattern'] (capture groups 1=epoch, 2=value) in log_path,
+    in the order they were printed."""
     try:
         with open(log_path, "r", errors="replace") as f:
             text = f.read()
     except FileNotFoundError:
         return []
-    return [float(m.group(1)) for m in re.finditer(pattern, text)]
+    return [
+        (int(m.group(1)), float(m.group(2)))
+        for m in re.finditer(metric_cfg["pattern"], text, metric_cfg.get("flags", 0))
+    ]
 
 
 def patience_exceeded(log_path, metric_cfg, patience):
@@ -143,16 +157,22 @@ def patience_exceeded(log_path, metric_cfg, patience):
     log regardless of how each script defines its internal epoch/val
     cadence.
 
-    Returns a dict: {exceeded, n_checkpoints, best_value, best_index,
-    checkpoints_since_best}. `patience <= 0` means disabled (never
-    exceeded) -- checked by the caller, not here, so this function stays
-    a pure query with no special-casing.
-    """
-    values = _parse_metric_series(log_path, metric_cfg["pattern"])
-    if not values:
-        return dict(exceeded=False, n_checkpoints=0, best_value=None,
-                     best_index=None, checkpoints_since_best=0)
+    Also doubles as a plain "what's the best checkpoint so far" query --
+    callers that only want best_epoch/best_value (e.g. once a job has
+    stopped on its own, not via early-stop) can call this with any
+    `patience` and just ignore `exceeded`.
 
+    Returns a dict: {exceeded, n_checkpoints, best_value, best_epoch,
+    checkpoints_since_best}. `patience <= 0` means exceeded is always
+    False (disabled) -- checked here so every caller gets the same
+    "best so far" info regardless of whether early-stop is enabled.
+    """
+    series = _parse_metric_series(log_path, metric_cfg)
+    if not series:
+        return dict(exceeded=False, n_checkpoints=0, best_value=None,
+                     best_epoch=None, checkpoints_since_best=0)
+
+    values = [v for _, v in series]
     if metric_cfg["higher_is_better"]:
         best_index = max(range(len(values)), key=lambda i: values[i])
     else:
@@ -160,10 +180,55 @@ def patience_exceeded(log_path, metric_cfg, patience):
 
     checkpoints_since_best = len(values) - 1 - best_index
     exceeded = patience > 0 and checkpoints_since_best >= patience
+    best_epoch, best_value = series[best_index]
     return dict(
-        exceeded=exceeded, n_checkpoints=len(values), best_value=values[best_index],
-        best_index=best_index, checkpoints_since_best=checkpoints_since_best,
+        exceeded=exceeded, n_checkpoints=len(values), best_value=best_value,
+        best_epoch=best_epoch, checkpoints_since_best=checkpoints_since_best,
     )
+
+
+def write_best_checkpoint_pointer(models_dir, model_name, best_epoch, suffix="best_recommended"):
+    """
+    Write a small text pointer file '{model_name}_{suffix}.txt' naming the
+    recommended checkpoint, so it doesn't require reading the log/GUI
+    history to identify later. Only meaningful for Cellpose-SAM
+    (train_xzyz.py saves only periodic epoch checkpoints, no separate
+    best-tracking) -- MONAI's train.py already auto-saves its own
+    best_model_fullstack.pth, so the GUI never needs to call this for
+    MONAI jobs.
+
+    Deliberately a plain text pointer, not a copy and not an OS symlink --
+    checkpoints are large (100s of MB) so copying wastes disk, and
+    os.symlink needs elevated privileges/Developer Mode on Windows (a hard
+    link would dodge that, but silently fails across filesystem/drive
+    boundaries). A one-line text file naming the target resolves
+    identically on every platform with zero special permissions.
+
+    Returns the pointer file's Path, or raises FileNotFoundError if the
+    target checkpoint (e.g. deleted, or not a save_every multiple) isn't
+    on disk -- a stale pointer is never written.
+    """
+    models_dir = Path(models_dir)
+    target_name = f"{model_name}_epoch_{best_epoch:04d}"
+    if not (models_dir / target_name).exists():
+        raise FileNotFoundError(f"Best checkpoint not found on disk: {models_dir / target_name}")
+    pointer = models_dir / f"{model_name}_{suffix}.txt"
+    pointer.write_text(target_name + "\n")
+    return pointer
+
+
+def read_best_checkpoint_pointer(models_dir, model_name, suffix="best_recommended"):
+    """
+    Resolve a pointer written by write_best_checkpoint_pointer() back to
+    the actual checkpoint path. Returns None if no pointer exists yet, or
+    if the checkpoint it names is no longer on disk.
+    """
+    models_dir = Path(models_dir)
+    pointer = models_dir / f"{model_name}_{suffix}.txt"
+    if not pointer.exists():
+        return None
+    target = models_dir / pointer.read_text().strip()
+    return target if target.exists() else None
 
 
 def run_subprocess_job(argv, cwd, conda_env) -> subprocess.CompletedProcess:

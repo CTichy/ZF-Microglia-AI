@@ -1602,7 +1602,7 @@ class ZFMicrogliaAIWidget(QWidget):
                     self._mt_status_lbl.setText(
                         f"Early-stopped (PID {pid}): {chk['checkpoints_since_best']} checkpoints "
                         f"without improvement (best {_tj.MONAI_METRIC['label']}={chk['best_value']:.4f} "
-                        f"at checkpoint {chk['best_index']})."
+                        f"at epoch {chk['best_epoch']} — already saved as best_model_fullstack.pth)."
                     )
                     self._mt_launch_btn.setEnabled(True)
                     self._mt_stop_btn.setEnabled(False)
@@ -1611,7 +1611,22 @@ class ZFMicrogliaAIWidget(QWidget):
             if pid and not _tj.is_running(pid):
                 timer.stop()
                 self._monai_job["timer"] = None
-                self._mt_status_lbl.setText(f"Training process (PID {pid}) has stopped.")
+                # train.py auto-saves its own best_model_fullstack.pth whenever
+                # a new best Full-brain Dice lands, so there's nothing for the
+                # GUI to copy here (unlike Cellpose-SAM) -- just report which
+                # epoch that already-saved file corresponds to.
+                if log_path:
+                    best = _tj.patience_exceeded(log_path, _tj.MONAI_METRIC, patience=0)
+                else:
+                    best = None
+                if best and best["best_epoch"] is not None:
+                    self._mt_status_lbl.setText(
+                        f"Training process (PID {pid}) has stopped. Best "
+                        f"{_tj.MONAI_METRIC['label']}={best['best_value']:.4f} at epoch "
+                        f"{best['best_epoch']} — saved as best_model_fullstack.pth."
+                    )
+                else:
+                    self._mt_status_lbl.setText(f"Training process (PID {pid}) has stopped.")
                 self._mt_launch_btn.setEnabled(True)
                 self._mt_stop_btn.setEnabled(False)
 
@@ -1790,6 +1805,23 @@ class ZFMicrogliaAIWidget(QWidget):
         see that method's docstring for why the interval is this coarse."""
         timer = QTimer(self)
 
+        def _write_pointer(best_epoch):
+            """Write the best-checkpoint pointer file (see
+            _tj.write_best_checkpoint_pointer) and return a status suffix
+            describing the outcome — never raises, since this runs inside
+            a QTimer tick and a missing/racing checkpoint file shouldn't
+            crash the poll loop."""
+            data_dir = self._cellpose_job.get("data_dir")
+            model_name = self._cellpose_job.get("model_name")
+            if not (data_dir and model_name and best_epoch is not None):
+                return ""
+            models_dir = Path(data_dir) / "models"
+            try:
+                pointer = _tj.write_best_checkpoint_pointer(models_dir, model_name, best_epoch)
+                return f"  Recommended-model pointer: {pointer.name}"
+            except FileNotFoundError as exc:
+                return f"  (could not write recommended-model pointer: {exc})"
+
         def _poll():
             pid = self._cellpose_job.get("pid")
             log_path = self._cellpose_job.get("log_path")
@@ -1805,10 +1837,11 @@ class ZFMicrogliaAIWidget(QWidget):
                     _tj.kill_process_tree(pid)
                     timer.stop()
                     self._cellpose_job["timer"] = None
+                    pointer_msg = _write_pointer(chk["best_epoch"])
                     self._ct_status_lbl.setText(
                         f"Early-stopped (PID {pid}): {chk['checkpoints_since_best']} checkpoints "
                         f"without improvement (best {_tj.CELLPOSE_METRIC['label']}={chk['best_value']:.4f} "
-                        f"at checkpoint {chk['best_index']})."
+                        f"at epoch {chk['best_epoch']})." + pointer_msg
                     )
                     self._ct_launch_btn.setEnabled(True)
                     self._ct_stop_btn.setEnabled(False)
@@ -1817,7 +1850,19 @@ class ZFMicrogliaAIWidget(QWidget):
             if pid and not _tj.is_running(pid):
                 timer.stop()
                 self._cellpose_job["timer"] = None
-                self._ct_status_lbl.setText(f"Training process (PID {pid}) has stopped.")
+                if log_path:
+                    best = _tj.patience_exceeded(log_path, _tj.CELLPOSE_METRIC, patience=0)
+                else:
+                    best = None
+                if best and best["best_epoch"] is not None:
+                    pointer_msg = _write_pointer(best["best_epoch"])
+                    self._ct_status_lbl.setText(
+                        f"Training process (PID {pid}) has stopped. Best "
+                        f"{_tj.CELLPOSE_METRIC['label']}={best['best_value']:.4f} at epoch "
+                        f"{best['best_epoch']}." + pointer_msg
+                    )
+                else:
+                    self._ct_status_lbl.setText(f"Training process (PID {pid}) has stopped.")
                 self._ct_launch_btn.setEnabled(True)
                 self._ct_stop_btn.setEnabled(False)
 
@@ -1866,10 +1911,13 @@ class ZFMicrogliaAIWidget(QWidget):
         self._cellpose_job["pid"] = pid
         self._cellpose_job["log_path"] = str(log_path)
         self._cellpose_job["patience"] = self._ct_patience_early_spin.value()
+        self._cellpose_job["data_dir"] = data_dir
+        self._cellpose_job["model_name"] = model_name
         self._save_cfg(
             cellpose_active_pid=pid, cellpose_active_log=str(log_path),
             cellpose_crops_data_dir=data_dir,
             cellpose_patience=self._ct_patience_early_spin.value(),
+            cellpose_model_name=model_name,
         )
         self._ct_launch_btn.setEnabled(False)
         self._ct_stop_btn.setEnabled(True)
@@ -1898,6 +1946,8 @@ class ZFMicrogliaAIWidget(QWidget):
             self._cellpose_job["pid"] = pid
             self._cellpose_job["log_path"] = log_path
             self._cellpose_job["patience"] = cfg.get("cellpose_patience", 0)
+            self._cellpose_job["data_dir"] = cfg.get("cellpose_crops_data_dir", "")
+            self._cellpose_job["model_name"] = cfg.get("cellpose_model_name", "")
             self._ct_launch_btn.setEnabled(False)
             self._ct_stop_btn.setEnabled(True)
             self._ct_status_lbl.setText(f"Resumed monitoring PID {pid} (already running).")
