@@ -276,6 +276,23 @@ Processing time:
 
 ---
 
+### Verify MONAI Threshold / Erosion (GT Sweep)
+
+The third of this plugin's three GT-sweep tools (the other two: Tab 2's BG Threshold/Erosion sweep for microglia labels, Tab 4's Cellpose-SAM epoch sweep). This one checks MONAI's own brain segmentation — is the current **MONAI Threshold** and **Erosion** combination actually the one closest to a hand-corrected brain mask?
+
+Unlike the other two sweepers, this scores a single whole-volume mask, not multiple per-cell labels — Dice/IoU/precision/recall between the predicted brain mask and a GT mask directly, no complex-cell selection or bounding-box cropping needed.
+
+1. **Image** — the raw volume to run inference on.
+2. **GT brain mask** — a *hand-corrected* brain_mask.tif, e.g. from **GT Annotation** in Tab 4 (the polygon annotation tool's own rasterized output) — not a MONAI prediction.
+3. **Threshold min/max/step** and **Erosion min/max/step** — define the grid. Defaults (0.15–0.35 step 0.05, 0–4 step 1) span 5×5=25 points centered on the recommended threshold.
+4. Click **Run Threshold/Erosion Sweep**.
+
+This is the cheapest of the three sweepers: MONAI's sliding-window inference (the only genuinely expensive, GPU-bound step) runs **exactly once**, producing a raw probability map. Every threshold and erosion value in the grid is then just a cheap re-threshold + largest-component/fill-holes + optional erosion on that same probability map — no reloading the model, no repeat sliding-window passes. A full 25-point grid typically finishes in well under a minute on GPU, and still works (just slower) on CPU/MPS since it uses the same device selection as **Run Skin-Remover**.
+
+The report is a 2D grid (rows = Erosion, columns = Threshold, cells = Dice%), with your current Tab 1 slider values marked. Same policy as the other two sweepers: a disagreement with the current setting is reported clearly, nothing gets changed automatically.
+
+---
+
 ## 6. Tab 2 — Create Labels
 
 > Before using this tab, run Tab 1 first, then click the resulting `brain_only` layer in the Layers panel to select it. Which section of Tab 2 appears depends on which background mode you used — see 6a below.
@@ -1384,6 +1401,7 @@ The active layer's name must end in `_ExtRm` (Cellpose-SAM) or `_NoBG` (Pixel Cl
 | Erosion | 0 | Strips voxels from mask edge |
 | Background | Option 2 | Removes background globally (best for labels) |
 | BG Threshold | 1.40 | Fine-tunes background removal level |
+| Verify MONAI Threshold / Erosion (GT Sweep) | 5x5 grid | Confirms current values against a hand-corrected GT brain mask — MONAI runs once, rest is cheap |
 
 ### Tab 2 — Create Labels
 

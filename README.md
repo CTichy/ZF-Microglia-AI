@@ -132,6 +132,8 @@ All numeric sliders in this plugin are directly editable — click the number bo
 | Background mode | Off | 1 for Cellpose-SAM, 2 for Pixel Classifier (see Tab 2) |
 | BG Threshold | 1.40 | Validated for microglia stacks |
 
+**Verify MONAI Threshold / Erosion (GT Sweep)** — third of the plugin's three GT-sweep tools (alongside Tab 2's BG Threshold/Erosion sweep and Tab 4's Cellpose-SAM epoch sweep), and the cheapest: scores the brain *mask itself* (Dice/IoU/precision/recall) against a hand-corrected GT brain mask (e.g. from GT Annotation in Tab 4). MONAI's sliding-window inference runs exactly once regardless of grid size — every threshold/erosion combination is a cheap re-threshold + post-process on the same probability map, so a 5×5 grid finishes in well under a minute on GPU.
+
 ### Output files
 
 Saved in `<source_folder>/<source_stem>/`:

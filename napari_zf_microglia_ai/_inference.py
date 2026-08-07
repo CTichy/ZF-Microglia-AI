@@ -45,32 +45,17 @@ def _normalize(volume):
     )
 
 
-def run_inference(volume, model_path, threshold, device, erosion_voxels=0):
+def predict_probability(volume, model_path, device):
     """
-    Sliding-window MONAI inference on a 3D volume.
+    Just the expensive part of run_inference: sliding-window MONAI
+    inference, returning the raw per-voxel probability map (0-1, before
+    thresholding). Split out from run_inference so callers that need to
+    try multiple thresholds (e.g. a GT-verification sweep) can run
+    inference once and cheaply re-threshold/re-postprocess afterward,
+    instead of reloading the model and re-running the sliding window for
+    every candidate threshold.
 
-    Parameters
-    ----------
-    volume         : (Z, Y, X) np.ndarray
-    model_path     : Path to .pth checkpoint
-    threshold      : float in (0, 1)
-    device         : torch.device
-    erosion_voxels : int >= 0
-        Erode the predicted mask by this many voxels before applying it to
-        produce brain_only.  The raw (un-eroded) mask is always returned as
-        brain_mask so the TIF save is unaffected.  0 = no erosion.
-
-    Returns
-    -------
-    brain_mask  : (Z, Y, X) uint8   — raw predicted mask (0/1), no erosion.
-                  Always the un-eroded mask, e.g. for saving brain_mask.tif.
-    brain_only  : (Z, Y, X) same dtype as input
-                  volume × eroded_mask  (skin + outer-rim tissue zeroed out)
-    eroded_mask : (Z, Y, X) uint8   — the mask actually used to build
-                  brain_only (== brain_mask when erosion_voxels == 0).
-                  Callers doing further mask-based processing on brain_only
-                  (e.g. background removal) should use this, not brain_mask,
-                  or erosion is silently discarded downstream.
+    Returns pred_prob : (Z, Y, X) float32 ndarray, same shape as volume.
     """
     model = _load_model(model_path, device)
 
@@ -101,14 +86,23 @@ def run_inference(volume, model_path, threshold, device, erosion_voxels=0):
     if device.type == "cuda":
         torch.cuda.empty_cache()
 
-    raw_mask = (pred_prob > threshold).astype(bool)
+    return pred_prob
 
-    # ------------------------------------------------------------------ #
-    # Post-processing — always applied, mirrors the polygon tool output:
-    #   1. Keep largest connected component  → drops isolated blobs and
-    #      any outer tissue wrongly classified as brain
-    #   2. Fill internal holes               → solid, contiguous brain
-    # ------------------------------------------------------------------ #
+
+def postprocess_probability(pred_prob, threshold):
+    """
+    Threshold + clean up a probability map (see predict_probability):
+      1. Keep largest connected component  → drops isolated blobs and
+         any outer tissue wrongly classified as brain
+      2. Fill internal holes               → solid, contiguous brain
+    Mirrors the polygon annotation tool's own output. This is the cheap
+    part of inference -- safe to call repeatedly for different threshold
+    candidates without re-running the network.
+
+    Returns brain_mask : (Z, Y, X) uint8 (0/1), un-eroded.
+    """
+    raw_mask = pred_prob > threshold
+
     print("   Post-processing: largest component + fill holes...")
     labeled_arr, n_comp = label(raw_mask)
     if n_comp == 0:
@@ -124,6 +118,38 @@ def run_inference(volume, model_path, threshold, device, erosion_voxels=0):
         f"   Components found: {n_comp}  →  kept largest"
         f"  ({brain_mask.sum():,} voxels, {100.*brain_mask.mean():.1f}% of volume)"
     )
+    return brain_mask
+
+
+def run_inference(volume, model_path, threshold, device, erosion_voxels=0):
+    """
+    Sliding-window MONAI inference on a 3D volume.
+
+    Parameters
+    ----------
+    volume         : (Z, Y, X) np.ndarray
+    model_path     : Path to .pth checkpoint
+    threshold      : float in (0, 1)
+    device         : torch.device
+    erosion_voxels : int >= 0
+        Erode the predicted mask by this many voxels before applying it to
+        produce brain_only.  The raw (un-eroded) mask is always returned as
+        brain_mask so the TIF save is unaffected.  0 = no erosion.
+
+    Returns
+    -------
+    brain_mask  : (Z, Y, X) uint8   — raw predicted mask (0/1), no erosion.
+                  Always the un-eroded mask, e.g. for saving brain_mask.tif.
+    brain_only  : (Z, Y, X) same dtype as input
+                  volume × eroded_mask  (skin + outer-rim tissue zeroed out)
+    eroded_mask : (Z, Y, X) uint8   — the mask actually used to build
+                  brain_only (== brain_mask when erosion_voxels == 0).
+                  Callers doing further mask-based processing on brain_only
+                  (e.g. background removal) should use this, not brain_mask,
+                  or erosion is silently discarded downstream.
+    """
+    pred_prob = predict_probability(volume, model_path, device)
+    brain_mask = postprocess_probability(pred_prob, threshold)
 
     # ------------------------------------------------------------------ #
     # Erosion (optional) — strips outer skin rim from brain_only
@@ -131,7 +157,7 @@ def run_inference(volume, model_path, threshold, device, erosion_voxels=0):
     # ------------------------------------------------------------------ #
     if erosion_voxels > 0:
         print(f"   Eroding mask by {erosion_voxels} voxel(s)...")
-        eroded_mask = binary_erosion(clean, iterations=erosion_voxels).astype(np.uint8)
+        eroded_mask = binary_erosion(brain_mask, iterations=erosion_voxels).astype(np.uint8)
         vox_removed = int(brain_mask.sum()) - int(eroded_mask.sum())
         print(f"   Erosion removed {vox_removed:,} voxels from brain_only mask.")
         brain_only = (volume * eroded_mask).astype(volume.dtype)

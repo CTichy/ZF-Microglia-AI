@@ -30,6 +30,7 @@ from ._labeling import create_labels, resort_labels, split_label
 from ._statistics import compute_stats
 from ._cellpose_seg import run_full_pipeline as _run_cellpose_pipeline
 from . import _pixel_sweep as _psw
+from . import _brain_sweep as _bsw
 from ._gpu_check import GPU_OK, GPU_MSG
 if GPU_OK:
     from . import _gt_annotation as _gt
@@ -384,6 +385,116 @@ class ZFMicrogliaAIWidget(QWidget):
         self._status_lbl = QLabel("Status: Ready")
         self._status_lbl.setWordWrap(True)
         t1.addWidget(self._status_lbl)
+
+        t1.addWidget(_sep())
+
+        # ── Verify MONAI Threshold / Erosion (GT sweep) — always visible, ──
+        # third of the plugin's three GT-sweep tools (see Tab 2's BG
+        # Threshold/Erosion sweep, Tab 4's Cellpose-SAM epoch sweep). Scores
+        # the brain MASK itself against a hand-corrected GT mask (from GT
+        # Annotation) rather than per-cell labels -- no GPU hard-gate, since
+        # inference already falls back to CPU/MPS elsewhere in this tab.
+        bsg = QGroupBox("Verify MONAI Threshold / Erosion (GT Sweep)")
+        bsl = QVBoxLayout()
+        bsl.setSpacing(6)
+
+        bs_note = QLabel(
+            "Runs MONAI inference once, then cheaply sweeps MONAI Threshold x "
+            "Erosion on the resulting probability map, scoring the whole brain "
+            "mask against a hand-corrected GT brain mask (e.g. from GT "
+            "Annotation in Tab 4) — Dice/IoU on the mask itself, not per-cell."
+        )
+        bs_note.setWordWrap(True)
+        bs_note.setStyleSheet("color: #888; font-size: 10px;")
+        bsl.addWidget(bs_note)
+
+        bs_img_row = QHBoxLayout()
+        bs_img_row.addWidget(QLabel("Image:"))
+        self._bs_img_edit = QLineEdit("")
+        bs_img_row.addWidget(self._bs_img_edit)
+        self._bs_img_browse_btn = QPushButton("...")
+        self._bs_img_browse_btn.setFixedWidth(32)
+        bs_img_row.addWidget(self._bs_img_browse_btn)
+        bsl.addLayout(bs_img_row)
+
+        bs_gt_row = QHBoxLayout()
+        bs_gt_row.addWidget(QLabel("GT brain mask:"))
+        self._bs_gt_edit = QLineEdit("")
+        bs_gt_row.addWidget(self._bs_gt_edit)
+        self._bs_gt_browse_btn = QPushButton("...")
+        self._bs_gt_browse_btn.setFixedWidth(32)
+        bs_gt_row.addWidget(self._bs_gt_browse_btn)
+        bsl.addLayout(bs_gt_row)
+        bs_gt_note = QLabel(
+            "  GT brain mask = a hand-corrected brain_mask.tif (e.g. from GT "
+            "Annotation, Tab 4) — not a MONAI prediction."
+        )
+        bs_gt_note.setStyleSheet("color: #aaa; font-size: 10px;")
+        bs_gt_note.setWordWrap(True)
+        bsl.addWidget(bs_gt_note)
+
+        bs_th_row = QHBoxLayout()
+        bs_th_row.addWidget(QLabel("Threshold min:"))
+        self._bs_thmin_spin = QDoubleSpinBox()
+        self._bs_thmin_spin.setDecimals(2)
+        self._bs_thmin_spin.setRange(0.01, 0.99)
+        self._bs_thmin_spin.setValue(0.15)
+        bs_th_row.addWidget(self._bs_thmin_spin)
+        bs_th_row.addWidget(QLabel("max:"))
+        self._bs_thmax_spin = QDoubleSpinBox()
+        self._bs_thmax_spin.setDecimals(2)
+        self._bs_thmax_spin.setRange(0.01, 0.99)
+        self._bs_thmax_spin.setValue(0.35)
+        bs_th_row.addWidget(self._bs_thmax_spin)
+        bs_th_row.addWidget(QLabel("step:"))
+        self._bs_thstep_spin = QDoubleSpinBox()
+        self._bs_thstep_spin.setDecimals(2)
+        self._bs_thstep_spin.setRange(0.01, 0.99)
+        self._bs_thstep_spin.setValue(0.05)
+        bs_th_row.addWidget(self._bs_thstep_spin)
+        bsl.addLayout(bs_th_row)
+
+        bs_er_row = QHBoxLayout()
+        bs_er_row.addWidget(QLabel("Erosion min:"))
+        self._bs_ermin_spin = QSpinBox()
+        self._bs_ermin_spin.setRange(0, 15)
+        self._bs_ermin_spin.setValue(0)
+        bs_er_row.addWidget(self._bs_ermin_spin)
+        bs_er_row.addWidget(QLabel("max:"))
+        self._bs_ermax_spin = QSpinBox()
+        self._bs_ermax_spin.setRange(0, 15)
+        self._bs_ermax_spin.setValue(4)
+        bs_er_row.addWidget(self._bs_ermax_spin)
+        bs_er_row.addWidget(QLabel("step:"))
+        self._bs_erstep_spin = QSpinBox()
+        self._bs_erstep_spin.setRange(1, 15)
+        self._bs_erstep_spin.setValue(1)
+        bs_er_row.addWidget(self._bs_erstep_spin)
+        bsl.addLayout(bs_er_row)
+
+        bs_btn_row = QHBoxLayout()
+        self._bs_run_btn = QPushButton("Run Threshold/Erosion Sweep")
+        self._bs_run_btn.setStyleSheet("QPushButton { font-weight: bold; padding: 5px; }")
+        bs_btn_row.addWidget(self._bs_run_btn)
+        self._bs_stop_btn = QPushButton("Stop Sweep")
+        self._bs_stop_btn.setEnabled(False)
+        bs_btn_row.addWidget(self._bs_stop_btn)
+        bsl.addLayout(bs_btn_row)
+
+        self._bs_status_lbl = QLabel("")
+        self._bs_status_lbl.setWordWrap(True)
+        bsl.addWidget(self._bs_status_lbl)
+
+        self._bs_report_view = QTextEdit()
+        self._bs_report_view.setReadOnly(True)
+        self._bs_report_view.setStyleSheet("font-family: monospace; font-size: 9px;")
+        self._bs_report_view.setFixedHeight(160)
+        bsl.addWidget(self._bs_report_view)
+
+        bsg.setLayout(bsl)
+        t1.addWidget(bsg)
+
+        self._brain_sweep_job = {"thread": None, "cancel_event": None, "timer": None}
 
         t1.addStretch()
         tab1.setLayout(t1)
@@ -1738,6 +1849,10 @@ class ZFMicrogliaAIWidget(QWidget):
         self._model_browse_btn.clicked.connect(self._on_browse_model)
         self._bg_group.buttonClicked.connect(self._on_bg_mode_changed)
         self._run_btn.clicked.connect(self._on_run)
+        self._bs_img_browse_btn.clicked.connect(self._on_bs_browse_img)
+        self._bs_gt_browse_btn.clicked.connect(self._on_bs_browse_gt)
+        self._bs_run_btn.clicked.connect(self._on_bs_run_sweep)
+        self._bs_stop_btn.clicked.connect(self._on_bs_stop_sweep)
         self._labels_btn.clicked.connect(self._on_create_labels)
         self._ps_img_browse_btn.clicked.connect(self._on_ps_browse_img)
         self._ps_mask_browse_btn.clicked.connect(self._on_ps_browse_mask)
@@ -3035,6 +3150,151 @@ class ZFMicrogliaAIWidget(QWidget):
 
         timer.timeout.connect(_poll)
         timer.start(500)
+
+    def _on_bs_browse_img(self):
+        path_str, _ = QFileDialog.getOpenFileName(self, "Select image to sweep", "", "TIFF files (*.tif *.tiff)")
+        if path_str:
+            self._bs_img_edit.setText(path_str)
+
+    def _on_bs_browse_gt(self):
+        path_str, _ = QFileDialog.getOpenFileName(self, "Select hand-corrected GT brain mask", "", "TIFF files (*.tif *.tiff)")
+        if path_str:
+            self._bs_gt_edit.setText(path_str)
+
+    def _on_bs_run_sweep(self):
+        if self._brain_sweep_job.get("thread") and self._brain_sweep_job["thread"].is_alive():
+            self._bs_status_lbl.setText("A sweep is already running.")
+            return
+
+        if not self._state["model_path"] or not Path(self._state["model_path"]).exists():
+            self._bs_status_lbl.setText("ERROR: model file not found — browse to a .pth file above first.")
+            return
+        img_path = self._bs_img_edit.text().strip()
+        gt_path = self._bs_gt_edit.text().strip()
+        if not (img_path and gt_path):
+            self._bs_status_lbl.setText("ERROR: set Image and GT brain mask paths first.")
+            return
+        for label_str, p in (("Image", img_path), ("GT brain mask", gt_path)):
+            if not Path(p).exists():
+                self._bs_status_lbl.setText(f"ERROR: {label_str} not found: {p}")
+                return
+
+        th_min = self._bs_thmin_spin.value()
+        th_max = self._bs_thmax_spin.value()
+        th_step = self._bs_thstep_spin.value()
+        if th_max < th_min:
+            self._bs_status_lbl.setText("ERROR: Threshold max must be >= min.")
+            return
+        thresholds = list(np.round(np.arange(th_min, th_max + th_step / 2, th_step), 4))
+
+        er_min = self._bs_ermin_spin.value()
+        er_max = self._bs_ermax_spin.value()
+        er_step = self._bs_erstep_spin.value()
+        if er_max < er_min:
+            self._bs_status_lbl.setText("ERROR: Erosion max must be >= min.")
+            return
+        erosions = list(range(er_min, er_max + 1, er_step))
+
+        model_path = Path(self._state["model_path"])
+        if torch.cuda.is_available():
+            device = torch.device("cuda")
+        elif hasattr(torch.backends, "mps") and torch.backends.mps.is_available():
+            device = torch.device("mps")
+        else:
+            device = torch.device("cpu")
+
+        current_threshold = self._thresh_slider.value()
+        current_erosion = self._erosion_slider.value()
+
+        cancel_event = threading.Event()
+        result = {}
+        progress = {"lines": []}
+        progress_lock = threading.Lock()
+
+        def _progress_cb(msg):
+            with progress_lock:
+                progress["lines"].append(msg)
+
+        def _worker():
+            try:
+                sweep = _bsw.run_brain_sweep(
+                    img_path, gt_path, model_path, device, thresholds, erosions,
+                    progress_cb=_progress_cb, cancel_event=cancel_event,
+                )
+                result["sweep"] = sweep
+            except Exception as exc:
+                result["error"] = f"{exc}\n{traceback.format_exc()}"
+
+        thread = threading.Thread(target=_worker, daemon=True)
+        self._brain_sweep_job["thread"] = thread
+        self._brain_sweep_job["cancel_event"] = cancel_event
+        self._brain_sweep_job["result"] = result
+        self._brain_sweep_job["progress"] = progress
+        self._brain_sweep_job["progress_lock"] = progress_lock
+        self._brain_sweep_job["current_threshold"] = current_threshold
+        self._brain_sweep_job["current_erosion"] = current_erosion
+        self._bs_run_btn.setEnabled(False)
+        self._bs_stop_btn.setEnabled(True)
+        self._bs_report_view.clear()
+        self._bs_status_lbl.setText(
+            f"Running MONAI inference once, then sweeping {len(thresholds)} Threshold x "
+            f"{len(erosions)} Erosion values on {device} ..."
+        )
+        thread.start()
+        self._start_brain_sweep_polling()
+
+    def _on_bs_stop_sweep(self):
+        cancel_event = self._brain_sweep_job.get("cancel_event")
+        if cancel_event:
+            cancel_event.set()
+        self._bs_status_lbl.setText("Cancelling — finishing the current threshold value, then stopping...")
+        self._bs_stop_btn.setEnabled(False)
+
+    def _start_brain_sweep_polling(self):
+        """Same fast (500ms) poll and non-detached, doesn't-survive-napari-
+        closing contract as the other two sweep tools' polling loops."""
+        timer = QTimer(self)
+        job = self._brain_sweep_job
+
+        def _poll():
+            with job["progress_lock"]:
+                lines = list(job["progress"]["lines"])
+                job["progress"]["lines"].clear()
+            if lines:
+                self._bs_report_view.append("\n".join(lines))
+                sb = self._bs_report_view.verticalScrollBar()
+                sb.setValue(sb.maximum())
+
+            if job["thread"].is_alive():
+                return
+            timer.stop()
+            job["timer"] = None
+            self._bs_run_btn.setEnabled(True)
+            self._bs_stop_btn.setEnabled(False)
+
+            result = job["result"]
+            if "error" in result:
+                self._bs_status_lbl.setText(f"ERROR during sweep: {result['error'].splitlines()[0]}")
+                self._bs_report_view.append("\n" + result["error"])
+                return
+
+            sweep = result["sweep"]
+            report = _bsw.format_brain_sweep_report(sweep, job["current_threshold"], job["current_erosion"])
+            self._bs_report_view.setPlainText(report)
+            if sweep.get("cancelled"):
+                self._bs_status_lbl.setText("Sweep cancelled — partial results above.")
+            elif sweep["best_point"] is not None:
+                best_th, best_er = sweep["best_point"]
+                self._bs_status_lbl.setText(
+                    f"Best: MONAI Threshold={best_th}, Erosion={best_er} "
+                    f"(Dice={sweep['results'][sweep['best_point']]['dice']:.1f}%)."
+                )
+            else:
+                self._bs_status_lbl.setText("Sweep finished but no grid points could be scored.")
+
+        timer.timeout.connect(_poll)
+        timer.start(500)
+        job["timer"] = timer
 
     def _active_labels_layer(self):
         """Return the active Labels layer, or the topmost one, or None."""
