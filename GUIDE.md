@@ -647,7 +647,7 @@ Prepares training data and launches MONAI U-Net training — the model Tab 1 use
 
 **Prepare Training Data** converts raw+GT fish folders (the output layout GT Annotation produces) into the HDF5 dataset the trainer needs. Leave the brain/skin directory fields blank to use the training script's own built-in defaults, or list your own comma-separated paths. Takes a few minutes; runs in the background without blocking the UI. On success, auto-fills the Train MONAI section's data directory.
 
-**Train MONAI U-Net** launches the actual training run — configure `epochs`/`batch_size`/`lr`/`patience`/`val_every`/`ckpt_every`/GPU index, optionally point `resume` at an existing checkpoint to continue training instead of starting fresh, then click **Launch Training**. See [How training launches work](#how-training-launches-work) below for what happens next.
+**Train MONAI U-Net** launches the actual training run — configure `epochs`/`batch_size`/`lr`/`val_every`/`ckpt_every`/GPU index, optionally point `resume` at an existing checkpoint to continue training instead of starting fresh, then click **Launch Training**. See [How training launches work](#how-training-launches-work) below for the shared **Patience (checkpoints)** early-stopping field and what happens next.
 
 ---
 
@@ -666,8 +666,9 @@ Extracts fine-tuning crops and launches Cellpose-SAM training — the model Tab 
 Both "Launch Training" buttons (MONAI and Cellpose-SAM) start a **detached background process** rather than running inside napari itself — the command runs via `conda run -n <env> --no-capture-output <script> ...`, launched so it keeps running even if you close napari (technically: `setsid()` on Linux/Mac, `CREATE_NEW_PROCESS_GROUP | DETACHED_PROCESS` on Windows). This works identically on all three platforms without needing `tmux` (which isn't available on Windows at all).
 
 - **Live status** — a log-tail view in the GUI refreshes every 8 seconds (deliberately coarse — there's no benefit to checking more often on an hours-to-days job).
-- **Reopening napari mid-training** — the plugin remembers the running job and automatically reconnects to it, so you don't lose visibility into a training run just because you closed and reopened napari. You'll see "Resumed monitoring PID ..." instead of an empty status.
-- **Stop Training** — kills the training process and everything it spawned (the `conda run` wrapper spawns a child `python` process, and both are terminated together).
+- **Patience (checkpoints)** — an integer field in both groups, and it's the *same rule* for both: stop automatically once N checkpoints in a row pass with no improvement in the model-selection metric (Full-brain Dice for MONAI — higher is better; `test_loss` for Cellpose-SAM — lower is better; the plugin handles the direction per metric automatically). `0` disables early stopping entirely. This is enforced by the plugin itself, reading each checkpoint as it lands in the log — `train.py`'s own built-in `--patience` flag is always overridden to an effectively-infinite value so it can't quietly stop training before the GUI's check does; there's exactly one early-stopping mechanism, not two that happen to look the same in the UI.
+- **Reopening napari mid-training** — the plugin remembers the running job (including the patience setting) and automatically reconnects to it, so you don't lose visibility into a training run just because you closed and reopened napari. You'll see "Resumed monitoring PID ..." instead of an empty status.
+- **Stop Training** — kills the training process and everything it spawned (the `conda run` wrapper spawns a child `python` process, and both are terminated together). Early stopping uses this same kill mechanism internally.
 - **If a script isn't found** — the plugin guesses the location of `prepare_data.py`/`train.py`/`train_xzyz.py` based on this project's own folder layout; if that guess is wrong for your setup, override it via the `monai_prepare_script_path`/`monai_train_script_path`/`cellpose_train_script_path` keys in `~/.config/napari-zf-microglia-ai/config.json`.
 
 ---
@@ -1333,10 +1334,10 @@ Only shown with a CUDA GPU with ≥8GB VRAM. Switch at the top picks MONAI or Ce
 |---------|---------|--------------|
 | n_val / n_test | 5 / 5 | (MONAI) fish held out for val/test in Prepare Training Data |
 | epochs | 1500 | (MONAI) training length |
-| patience | 50 | (MONAI) val cycles without improvement before early stop |
 | n_epochs | 200 | (Cellpose-SAM) training length |
 | branch_weight | 0 | (Cellpose-SAM) 0 = standard loss; >0 weights thin/branch pixels more heavily |
 | pretrained | Tab 2's checkpoint | (Cellpose-SAM) starting point — "continue training" by default |
+| Patience (checkpoints) | 5 | Both — stop after N checkpoints with no improvement (Dice/test_loss); 0 disables |
 | Launch Training | — | Starts a detached process that survives closing napari; GUI reconnects automatically next time |
 | Stop Training | — | Kills the training process and its children |
 

@@ -17,9 +17,26 @@ content, and `tail -f <log_path>` still works manually if wanted.
 """
 
 import platform
+import re
 import subprocess
 
 import psutil
+
+# Per-script model-selection-metric config for patience-based early stopping
+# (see patience_exceeded()). Each log line format is completely different
+# between the two training scripts, but the counting/comparison logic that
+# consumes these values is the same function for both -- this is the only
+# place the two scripts' early-stopping behavior actually differs.
+MONAI_METRIC = dict(
+    pattern=r"Full-brain Dice:\s*([\d.]+)\s*\[MODEL SELECTION\]",
+    higher_is_better=True,
+    label="Full-brain Dice",
+)
+CELLPOSE_METRIC = dict(
+    pattern=r"test_loss=([\d.]+)",
+    higher_is_better=False,
+    label="test_loss",
+)
 
 
 def launch_detached(argv, cwd, log_path, conda_env):
@@ -102,6 +119,51 @@ def tail_log(log_path, n_bytes=8192) -> str:
         return "(log file not created yet)"
     except Exception as exc:
         return f"(could not read log: {exc})"
+
+
+def _parse_metric_series(log_path, pattern):
+    """Return every value of the metric captured by `pattern` (one capture
+    group) found in log_path, in the order they were printed."""
+    try:
+        with open(log_path, "r", errors="replace") as f:
+            text = f.read()
+    except FileNotFoundError:
+        return []
+    return [float(m.group(1)) for m in re.finditer(pattern, text)]
+
+
+def patience_exceeded(log_path, metric_cfg, patience):
+    """
+    Patience-based early-stop check, shared verbatim by both MONAI and
+    Cellpose-SAM training (see MONAI_METRIC/CELLPOSE_METRIC) -- the only
+    thing that differs per script is which metric/regex/direction is
+    passed in, not the stopping rule itself: `patience` is a count of
+    checkpoints (not epochs), matching the plugin's own checkpoint
+    interval, since that's the only cadence the GUI can observe from the
+    log regardless of how each script defines its internal epoch/val
+    cadence.
+
+    Returns a dict: {exceeded, n_checkpoints, best_value, best_index,
+    checkpoints_since_best}. `patience <= 0` means disabled (never
+    exceeded) -- checked by the caller, not here, so this function stays
+    a pure query with no special-casing.
+    """
+    values = _parse_metric_series(log_path, metric_cfg["pattern"])
+    if not values:
+        return dict(exceeded=False, n_checkpoints=0, best_value=None,
+                     best_index=None, checkpoints_since_best=0)
+
+    if metric_cfg["higher_is_better"]:
+        best_index = max(range(len(values)), key=lambda i: values[i])
+    else:
+        best_index = min(range(len(values)), key=lambda i: values[i])
+
+    checkpoints_since_best = len(values) - 1 - best_index
+    exceeded = patience > 0 and checkpoints_since_best >= patience
+    return dict(
+        exceeded=exceeded, n_checkpoints=len(values), best_value=values[best_index],
+        best_index=best_index, checkpoints_since_best=checkpoints_since_best,
+    )
 
 
 def run_subprocess_job(argv, cwd, conda_env) -> subprocess.CompletedProcess:

@@ -225,6 +225,8 @@ A switch at the top selects one of two mutually-exclusive groups:
 
 Both "Launch Training" buttons start a **detached background process** — `conda run -n <env> --no-capture-output <script> ...`, launched so it survives napari closing (POSIX `setsid()` / Windows `CREATE_NEW_PROCESS_GROUP | DETACHED_PROCESS`), with its own log file the GUI tails every 8 seconds. Progress and status persist to config, so **reopening napari automatically reconnects to a still-running job** instead of losing visibility into it. "Stop Training" kills the whole process tree (`conda run` spawns a child `python` process). This works identically on Windows, Linux, and Mac — no `tmux` dependency, since tmux doesn't exist natively on Windows.
 
+**Patience (checkpoints)** — both groups have this field, and it's the *same* early-stopping rule for both: stop once N checkpoints in a row show no improvement in the model-selection metric (Full-brain Dice for MONAI, `test_loss` for Cellpose-SAM — direction handled automatically, higher-better vs. lower-better). `0` disables it. This is enforced externally by the GUI itself (parsing each script's log as checkpoints land), not by `train.py`'s own built-in `--patience` flag — the plugin always overrides that to an effectively-infinite value so there's exactly one early-stopping mechanism in play, not two different ones that happen to look similar in the UI. Also persists and resumes correctly across a napari restart, same as the rest of the job state.
+
 ---
 
 ## Typical voxel dimensions (zebrafish 4 dpf, 25× objective)

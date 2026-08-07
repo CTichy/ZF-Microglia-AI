@@ -1082,11 +1082,6 @@ class ZFMicrogliaAIWidget(QWidget):
             mtl.addLayout(mt_resume_row)
 
             mt_sched_row = QHBoxLayout()
-            mt_sched_row.addWidget(QLabel("patience:"))
-            self._mt_patience_spin = QSpinBox()
-            self._mt_patience_spin.setRange(1, 10000)
-            self._mt_patience_spin.setValue(50)
-            mt_sched_row.addWidget(self._mt_patience_spin)
             mt_sched_row.addWidget(QLabel("val_every:"))
             self._mt_valevery_spin = QSpinBox()
             self._mt_valevery_spin.setRange(1, 1000)
@@ -1098,6 +1093,22 @@ class ZFMicrogliaAIWidget(QWidget):
             self._mt_ckptevery_spin.setValue(50)
             mt_sched_row.addWidget(self._mt_ckptevery_spin)
             mtl.addLayout(mt_sched_row)
+
+            mt_pat_row = QHBoxLayout()
+            mt_pat_row.addWidget(QLabel("Patience (checkpoints):"))
+            self._mt_patience_early_spin = QSpinBox()
+            self._mt_patience_early_spin.setRange(0, 1000)
+            self._mt_patience_early_spin.setValue(5)
+            mt_pat_row.addWidget(self._mt_patience_early_spin)
+            mtl.addLayout(mt_pat_row)
+            mt_pat_note = QLabel(
+                "  Stop after N checkpoints with no improvement in the model-selection\n"
+                "  metric (Full-brain Dice). Same rule as Cellpose-SAM's patience field\n"
+                "  below — only the metric differs. 0 disables early stopping."
+            )
+            mt_pat_note.setStyleSheet("color: #aaa; font-size: 10px;")
+            mt_pat_note.setWordWrap(True)
+            mtl.addWidget(mt_pat_note)
 
             mt_btn_row = QHBoxLayout()
             self._mt_launch_btn = QPushButton("Launch Training")
@@ -1292,6 +1303,22 @@ class ZFMicrogliaAIWidget(QWidget):
             ct_bw_note.setStyleSheet("color: #aaa; font-size: 10px;")
             ct_bw_note.setWordWrap(True)
             ctl.addWidget(ct_bw_note)
+
+            ct_pat_row = QHBoxLayout()
+            ct_pat_row.addWidget(QLabel("Patience (checkpoints):"))
+            self._ct_patience_early_spin = QSpinBox()
+            self._ct_patience_early_spin.setRange(0, 1000)
+            self._ct_patience_early_spin.setValue(5)
+            ct_pat_row.addWidget(self._ct_patience_early_spin)
+            ctl.addLayout(ct_pat_row)
+            ct_pat_note = QLabel(
+                "  Stop after N checkpoints with no improvement in test_loss. Same\n"
+                "  rule as MONAI's patience field above — only the metric differs.\n"
+                "  0 disables early stopping."
+            )
+            ct_pat_note.setStyleSheet("color: #aaa; font-size: 10px;")
+            ct_pat_note.setWordWrap(True)
+            ctl.addWidget(ct_pat_note)
 
             ct_btn_row = QHBoxLayout()
             self._ct_launch_btn = QPushButton("Launch Training")
@@ -1564,6 +1591,23 @@ class ZFMicrogliaAIWidget(QWidget):
                 self._mt_log_view.setPlainText(_tj.tail_log(log_path))
                 sb = self._mt_log_view.verticalScrollBar()
                 sb.setValue(sb.maximum())
+
+            patience = self._monai_job.get("patience", 0)
+            if pid and log_path and _tj.is_running(pid) and patience > 0:
+                chk = _tj.patience_exceeded(log_path, _tj.MONAI_METRIC, patience)
+                if chk["exceeded"]:
+                    _tj.kill_process_tree(pid)
+                    timer.stop()
+                    self._monai_job["timer"] = None
+                    self._mt_status_lbl.setText(
+                        f"Early-stopped (PID {pid}): {chk['checkpoints_since_best']} checkpoints "
+                        f"without improvement (best {_tj.MONAI_METRIC['label']}={chk['best_value']:.4f} "
+                        f"at checkpoint {chk['best_index']})."
+                    )
+                    self._mt_launch_btn.setEnabled(True)
+                    self._mt_stop_btn.setEnabled(False)
+                    return
+
             if pid and not _tj.is_running(pid):
                 timer.stop()
                 self._monai_job["timer"] = None
@@ -1591,10 +1635,16 @@ class ZFMicrogliaAIWidget(QWidget):
         Path(model_dir).mkdir(parents=True, exist_ok=True)
         resume = self._mt_resume_edit.text().strip() or None
 
+        # train.py has its own internal --patience early-stop; we override it
+        # with an effectively-infinite value so it never preempts the GUI's
+        # own external patience check below (_mt_patience_early_spin) --
+        # that's the single source of early-stopping truth for both MONAI
+        # and Cellpose-SAM, not two different mechanisms that happen to
+        # look similar in the UI.
         argv = _ait.build_monai_train_argv(
             script_path, data_dir, model_dir,
             self._mt_epochs_spin.value(), self._mt_batch_spin.value(), self._mt_lr_spin.value(),
-            resume, self._mt_patience_spin.value(), self._mt_valevery_spin.value(),
+            resume, 999999, self._mt_valevery_spin.value(),
             self._mt_ckptevery_spin.value(), self._mt_gpu_spin.value(),
         )
         conda_env = self._state["config"].get("monai_conda_env", "zf-microglia-ai")
@@ -1610,9 +1660,11 @@ class ZFMicrogliaAIWidget(QWidget):
 
         self._monai_job["pid"] = pid
         self._monai_job["log_path"] = str(log_path)
+        self._monai_job["patience"] = self._mt_patience_early_spin.value()
         self._save_cfg(
             monai_active_pid=pid, monai_active_log=str(log_path),
             monai_data_dir=data_dir, monai_model_dir=model_dir,
+            monai_patience=self._mt_patience_early_spin.value(),
         )
         self._mt_launch_btn.setEnabled(False)
         self._mt_stop_btn.setEnabled(True)
@@ -1643,6 +1695,7 @@ class ZFMicrogliaAIWidget(QWidget):
         if pid and _tj.is_running(pid):
             self._monai_job["pid"] = pid
             self._monai_job["log_path"] = log_path
+            self._monai_job["patience"] = cfg.get("monai_patience", 0)
             self._mt_launch_btn.setEnabled(False)
             self._mt_stop_btn.setEnabled(True)
             self._mt_status_lbl.setText(f"Resumed monitoring PID {pid} (already running).")
@@ -1744,6 +1797,23 @@ class ZFMicrogliaAIWidget(QWidget):
                 self._ct_log_view.setPlainText(_tj.tail_log(log_path))
                 sb = self._ct_log_view.verticalScrollBar()
                 sb.setValue(sb.maximum())
+
+            patience = self._cellpose_job.get("patience", 0)
+            if pid and log_path and _tj.is_running(pid) and patience > 0:
+                chk = _tj.patience_exceeded(log_path, _tj.CELLPOSE_METRIC, patience)
+                if chk["exceeded"]:
+                    _tj.kill_process_tree(pid)
+                    timer.stop()
+                    self._cellpose_job["timer"] = None
+                    self._ct_status_lbl.setText(
+                        f"Early-stopped (PID {pid}): {chk['checkpoints_since_best']} checkpoints "
+                        f"without improvement (best {_tj.CELLPOSE_METRIC['label']}={chk['best_value']:.4f} "
+                        f"at checkpoint {chk['best_index']})."
+                    )
+                    self._ct_launch_btn.setEnabled(True)
+                    self._ct_stop_btn.setEnabled(False)
+                    return
+
             if pid and not _tj.is_running(pid):
                 timer.stop()
                 self._cellpose_job["timer"] = None
@@ -1795,9 +1865,11 @@ class ZFMicrogliaAIWidget(QWidget):
 
         self._cellpose_job["pid"] = pid
         self._cellpose_job["log_path"] = str(log_path)
+        self._cellpose_job["patience"] = self._ct_patience_early_spin.value()
         self._save_cfg(
             cellpose_active_pid=pid, cellpose_active_log=str(log_path),
             cellpose_crops_data_dir=data_dir,
+            cellpose_patience=self._ct_patience_early_spin.value(),
         )
         self._ct_launch_btn.setEnabled(False)
         self._ct_stop_btn.setEnabled(True)
@@ -1825,6 +1897,7 @@ class ZFMicrogliaAIWidget(QWidget):
         if pid and _tj.is_running(pid):
             self._cellpose_job["pid"] = pid
             self._cellpose_job["log_path"] = log_path
+            self._cellpose_job["patience"] = cfg.get("cellpose_patience", 0)
             self._ct_launch_btn.setEnabled(False)
             self._ct_stop_btn.setEnabled(True)
             self._ct_status_lbl.setText(f"Resumed monitoring PID {pid} (already running).")
