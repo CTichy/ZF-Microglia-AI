@@ -26,6 +26,7 @@
 9. [Output files and folder structure](#9-output-files-and-folder-structure)
 10. [Statistics CSV — all columns explained](#10-statistics-csv--all-columns-explained)
 11. [Setting up description backends](#11-setting-up-description-backends)
+    - [11a. Setting up email notification (Gmail App Password)](#11a-setting-up-email-notification-gmail-app-password)
 12. [Full workflow: from raw stack to labelled cells](#12-full-workflow-from-raw-stack-to-labelled-cells)
     - [Step 8a. Assign cells to optic tectum / hindbrain](#step-8a--assign-cells-to-brain-regions-optional)
 13. [Reinstalling after an update](#13-reinstalling-after-an-update)
@@ -629,7 +630,7 @@ Only appears when the plugin detects a CUDA GPU with **≥8GB VRAM** — checked
 
 A small panel at the top of the tab, above the MONAI/Cellpose-SAM switch, applying to whichever group you launch: **Notify email**, **SMTP server**/**port**, **SMTP username**, **SMTP password**. Leave **Notify email** blank to disable it entirely — that's the default.
 
-When set, one email is sent whenever a training run stops — finishes normally, crashes, or gets early-stopped — with the best checkpoint's epoch/metric value and the exit status. Free with any Gmail account: server `smtp.gmail.com`, port `465`, username = your Gmail address, password = a **Google App Password** (`myaccount.google.com/apppasswords`, requires 2-Step Verification to be enabled first) — not your normal Gmail password, which won't work here. Any other SMTP-over-SSL provider works the same way, just with different server/port.
+When set, one email is sent whenever a training run stops — finishes normally, crashes, or gets early-stopped — with the best checkpoint's epoch/metric value and the exit status. Free with any Gmail account, no other signup needed. **See Section 11a for the full step-by-step setup** (turning on 2-Step Verification, generating a Google App Password, and what to type into each field) — the short version: server `smtp.gmail.com`, port `465`, username = your Gmail address, password = a Google App Password, not your normal Gmail password, which won't work here.
 
 Only the address/server/port/username are saved between napari sessions — the password never is (same policy as the API key in the Statistics tab), so you'll need to re-enter it before each launch. If **Notify email** is filled in but username/password is missing, Launch Training refuses to start until you either fill both in or clear the email field.
 
@@ -973,6 +974,56 @@ In **Tab 3 — Statistics**:
    - `claude-opus-4-6` — highest quality, highest cost
 4. **Base URL:** leave blank (not used for Claude).
 5. Click **Generate Statistics**.
+
+---
+
+### 11a. Setting up email notification (Gmail App Password)
+
+The **Email notification** panel in **Tab 4 — AI Tools** (see Section 8) sends one email when a training run stops, even if napari isn't open at the time. It works with any SMTP-over-SSL provider, but Gmail is the easiest and free path — this walks through it end to end. If you'd rather use a different provider (Outlook/Office365, a work email server, etc.), skip to **Using a non-Gmail provider** at the bottom.
+
+**Step 1 — Turn on 2-Step Verification (if not already on)**
+
+App Passwords only exist for Google accounts with 2-Step Verification enabled — this is a Google requirement, not something the plugin asks for.
+
+1. Go to [https://myaccount.google.com/security](https://myaccount.google.com/security).
+2. Under "How you sign in to Google," click **2-Step Verification**.
+3. Follow the prompts to turn it on (usually a phone number + a code sent by SMS or the Google Authenticator app).
+
+If it's already on, skip straight to Step 2.
+
+**Step 2 — Generate an App Password**
+
+1. Go to [https://myaccount.google.com/apppasswords](https://myaccount.google.com/apppasswords) (you may be asked to sign in again).
+2. Under "App name," type something recognizable, e.g. `napari-zf-microglia-ai`.
+3. Click **Create**.
+4. Google shows a 16-character password (four groups of four letters, e.g. `abcd efgh ijkl mnop`). Copy it now — this is the only time it's shown. Spaces don't matter; you can paste it with or without them.
+
+This is **not your normal Gmail password** and won't be accepted as one — Google deliberately issues a separate, revocable password for exactly this kind of use (a third-party app sending mail on your behalf). You can revoke it any time from the same App Passwords page without affecting your main account password.
+
+**Step 3 — Configure in the plugin**
+
+In **Tab 4 — AI Tools**, in the **Email notification (optional)** panel above the MONAI/Cellpose-SAM switch:
+
+1. **Notify email:** the address that should receive the notification — typically your own Gmail address, but it can be any address you want the report sent to.
+2. **SMTP server:** leave as `smtp.gmail.com` (the default).
+3. **port:** leave as `465` (the default).
+4. **SMTP username:** your full Gmail address (e.g. `you@gmail.com`).
+5. **SMTP password:** paste the 16-character App Password from Step 2 — *not* your normal Gmail password.
+6. Click **Launch Training** as usual. You should get one email the next time that run stops (finishes, crashes, or gets early-stopped).
+
+> The SMTP password is **not saved to disk** for security (same policy as the API keys in Section 11) — you'll need to paste it again each time you open napari and want notifications for a new run. **Notify email**/**SMTP server**/**port**/**SMTP username** *are* remembered between sessions, since none of those are secret on their own.
+
+**Using a non-Gmail provider**
+
+Any SMTP server that supports SSL on a fixed port works the same way — just change **SMTP server**/**port** to match your provider and use whatever credentials it issues (an app-specific password if the provider offers one, same reasoning as Gmail's). A few examples:
+
+| Provider | SMTP server | Port |
+|----------|-------------|------|
+| Gmail | `smtp.gmail.com` | 465 |
+| Outlook / Office 365 (personal) | `smtp.office365.com` | 587 *(see note below)* |
+| Yahoo Mail | `smtp.mail.yahoo.com` | 465 |
+
+> Note: the plugin's supervisor script always connects via `SMTP_SSL` (implicit TLS from the first byte, no STARTTLS handshake) — this matches Gmail and Yahoo's port-465 behavior. Providers that only offer STARTTLS on port 587 (like Office 365) are not currently supported without a small code change; Gmail is the tested, recommended path.
 
 ---
 

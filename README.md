@@ -208,7 +208,15 @@ CSV saved as `<stem>_statistics.csv` in the output folder.
 
 Only appears when a CUDA GPU with **≥8GB VRAM** is detected (checked once at plugin startup) — this includes GT annotation, even though it itself needs no GPU, so the tab behaves consistently across machines instead of half-working on CPU-only setups. If hidden, none of this tab's functionality is reachable from the GUI.
 
-An **Email notification (optional)** panel sits above the switch, shared by both groups: fill in a recipient address + SMTP server/port/username/password (defaults to `smtp.gmail.com:465` — works with any Gmail account plus a free [App Password](https://myaccount.google.com/apppasswords), no other SMTP server needed) to get one email whenever a training run stops. Leave the address blank to disable it (the default). The password is never persisted to disk, same policy as the LLM API key in Tab 3. See [How training launches work](#how-training-launches-work) below for why this still works even if napari is never reopened.
+An **Email notification (optional)** panel sits above the switch, shared by both groups: fill in a recipient address + SMTP server/port/username/password to get one email whenever a training run stops (finishes, crashes, or gets early-stopped). Leave the address blank to disable it (the default). The password is never persisted to disk, same policy as the LLM API key in Tab 3 — you'll re-enter it once per napari session. See [How training launches work](#how-training-launches-work) below for why this still works even if napari is never reopened.
+
+**Quickest setup, with a Gmail account (free, no other signup):**
+
+1. Turn on [2-Step Verification](https://myaccount.google.com/security) on your Google account, if it isn't already.
+2. Generate a [Google App Password](https://myaccount.google.com/apppasswords) — name it anything (e.g. `napari-zf-microglia-ai`), copy the 16-character code shown. This is **not** your normal Gmail password.
+3. In the panel: **Notify email** = where you want the report sent; **SMTP server** = `smtp.gmail.com` (default); **port** = `465` (default); **SMTP username** = your Gmail address; **SMTP password** = the App Password from step 2.
+
+Any other SMTP-over-SSL (implicit TLS, not STARTTLS) provider on a fixed port works the same way, just with a different server/port — see **GUIDE.md Section 11a** for the full walkthrough, more provider examples, and a note on why STARTTLS-only providers (e.g. Office 365 on port 587) aren't currently supported.
 
 A switch below that selects one of two mutually-exclusive groups:
 
