@@ -1703,11 +1703,19 @@ class ZFMicrogliaAIWidget(QWidget):
         """If a MONAI training job launched in a previous plugin/napari
         session is still running, reconnect the GUI to it instead of
         silently showing no active job — these are hours-to-days jobs
-        that regularly outlive a single napari session."""
+        that regularly outlive a single napari session.
+
+        If the job already finished (or crashed) while napari was closed,
+        is_running(pid) is now False -- report that outcome here instead
+        of just discarding the stale PID, since this is the only chance
+        the GUI ever gets to tell the user a job it doesn't currently see
+        running actually completed."""
         cfg = self._state.get("config", {})
         pid = cfg.get("monai_active_pid")
         log_path = cfg.get("monai_active_log")
-        if pid and _tj.is_running(pid):
+        if not pid:
+            return
+        if _tj.is_running(pid):
             self._monai_job["pid"] = pid
             self._monai_job["log_path"] = log_path
             self._monai_job["patience"] = cfg.get("monai_patience", 0)
@@ -1715,6 +1723,17 @@ class ZFMicrogliaAIWidget(QWidget):
             self._mt_stop_btn.setEnabled(True)
             self._mt_status_lbl.setText(f"Resumed monitoring PID {pid} (already running).")
             self._start_monai_polling()
+        else:
+            self._save_cfg(monai_active_pid=None, monai_active_log="")
+            best = _tj.patience_exceeded(log_path, _tj.MONAI_METRIC, patience=0) if log_path else None
+            if best and best["best_epoch"] is not None:
+                self._mt_status_lbl.setText(
+                    f"Training (PID {pid}) finished while napari was closed. Best "
+                    f"{_tj.MONAI_METRIC['label']}={best['best_value']:.4f} at epoch "
+                    f"{best['best_epoch']} — saved as best_model_fullstack.pth."
+                )
+            else:
+                self._mt_status_lbl.setText(f"Training (PID {pid}) is no longer running.")
 
     def _on_ec_browse_csv(self):
         path_str, _ = QFileDialog.getOpenFileName(self, "Select _statistics.csv", "", "CSV files (*.csv)")
@@ -1800,27 +1819,30 @@ class ZFMicrogliaAIWidget(QWidget):
         if path_str:
             self._ct_pretrained_edit.setText(path_str)
 
+    def _write_cellpose_best_pointer(self, job, best_epoch):
+        """Write the best-checkpoint pointer file (see
+        _tj.write_best_checkpoint_pointer) for `job` (a dict with
+        'data_dir'/'model_name' keys — either self._cellpose_job during
+        live polling, or a config snapshot when finalizing a job that
+        finished while napari was closed) and return a status suffix
+        describing the outcome. Never raises — a missing/racing
+        checkpoint file shouldn't crash the poll loop or block reopening
+        napari on a stale job."""
+        data_dir = job.get("data_dir")
+        model_name = job.get("model_name")
+        if not (data_dir and model_name and best_epoch is not None):
+            return ""
+        models_dir = Path(data_dir) / "models"
+        try:
+            pointer = _tj.write_best_checkpoint_pointer(models_dir, model_name, best_epoch)
+            return f"  Recommended-model pointer: {pointer.name}"
+        except FileNotFoundError as exc:
+            return f"  (could not write recommended-model pointer: {exc})"
+
     def _start_cellpose_polling(self):
         """Same coarse (8s) log-tail/status poll as MONAI (_start_monai_polling) —
         see that method's docstring for why the interval is this coarse."""
         timer = QTimer(self)
-
-        def _write_pointer(best_epoch):
-            """Write the best-checkpoint pointer file (see
-            _tj.write_best_checkpoint_pointer) and return a status suffix
-            describing the outcome — never raises, since this runs inside
-            a QTimer tick and a missing/racing checkpoint file shouldn't
-            crash the poll loop."""
-            data_dir = self._cellpose_job.get("data_dir")
-            model_name = self._cellpose_job.get("model_name")
-            if not (data_dir and model_name and best_epoch is not None):
-                return ""
-            models_dir = Path(data_dir) / "models"
-            try:
-                pointer = _tj.write_best_checkpoint_pointer(models_dir, model_name, best_epoch)
-                return f"  Recommended-model pointer: {pointer.name}"
-            except FileNotFoundError as exc:
-                return f"  (could not write recommended-model pointer: {exc})"
 
         def _poll():
             pid = self._cellpose_job.get("pid")
@@ -1837,7 +1859,7 @@ class ZFMicrogliaAIWidget(QWidget):
                     _tj.kill_process_tree(pid)
                     timer.stop()
                     self._cellpose_job["timer"] = None
-                    pointer_msg = _write_pointer(chk["best_epoch"])
+                    pointer_msg = self._write_cellpose_best_pointer(self._cellpose_job, chk["best_epoch"])
                     self._ct_status_lbl.setText(
                         f"Early-stopped (PID {pid}): {chk['checkpoints_since_best']} checkpoints "
                         f"without improvement (best {_tj.CELLPOSE_METRIC['label']}={chk['best_value']:.4f} "
@@ -1855,7 +1877,7 @@ class ZFMicrogliaAIWidget(QWidget):
                 else:
                     best = None
                 if best and best["best_epoch"] is not None:
-                    pointer_msg = _write_pointer(best["best_epoch"])
+                    pointer_msg = self._write_cellpose_best_pointer(self._cellpose_job, best["best_epoch"])
                     self._ct_status_lbl.setText(
                         f"Training process (PID {pid}) has stopped. Best "
                         f"{_tj.CELLPOSE_METRIC['label']}={best['best_value']:.4f} at epoch "
@@ -1938,20 +1960,42 @@ class ZFMicrogliaAIWidget(QWidget):
             self._cellpose_job["timer"] = None
 
     def _resume_cellpose_job_if_active(self):
-        """Mirrors _resume_monai_job_if_active — see its docstring."""
+        """Mirrors _resume_monai_job_if_active — see its docstring, including
+        the finalize-on-reopen branch for a job that finished while napari
+        was closed (the only place that job's pointer file can still get
+        written, since the live _poll() loop that normally does it never
+        ran while napari was shut)."""
         cfg = self._state.get("config", {})
         pid = cfg.get("cellpose_active_pid")
         log_path = cfg.get("cellpose_active_log")
-        if pid and _tj.is_running(pid):
+        if not pid:
+            return
+        data_dir = cfg.get("cellpose_crops_data_dir", "")
+        model_name = cfg.get("cellpose_model_name", "")
+        if _tj.is_running(pid):
             self._cellpose_job["pid"] = pid
             self._cellpose_job["log_path"] = log_path
             self._cellpose_job["patience"] = cfg.get("cellpose_patience", 0)
-            self._cellpose_job["data_dir"] = cfg.get("cellpose_crops_data_dir", "")
-            self._cellpose_job["model_name"] = cfg.get("cellpose_model_name", "")
+            self._cellpose_job["data_dir"] = data_dir
+            self._cellpose_job["model_name"] = model_name
             self._ct_launch_btn.setEnabled(False)
             self._ct_stop_btn.setEnabled(True)
             self._ct_status_lbl.setText(f"Resumed monitoring PID {pid} (already running).")
             self._start_cellpose_polling()
+        else:
+            self._save_cfg(cellpose_active_pid=None, cellpose_active_log="")
+            best = _tj.patience_exceeded(log_path, _tj.CELLPOSE_METRIC, patience=0) if log_path else None
+            if best and best["best_epoch"] is not None:
+                pointer_msg = self._write_cellpose_best_pointer(
+                    dict(data_dir=data_dir, model_name=model_name), best["best_epoch"]
+                )
+                self._ct_status_lbl.setText(
+                    f"Training (PID {pid}) finished while napari was closed. Best "
+                    f"{_tj.CELLPOSE_METRIC['label']}={best['best_value']:.4f} at epoch "
+                    f"{best['best_epoch']}." + pointer_msg
+                )
+            else:
+                self._ct_status_lbl.setText(f"Training (PID {pid}) is no longer running.")
 
     def _get_layer_scale(self):
         """
