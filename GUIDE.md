@@ -470,6 +470,21 @@ Click to start. `do_3D` inference is slow — it can take **hours** for a full-s
 
 ---
 
+### Verify Cellprob / Large-contact (GT Sweep)
+
+Sweeps **Cellprob** × **Large-contact merge** against a full-fish GT labels volume, scored with the exact same whole-fish Hungarian-matched methodology as **Score Against GT** in Tab 3 — this is how the current defaults were actually found historically (e.g. the cellprob=-2.5/large_contact=20 combination), now automated instead of requiring a CLI sweep script.
+
+1. **Image** / **GT labels** — a full-fish `brain_only` image + its corresponding GT labels volume.
+2. **Voxel scale Z/XY** — drives the do_3D `anisotropy` parameter (Z/XY ratio); independent of whatever's open in the viewer.
+3. **Cellprob min/max/step** and **Large-contact min/max/step** — define the grid.
+4. Click **Run Cellprob/Large-contact Sweep**. Uses this section's current **Flow**, **Safe-merge max gap**, and **Safe-merge min contact** values above — only Cellprob and Large-contact vary.
+
+**Cellprob requires a real `do_3D` re-inference per value** — it changes what Cellpose-SAM actually predicts, so this is the expensive, GPU-preferred dimension (same device fallback as Run Cellpose-SAM Segmentation). **Large-contact is cheap** — it's a post-processing merge threshold applied after `do_3D` + GMM cleanup + Krendl safe-merge, so the sweep runs `do_3D` (+ GMM + safe-merge) exactly once per Cellprob value, then varies Large-contact freely on that same intermediate result — the same shortcut this project's own research scripts have long used (`--skip_inference`).
+
+Because of that, total sweep time scales with the number of **Cellprob** values only, not the full grid size — a 5×5 grid costs about the same as 5 individual `do_3D` runs, not 25. **Stop Sweep** cancels between Cellprob values (not mid-inference or mid-Large-contact). The report is a 2D grid of Score (`TP − 0.5×(FP+FN)`), with your current Tab 2 slider values marked.
+
+---
+
 ### Sort by / Reverse order / Resort Labels
 
 After creating (or loading) labels, you can renumber them by a criterion of your choice.
@@ -1442,6 +1457,7 @@ Shown automatically based on active layer suffix — `_ExtRm` → Cellpose-SAM, 
 | Safe-merge max gap | 2 vox | Max gap allowed when merging fragments |
 | Safe-merge min contact | 10 vox | Min touching surface required to merge |
 | Large-contact merge | 20 vox | Second merge pass for thick-junction splits |
+| Verify Cellprob / Large-contact (GT Sweep) | 5x5 grid | Confirms against whole-fish GT — Cellprob needs re-inference (GPU-preferred), Large-contact is cheap |
 
 **Both methods (once labels exist)**
 

@@ -32,6 +32,7 @@ from ._cellpose_seg import run_full_pipeline as _run_cellpose_pipeline
 from . import _pixel_sweep as _psw
 from . import _brain_sweep as _bsw
 from . import _gt_score as _gts
+from . import _krendl_sweep as _ksw
 from ._gpu_check import GPU_OK, GPU_MSG
 if GPU_OK:
     from . import _gt_annotation as _gt
@@ -827,6 +828,122 @@ class ZFMicrogliaAIWidget(QWidget):
 
         self._cellpose_group.setLayout(cpg)
         t2.addWidget(self._cellpose_group)
+
+        # ── Verify Cellprob / Large-contact (GT sweep) — always visible, ──
+        # not gated by the active-layer auto-switch: works from explicit
+        # file paths. cellprob needs a real do_3D re-inference per value
+        # (GPU-preferred but falls back to CPU like the rest of Tab 2),
+        # large_contact is cheap post-processing swept on top of it.
+        krg = QGroupBox("Verify Cellprob / Large-contact (GT Sweep)")
+        krl = QVBoxLayout()
+        krl.setSpacing(6)
+
+        kr_note = QLabel(
+            "Sweeps Cellprob x Large-contact merge against a full-fish GT "
+            "labels volume, scored with the same whole-fish Hungarian-"
+            "matched methodology as \"Score Against GT\" in Tab 3 (not a "
+            "handful of proxy cells). Uses this section's model/Flow/"
+            "Safe-merge values above — only Cellprob and Large-contact vary."
+        )
+        kr_note.setWordWrap(True)
+        kr_note.setStyleSheet("color: #888; font-size: 10px;")
+        krl.addWidget(kr_note)
+
+        kr_img_row = QHBoxLayout()
+        kr_img_row.addWidget(QLabel("Image:"))
+        self._kr_img_edit = QLineEdit("")
+        kr_img_row.addWidget(self._kr_img_edit)
+        self._kr_img_browse_btn = QPushButton("...")
+        self._kr_img_browse_btn.setFixedWidth(32)
+        kr_img_row.addWidget(self._kr_img_browse_btn)
+        krl.addLayout(kr_img_row)
+
+        kr_gt_row = QHBoxLayout()
+        kr_gt_row.addWidget(QLabel("GT labels:"))
+        self._kr_gt_edit = QLineEdit("")
+        kr_gt_row.addWidget(self._kr_gt_edit)
+        self._kr_gt_browse_btn = QPushButton("...")
+        self._kr_gt_browse_btn.setFixedWidth(32)
+        kr_gt_row.addWidget(self._kr_gt_browse_btn)
+        krl.addLayout(kr_gt_row)
+
+        kr_scale_row = QHBoxLayout()
+        kr_scale_row.addWidget(QLabel("Voxel scale Z (µm):"))
+        self._kr_scalez_spin = QDoubleSpinBox()
+        self._kr_scalez_spin.setDecimals(4)
+        self._kr_scalez_spin.setRange(0.0001, 100.0)
+        self._kr_scalez_spin.setValue(1.0)
+        kr_scale_row.addWidget(self._kr_scalez_spin)
+        kr_scale_row.addWidget(QLabel("XY (µm):"))
+        self._kr_scalexy_spin = QDoubleSpinBox()
+        self._kr_scalexy_spin.setDecimals(4)
+        self._kr_scalexy_spin.setRange(0.0001, 100.0)
+        self._kr_scalexy_spin.setValue(0.174)
+        kr_scale_row.addWidget(self._kr_scalexy_spin)
+        krl.addLayout(kr_scale_row)
+
+        kr_cp_row = QHBoxLayout()
+        kr_cp_row.addWidget(QLabel("Cellprob min:"))
+        self._kr_cpmin_spin = QDoubleSpinBox()
+        self._kr_cpmin_spin.setDecimals(2)
+        self._kr_cpmin_spin.setRange(-6.0, 6.0)
+        self._kr_cpmin_spin.setValue(-3.0)
+        kr_cp_row.addWidget(self._kr_cpmin_spin)
+        kr_cp_row.addWidget(QLabel("max:"))
+        self._kr_cpmax_spin = QDoubleSpinBox()
+        self._kr_cpmax_spin.setDecimals(2)
+        self._kr_cpmax_spin.setRange(-6.0, 6.0)
+        self._kr_cpmax_spin.setValue(-2.0)
+        kr_cp_row.addWidget(self._kr_cpmax_spin)
+        kr_cp_row.addWidget(QLabel("step:"))
+        self._kr_cpstep_spin = QDoubleSpinBox()
+        self._kr_cpstep_spin.setDecimals(2)
+        self._kr_cpstep_spin.setRange(0.05, 6.0)
+        self._kr_cpstep_spin.setValue(0.25)
+        kr_cp_row.addWidget(self._kr_cpstep_spin)
+        krl.addLayout(kr_cp_row)
+
+        kr_lc_row = QHBoxLayout()
+        kr_lc_row.addWidget(QLabel("Large-contact min:"))
+        self._kr_lcmin_spin = QSpinBox()
+        self._kr_lcmin_spin.setRange(1, 2000)
+        self._kr_lcmin_spin.setValue(10)
+        kr_lc_row.addWidget(self._kr_lcmin_spin)
+        kr_lc_row.addWidget(QLabel("max:"))
+        self._kr_lcmax_spin = QSpinBox()
+        self._kr_lcmax_spin.setRange(1, 2000)
+        self._kr_lcmax_spin.setValue(100)
+        kr_lc_row.addWidget(self._kr_lcmax_spin)
+        kr_lc_row.addWidget(QLabel("step:"))
+        self._kr_lcstep_spin = QSpinBox()
+        self._kr_lcstep_spin.setRange(1, 2000)
+        self._kr_lcstep_spin.setValue(30)
+        kr_lc_row.addWidget(self._kr_lcstep_spin)
+        krl.addLayout(kr_lc_row)
+
+        kr_btn_row = QHBoxLayout()
+        self._kr_run_btn = QPushButton("Run Cellprob/Large-contact Sweep")
+        self._kr_run_btn.setStyleSheet("QPushButton { font-weight: bold; padding: 5px; }")
+        kr_btn_row.addWidget(self._kr_run_btn)
+        self._kr_stop_btn = QPushButton("Stop Sweep")
+        self._kr_stop_btn.setEnabled(False)
+        kr_btn_row.addWidget(self._kr_stop_btn)
+        krl.addLayout(kr_btn_row)
+
+        self._kr_status_lbl = QLabel("")
+        self._kr_status_lbl.setWordWrap(True)
+        krl.addWidget(self._kr_status_lbl)
+
+        self._kr_report_view = QTextEdit()
+        self._kr_report_view.setReadOnly(True)
+        self._kr_report_view.setStyleSheet("font-family: monospace; font-size: 9px;")
+        self._kr_report_view.setFixedHeight(160)
+        krl.addWidget(self._kr_report_view)
+
+        krg.setLayout(krl)
+        t2.addWidget(krg)
+
+        self._krendl_sweep_job = {"thread": None, "cancel_event": None, "timer": None}
 
         t2.addWidget(_sep())
 
@@ -1924,6 +2041,10 @@ class ZFMicrogliaAIWidget(QWidget):
         self._ps_stop_btn.clicked.connect(self._on_ps_stop_sweep)
         self._cp_model_browse_btn.clicked.connect(self._on_browse_cp_model)
         self._cp_run_btn.clicked.connect(self._on_run_cellpose_seg)
+        self._kr_img_browse_btn.clicked.connect(self._on_kr_browse_img)
+        self._kr_gt_browse_btn.clicked.connect(self._on_kr_browse_gt)
+        self._kr_run_btn.clicked.connect(self._on_kr_run_sweep)
+        self._kr_stop_btn.clicked.connect(self._on_kr_stop_sweep)
         self._resort_btn.clicked.connect(self._on_resort_labels)
         self._split_use_sel_btn.clicked.connect(self._on_use_selected_label)
         self._split_btn.clicked.connect(self._on_split_label)
@@ -4017,3 +4138,149 @@ class ZFMicrogliaAIWidget(QWidget):
 
         timer2.timeout.connect(_poll2)
         timer2.start(1000)  # 1s poll — this run is long, no need for finer granularity
+
+    def _on_kr_browse_img(self):
+        path_str, _ = QFileDialog.getOpenFileName(self, "Select image to sweep", "", "TIFF files (*.tif *.tiff)")
+        if path_str:
+            self._kr_img_edit.setText(path_str)
+
+    def _on_kr_browse_gt(self):
+        path_str, _ = QFileDialog.getOpenFileName(self, "Select GT label volume", "", "TIFF files (*.tif *.tiff)")
+        if path_str:
+            self._kr_gt_edit.setText(path_str)
+
+    def _on_kr_run_sweep(self):
+        if self._krendl_sweep_job.get("thread") and self._krendl_sweep_job["thread"].is_alive():
+            self._kr_status_lbl.setText("A sweep is already running.")
+            return
+
+        model_path = self._state.get("cellpose_model_path")
+        if not model_path or not Path(model_path).exists():
+            self._kr_status_lbl.setText("ERROR: no Cellpose-SAM model selected — browse to a checkpoint above.")
+            return
+        img_path = self._kr_img_edit.text().strip()
+        gt_path = self._kr_gt_edit.text().strip()
+        if not (img_path and gt_path):
+            self._kr_status_lbl.setText("ERROR: set Image and GT labels paths first.")
+            return
+        for label_str, p in (("Image", img_path), ("GT labels", gt_path)):
+            if not Path(p).exists():
+                self._kr_status_lbl.setText(f"ERROR: {label_str} not found: {p}")
+                return
+
+        cp_min = self._kr_cpmin_spin.value()
+        cp_max = self._kr_cpmax_spin.value()
+        cp_step = self._kr_cpstep_spin.value()
+        if cp_max < cp_min:
+            self._kr_status_lbl.setText("ERROR: Cellprob max must be >= min.")
+            return
+        cellprobs = list(np.round(np.arange(cp_min, cp_max + cp_step / 2, cp_step), 4))
+
+        lc_min = self._kr_lcmin_spin.value()
+        lc_max = self._kr_lcmax_spin.value()
+        lc_step = self._kr_lcstep_spin.value()
+        if lc_max < lc_min:
+            self._kr_status_lbl.setText("ERROR: Large-contact max must be >= min.")
+            return
+        large_contacts = list(range(lc_min, lc_max + 1, lc_step))
+
+        anisotropy = self._kr_scalez_spin.value() / self._kr_scalexy_spin.value()
+        flow = self._cp_flow_slider.value()
+        max_gap = self._cp_maxgap_slider.value()
+        min_contact = self._cp_mincontact_slider.value()
+        gpu = torch.cuda.is_available()
+        current_cellprob = self._cp_cellprob_slider.value()
+        current_large_contact = self._cp_largecontact_slider.value()
+
+        cancel_event = threading.Event()
+        result = {}
+        progress = {"lines": []}
+        progress_lock = threading.Lock()
+
+        def _progress_cb(msg):
+            with progress_lock:
+                progress["lines"].append(msg)
+
+        def _worker():
+            try:
+                volume = tifffile.imread(img_path)
+                gt_labels = tifffile.imread(gt_path).astype(np.int32)
+                sweep = _ksw.run_krendl_sweep(
+                    volume, gt_labels, model_path, cellprobs, large_contacts,
+                    flow=flow, anisotropy=anisotropy, max_gap=max_gap, min_contact=min_contact,
+                    gpu=gpu, progress_cb=_progress_cb, cancel_event=cancel_event,
+                )
+                result["sweep"] = sweep
+            except Exception as exc:
+                result["error"] = f"{exc}\n{traceback.format_exc()}"
+
+        thread = threading.Thread(target=_worker, daemon=True)
+        self._krendl_sweep_job["thread"] = thread
+        self._krendl_sweep_job["cancel_event"] = cancel_event
+        self._krendl_sweep_job["result"] = result
+        self._krendl_sweep_job["progress"] = progress
+        self._krendl_sweep_job["progress_lock"] = progress_lock
+        self._krendl_sweep_job["current_cellprob"] = current_cellprob
+        self._krendl_sweep_job["current_large_contact"] = current_large_contact
+        self._kr_run_btn.setEnabled(False)
+        self._kr_stop_btn.setEnabled(True)
+        self._kr_report_view.clear()
+        self._kr_status_lbl.setText(
+            f"Sweeping {len(cellprobs)} Cellprob x {len(large_contacts)} Large-contact "
+            f"values on {'cuda' if gpu else 'cpu'} ..."
+        )
+        thread.start()
+        self._start_krendl_sweep_polling()
+
+    def _on_kr_stop_sweep(self):
+        cancel_event = self._krendl_sweep_job.get("cancel_event")
+        if cancel_event:
+            cancel_event.set()
+        self._kr_status_lbl.setText("Cancelling — finishing the current cellprob value, then stopping...")
+        self._kr_stop_btn.setEnabled(False)
+
+    def _start_krendl_sweep_polling(self):
+        """Same fast (500ms) poll and non-detached, doesn't-survive-napari-
+        closing contract as the plugin's other sweep tools."""
+        timer = QTimer(self)
+        job = self._krendl_sweep_job
+
+        def _poll():
+            with job["progress_lock"]:
+                lines = list(job["progress"]["lines"])
+                job["progress"]["lines"].clear()
+            if lines:
+                self._kr_report_view.append("\n".join(lines))
+                sb = self._kr_report_view.verticalScrollBar()
+                sb.setValue(sb.maximum())
+
+            if job["thread"].is_alive():
+                return
+            timer.stop()
+            job["timer"] = None
+            self._kr_run_btn.setEnabled(True)
+            self._kr_stop_btn.setEnabled(False)
+
+            result = job["result"]
+            if "error" in result:
+                self._kr_status_lbl.setText(f"ERROR during sweep: {result['error'].splitlines()[0]}")
+                self._kr_report_view.append("\n" + result["error"])
+                return
+
+            sweep = result["sweep"]
+            report = _ksw.format_krendl_sweep_report(sweep, job["current_cellprob"], job["current_large_contact"])
+            self._kr_report_view.setPlainText(report)
+            if sweep.get("cancelled"):
+                self._kr_status_lbl.setText("Sweep cancelled — partial results above.")
+            elif sweep["best_point"] is not None:
+                best_cp, best_lc = sweep["best_point"]
+                self._kr_status_lbl.setText(
+                    f"Best: cellprob={best_cp}, large_contact={best_lc} "
+                    f"(Score={sweep['results'][sweep['best_point']]['score']:+.1f})."
+                )
+            else:
+                self._kr_status_lbl.setText("Sweep finished but no grid points could be scored.")
+
+        timer.timeout.connect(_poll)
+        timer.start(500)
+        job["timer"] = timer
