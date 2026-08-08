@@ -284,17 +284,24 @@ class ZFMicrogliaAIWidget(QWidget):
         self._viewer = napari_viewer
         cfg = _load_config()
         # Model path priority: saved config > hardcoded default > None
+        # NOTE: must use is_file(), not exists() -- Path(cfg.get(key, ""))
+        # is Path("") when nothing was ever saved, which pathlib silently
+        # normalizes to Path(".") (current directory). exists() returns
+        # True for a directory too, so it was incorrectly treating "no
+        # model configured yet" as "a valid model is loaded", which then
+        # failed much later and far more confusingly inside torch.load()
+        # ("Permission denied: '.'" instead of a clear "no model selected").
         saved_model = Path(cfg.get("model_path", ""))
-        if saved_model.exists():
+        if saved_model.is_file():
             initial_model = saved_model
-        elif DEFAULT_MODEL.exists():
+        elif DEFAULT_MODEL.is_file():
             initial_model = DEFAULT_MODEL
         else:
             initial_model = None
         # Cellpose-SAM checkpoint: saved config only (no bundled default —
         # this is a project-specific fine-tuned model, not shipped with the plugin)
         saved_cp_model = Path(cfg.get("cellpose_model_path", ""))
-        initial_cp_model = saved_cp_model if saved_cp_model.exists() else None
+        initial_cp_model = saved_cp_model if saved_cp_model.is_file() else None
         self._state = {
             "model_path":         initial_model,
             "cellpose_model_path": initial_cp_model,
@@ -3722,7 +3729,7 @@ class ZFMicrogliaAIWidget(QWidget):
         self._labels_status_lbl.setText(f"Cellpose-SAM model: {p.name}")
 
     def _on_run(self):
-        if not self._state["model_path"] or not Path(self._state["model_path"]).exists():
+        if not self._state["model_path"] or not Path(self._state["model_path"]).is_file():
             self._status("ERROR: model file not found — browse to a .pth file.")
             return
         target = self._active_layer()
@@ -3892,7 +3899,7 @@ class ZFMicrogliaAIWidget(QWidget):
             self._bs_status_lbl.setText("A sweep is already running.")
             return
 
-        if not self._state["model_path"] or not Path(self._state["model_path"]).exists():
+        if not self._state["model_path"] or not Path(self._state["model_path"]).is_file():
             self._bs_status_lbl.setText("ERROR: model file not found — browse to a .pth file above first.")
             return
         img_path = self._bs_img_edit.text().strip()
@@ -4633,7 +4640,7 @@ class ZFMicrogliaAIWidget(QWidget):
             self._cp_status_lbl.setText(f"ERROR: 3D volume required, got {volume.ndim}D.")
             return
         model_path = self._state.get("cellpose_model_path")
-        if not model_path or not Path(model_path).exists():
+        if not model_path or not Path(model_path).is_file():
             self._cp_status_lbl.setText("ERROR: no Cellpose-SAM model selected — browse to a checkpoint.")
             return
 
@@ -4740,7 +4747,7 @@ class ZFMicrogliaAIWidget(QWidget):
             return
 
         model_path = self._state.get("cellpose_model_path")
-        if not model_path or not Path(model_path).exists():
+        if not model_path or not Path(model_path).is_file():
             self._kr_status_lbl.setText("ERROR: no Cellpose-SAM model selected — browse to a checkpoint above.")
             return
         img_path = self._kr_img_edit.text().strip()
