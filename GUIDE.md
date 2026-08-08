@@ -59,6 +59,8 @@ Beyond these three core steps, **Tab 4** launches GT annotation and MONAI/Cellpo
 
 > **Every group box (the titled, bordered sections throughout all five tabs) is collapsible** — click its title checkbox to hide its contents, freeing up vertical space so groups further down become reachable. Useful on smaller screens where a tab has more sections than fit on screen at once. Collapsing doesn't discard anything — every field keeps its value, and re-expanding restores it exactly as it was.
 
+> **Every group box also opens with a short description of what it actually does**, not just how to operate it — e.g. the Pixel Classifier and Cellpose-SAM Segmentation sections each explain their underlying pipeline (Gaussian smooth → threshold → union-find vs. `do_3D` → GMM → Krendl merge) before the click-instructions, not just after.
+
 > **Each tab also scrolls independently** — if a tab is taller than your napari window even with some groups collapsed, a vertical scrollbar appears on the right edge of the panel so you can reach everything below the fold. Only vertical scrolling is enabled; the panel's width work means nothing should ever need to scroll sideways.
 
 ---

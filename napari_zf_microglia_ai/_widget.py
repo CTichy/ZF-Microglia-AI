@@ -626,6 +626,11 @@ class ZFMicrogliaAIWidget(QWidget):
         pcg.setSpacing(6)
 
         lbl_note = QLabel(
+            "Classical, GPU-optional labelling: Gaussian smooth → threshold "
+            "→ per-slice 2D connected components → overlap-based union-find "
+            "into 3D objects → volume filter. No trained model needed — the "
+            "fallback for machines with no usable GPU (see Cellpose-SAM "
+            "Segmentation below for the recommended path).\n\n"
             "Run option 2 (Remove globally) first to get a\n"
             "brain_only (_NoBG) layer, then select it and click below."
         )
@@ -860,6 +865,11 @@ class ZFMicrogliaAIWidget(QWidget):
         cpg.setSpacing(6)
 
         cp_note = QLabel(
+            "  The recommended labelling method: a fine-tuned Cellpose-SAM "
+            "foundation model, run in 3D (do_3D inference), then cleaned up "
+            "with a 3-component-GMM pass, a Krendl safe-merge pass, and a "
+            "large-contact merge pass — handles branching/overlapping cells "
+            "far better than classical thresholding.\n\n"
             "  Select a brain_only layer, pick a Cellpose-SAM checkpoint,\n"
             "  then click below. do_3D inference is slow (can be hours\n"
             "  for a full fish) — this runs in the background."
@@ -1605,6 +1615,17 @@ class ZFMicrogliaAIWidget(QWidget):
             )
         t4.addWidget(gpu_banner)
 
+        t4_note = QLabel(
+            "Builds and trains the two AI models the rest of the plugin "
+            "depends on: MONAI (Tab 1's skin/brain segmentation) and "
+            "Cellpose-SAM (Tab 2's microglia segmentation). Everything here "
+            "is either ground-truth creation or a training-launcher — for "
+            "GT-verification sweeps and related utilities, see Tab 5."
+        )
+        t4_note.setWordWrap(True)
+        t4_note.setStyleSheet("color: #888; font-size: 10px;")
+        t4.addWidget(t4_note)
+
         t4.addWidget(_sep())
 
         # ── Email notification (optional, shared by both groups) ────────── #
@@ -1715,6 +1736,9 @@ class ZFMicrogliaAIWidget(QWidget):
         gtl.setSpacing(6)
 
         gt_note = QLabel(
+            "Creates hand-drawn ground-truth brain/skin masks by interpolating "
+            "polygons between key slices — the source of truth MONAI training, "
+            "and the GT-sweep tools in Tab 5, are checked against.\n\n"
             "1. Pick the Image layer to annotate.\n"
             "2. Select the 'brain_polygons' layer (yellow) and draw\n"
             "   polygons every ~10 slices with the polygon tool.\n"
