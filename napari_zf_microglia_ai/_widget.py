@@ -208,6 +208,22 @@ def _make_collapsible(groupbox: QGroupBox, start_expanded: bool = True) -> QGrou
     return groupbox
 
 
+def _wrap_scroll(widget: QWidget) -> QScrollArea:
+    """Wrap a fully-built tab page in a vertical-only QScrollArea. Collapsible
+    groups (_make_collapsible) help but aren't enough on their own -- a tab
+    with many groups (all expanded, or just genuinely a lot of controls) can
+    still be taller than a laptop screen, and without this the content below
+    the fold was completely unreachable (no scrollbar existed at all).
+    setWidgetResizable(True) makes the scroll area resize `widget` to match
+    its own width, so only a vertical scrollbar ever appears -- horizontal
+    content isn't meant to scroll, per the panel-width work."""
+    scroll = QScrollArea()
+    scroll.setWidgetResizable(True)
+    scroll.setHorizontalScrollBarPolicy(Qt.ScrollBarAlwaysOff)
+    scroll.setWidget(widget)
+    return scroll
+
+
 def _sep():
     """Thin horizontal separator line."""
     w = QWidget()
@@ -556,7 +572,7 @@ class ZFMicrogliaAIWidget(QWidget):
 
         t1.addStretch()
         tab1.setLayout(t1)
-        tabs.addTab(tab1, "Skin Remover")
+        tabs.addTab(_wrap_scroll(tab1), "Skin Remover")
 
         # ============================================================ #
         # TAB 2 — Create Labels
@@ -1249,7 +1265,7 @@ class ZFMicrogliaAIWidget(QWidget):
 
         t2.addStretch()
         tab2.setLayout(t2)
-        tabs.addTab(tab2, "Create Labels")
+        tabs.addTab(_wrap_scroll(tab2), "Create Labels")
 
         # ============================================================ #
         # TAB 3 — Statistics
@@ -1505,7 +1521,7 @@ class ZFMicrogliaAIWidget(QWidget):
 
         t3.addStretch()
         tab3.setLayout(t3)
-        tabs.addTab(tab3, "Statistics")
+        tabs.addTab(_wrap_scroll(tab3), "Statistics")
 
         # ============================================================ #
         # TAB 4 — AI Tools
@@ -2428,7 +2444,7 @@ class ZFMicrogliaAIWidget(QWidget):
 
         t4.addStretch()
         tab4.setLayout(t4)
-        tabs.addTab(tab4, "AI Tools")
+        tabs.addTab(_wrap_scroll(tab4), "AI Tools")
         self._tabs.setTabVisible(3, True)
 
         # ── outer layout ────────────────────────────────────────────── #
