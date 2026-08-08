@@ -135,7 +135,7 @@ If you don't have a checkpoint yet, use the **Pixel Classifier** instead — it 
 1. Open a terminal and type `napari` to launch it.
 2. In the napari menu bar, click **Plugins**.
 3. Click **Main Panel (ZF-Microglia-AI)**.
-4. A panel appears on the right side with tabs: **Skin Remover**, **Create Labels**, **Statistics** (only appears once at least one Labels layer exists in the viewer), and **AI Tools** (always available — shows a disclaimer instead of hiding the tab if your GPU is missing or under the recommended 8GB, see [Section 8](#8-tab-4--ai-tools)).
+4. A panel appears on the right side with tabs: **Skin Remover**, **Create Labels**, **Statistics** (always visible — shows an explanatory hint in place of its controls until at least one Labels layer exists), **AI Tools** (always available — shows a disclaimer instead of hiding the tab if your GPU is missing or under the recommended 8GB, see [Section 8](#8-tab-4--ai-tools)), and **Sweeps & Utilities** (Section 9).
 
 ---
 
@@ -331,7 +331,7 @@ Tab 2 shows **exactly one** of the two labelling methods below, chosen automatic
 
 So the choice is really made back in **Tab 1, Step 5**: pick **Option 1** if you plan to segment with Cellpose-SAM, or **Option 2** if you plan to use the Pixel Classifier.
 
-The **Sort by / Resort Labels**, **Split Label**, and **Save Labels** tools (Section 6, further down) only appear once one of the two sections above is showing — with no `_ExtRm`/`_NoBG` layer selected, there's nothing yet to sort, split, or save. Likewise, **Tab 3 — Statistics** only appears once at least one Labels layer exists in the viewer.
+The **Sort by / Resort Labels**, **Split Label**, and **Save Labels** tools (Section 6, further down) only appear once one of the two sections above is showing — with no `_ExtRm`/`_NoBG` layer selected, there's nothing yet to sort, split, or save. **Tab 3 — Statistics** takes a different approach: it stays visible regardless, showing an explanatory hint in place of its controls until at least one Labels layer exists in the viewer, so a first-time user can still discover the tab is there.
 
 ---
 

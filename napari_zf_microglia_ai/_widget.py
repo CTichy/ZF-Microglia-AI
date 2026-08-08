@@ -465,7 +465,7 @@ class ZFMicrogliaAIWidget(QWidget):
 
         bg_note = QLabel(
             "  Probe: inside-brain mode (post-inference)\n"
-            "  Mode 1 & 2 use BG Threshold  |  Mode 3: no threshold"
+            "  Mode 1 && 2 use BG Threshold  |  Mode 3: no threshold"
         )
         bg_note.setStyleSheet("color: #aaa; font-size: 10px;")
         t1.addWidget(bg_note)
@@ -1321,14 +1321,54 @@ class ZFMicrogliaAIWidget(QWidget):
         cfg = self._state.get("config", {})
 
         t3_note = QLabel(
-            "Select a Labels layer, then choose a description\n"
-            "backend and click Generate Statistics."
+            "Computes morphological, spatial, and intensity statistics per "
+            "labelled cell (volume, shape, branching, nearest neighbours, "
+            "optional intensity/brain-region features) and exports a CSV. "
+            "Select a Labels layer, then choose a description backend and "
+            "click Generate Statistics."
         )
         t3_note.setWordWrap(True)
         t3_note.setStyleSheet("color: #aaa; font-size: 10px;")
         t3.addWidget(t3_note)
 
+        # Statistics needs an actual Labels layer to operate on -- this tab
+        # used to hide itself entirely until one existed, which meant a
+        # first-time user had no way to discover Tab 3 was there to fill in
+        # once they had labels. Instead, the tab stays visible and shows an
+        # explanatory hint in place of the (temporarily irrelevant) controls
+        # below -- same "explain instead of hide" pattern already used for
+        # Tab 2's Pixel Classifier/Cellpose-SAM sections.
+        self._stats_no_labels_hint = QLabel("")
+        self._stats_no_labels_hint.setWordWrap(True)
+        self._stats_no_labels_hint.setStyleSheet("color: #8ab; font-size: 10px; font-style: italic;")
+        t3.addWidget(self._stats_no_labels_hint)
+
         t3.addWidget(_sep())
+
+        _stats_content_start = t3.count()
+
+        def _update_stats_tab_content(has_labels):
+            if has_labels:
+                self._stats_no_labels_hint.setVisible(False)
+            else:
+                self._stats_no_labels_hint.setText(
+                    "No Labels layer yet — create one first via Tab 2's Create "
+                    "Labels (Pixel Classifier or Cellpose-SAM Segmentation), or "
+                    "load/create one another way, then come back here to "
+                    "compute statistics."
+                )
+                self._stats_no_labels_hint.setVisible(True)
+            for i in range(_stats_content_start, t3.count()):
+                item = t3.itemAt(i)
+                w_ = item.widget()
+                if w_ is not None:
+                    w_.setVisible(has_labels)
+                else:
+                    lay = item.layout()
+                    if lay is not None:
+                        _set_layout_widgets_visible(lay, has_labels)
+
+        self._update_stats_tab_content = _update_stats_tab_content
 
         desc_row = QHBoxLayout()
         desc_row.addWidget(QLabel("Description:"))
@@ -1566,6 +1606,9 @@ class ZFMicrogliaAIWidget(QWidget):
         t3.addStretch()
         tab3.setLayout(t3)
         tabs.addTab(_wrap_scroll(tab3), "Statistics")
+        self._update_stats_tab_content(
+            any(isinstance(l, napari.layers.Labels) for l in self._viewer.layers)
+        )
 
         # ============================================================ #
         # TAB 4 — AI Tools
@@ -2563,7 +2606,7 @@ class ZFMicrogliaAIWidget(QWidget):
         # require moving *how* it's built.
         t5.addStretch()
         tab5.setLayout(t5)
-        tabs.addTab(_wrap_scroll(tab5), "Sweeps & Utilities")
+        tabs.addTab(_wrap_scroll(tab5), "Sweeps && Utilities")  # && -- Qt treats a lone & as a mnemonic marker and swallows it
 
         # ── outer layout ────────────────────────────────────────────── #
         outer = QVBoxLayout()
@@ -3674,11 +3717,14 @@ class ZFMicrogliaAIWidget(QWidget):
         creation_available = self._cellpose_group.isVisible() or self._pixel_classifier_group.isVisible()
         self._downstream_label_tools.setVisible(creation_available)
 
-        # Statistics tab needs an actual Labels layer to operate on — a
+        # Statistics needs an actual Labels layer to operate on — a
         # different, more direct condition than "is a creation tool shown",
         # since labels can persist even after switching the active layer.
+        # The tab itself always stays visible (explain instead of hide, per
+        # explicit instruction) -- _update_stats_tab_content swaps its
+        # content for an explanatory hint instead.
         has_labels = any(isinstance(l, napari.layers.Labels) for l in self._viewer.layers)
-        self._tabs.setTabVisible(2, has_labels)
+        self._update_stats_tab_content(has_labels)
 
     # ------------------------------------------------------------------ #
     # Public helper (used by __main__.py for CLI pre-loading)

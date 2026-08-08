@@ -14,7 +14,7 @@ Given a 3D confocal volume (TIF or IMS), the plugin provides five tabs:
 
 - **Tab 1 — Skin Remover:** runs a trained MONAI U-Net to predict the brain mask, removes the skin, and saves `brain_mask.tif` + `brain_only.tif`
 - **Tab 2 — Create Labels:** two ways to detect and label individual microglia in 3D. **Cellpose-SAM Segmentation** (`do_3D` inference → 3-component GMM cleanup → Krendl safe-merge → large-contact merge) is the recommended path — a fine-tuned foundation model that handles branching/overlapping cells far better than classical thresholding. The **Pixel Classifier** (Gaussian smooth → threshold → overlap-based union-find 3D stitching → volume filter) is a lighter, older-technology fallback for machines with no GPU at all. The tab automatically shows whichever one matches your active layer's background-removal mode (see below) — no manual switching needed.
-- **Tab 3 — Statistics:** computes up to 51 morphological, spatial, and intensity features per labelled cell and exports a CSV. Only shown once at least one Labels layer exists.
+- **Tab 3 — Statistics:** computes up to 51 morphological, spatial, and intensity features per labelled cell and exports a CSV. Always visible — shows an explanatory hint in place of the controls until at least one Labels layer exists, the same "explain instead of hide" pattern as Tab 2's method sections.
 - **Tab 4 — AI Tools:** ground-truth polygon annotation plus launchers for MONAI and Cellpose-SAM training (dataset prep/crop extraction, hours-to-days training runs that survive napari closing). Always available — shows a disclaimer banner instead of hiding if your GPU is missing or under the recommended 8GB — see below.
 - **Tab 5 — Sweeps & Utilities:** every GT-verification sweep tool (one per pipeline stage: MONAI segmentation, Pixel Classifier labelling, Cellpose-SAM labelling, Cellpose-SAM checkpoint selection) plus two adjacent GT utilities, consolidated in one place instead of scattered across Tabs 1-4. Each tool still operates on its own tab's parameters and auto-applies its findings back there — this tab doesn't introduce a separate workflow, it just keeps the day-to-day tabs focused on running the pipeline rather than tuning it.
 
@@ -177,7 +177,7 @@ Select a `brain_only` layer produced by Tab 1. The tab shows exactly one of the 
 | `_RndFill` | neither (presentation/visualization output only) |
 | anything else | neither, with a hint on what to select |
 
-The **Resort Labels / Split Label / Save Labels** tools below only appear once one of the two sections above is showing, and **Tab 3 — Statistics** only appears once at least one Labels layer exists in the viewer.
+The **Resort Labels / Split Label / Save Labels** tools below only appear once one of the two sections above is showing. **Tab 3 — Statistics** stays visible regardless, showing an explanatory hint instead of its controls until at least one Labels layer exists in the viewer.
 
 ### Pixel Classifier — Union-Find Labels
 
