@@ -1619,6 +1619,15 @@ class ZFMicrogliaAIWidget(QWidget):
         nl = QVBoxLayout()
         nl.setSpacing(6)
 
+        ng_note = QLabel(
+            "Sends one email when a training run below stops (finishes, "
+            "crashes, or is early-stopped) — even if napari is closed at the "
+            "time. Leave Notify email blank to disable (the default)."
+        )
+        ng_note.setWordWrap(True)
+        ng_note.setStyleSheet("color: #888; font-size: 10px;")
+        nl.addWidget(ng_note)
+
         nto_row = QHBoxLayout()
         nto_row.addWidget(QLabel("Notify email:"))
         self._notify_to_edit = QLineEdit(cfg.get("notify_email_to", ""))
@@ -1691,6 +1700,15 @@ class ZFMicrogliaAIWidget(QWidget):
         self._ai_monai_group = QGroupBox("MONAI Training")
         self._ai_monai_group_layout = QVBoxLayout()
         self._ai_monai_group_layout.setSpacing(6)
+
+        ai_monai_group_note = QLabel(
+            "The MONAI pipeline, in order: annotate ground truth (below), "
+            "prepare the training dataset from it, then train the brain-"
+            "segmentation model Tab 1 uses."
+        )
+        ai_monai_group_note.setWordWrap(True)
+        ai_monai_group_note.setStyleSheet("color: #888; font-size: 10px;")
+        self._ai_monai_group_layout.addWidget(ai_monai_group_note)
 
         gtg = QGroupBox("GT Annotation")
         gtl = QVBoxLayout()
@@ -1816,6 +1834,17 @@ class ZFMicrogliaAIWidget(QWidget):
         mtl = QVBoxLayout()
         mtl.setSpacing(6)
 
+        mt_note = QLabel(
+            "Launches the actual brain-segmentation training run on the "
+            "dataset from Prepare Training Data above (hours to multiple "
+            "days). Runs as a detached process — closing napari doesn't stop "
+            "it, and reopening reconnects automatically. See \"How training "
+            "launches work\" below."
+        )
+        mt_note.setWordWrap(True)
+        mt_note.setStyleSheet("color: #888; font-size: 10px;")
+        mtl.addWidget(mt_note)
+
         mt_data_row = QHBoxLayout()
         mt_data_row.addWidget(QLabel("Data dir:"))
         self._mt_data_dir_edit = QLineEdit(cfg.get("monai_data_dir", "training_data_v2"))
@@ -1932,6 +1961,15 @@ class ZFMicrogliaAIWidget(QWidget):
         self._ai_cellpose_group = QGroupBox("Cellpose-SAM Training")
         self._ai_cellpose_group_layout = QVBoxLayout()
         self._ai_cellpose_group_layout.setSpacing(6)
+
+        ai_cellpose_group_note = QLabel(
+            "The Cellpose-SAM pipeline, in order: extract training crops "
+            "(below), then fine-tune the microglia-segmentation model Tab 2 "
+            "uses."
+        )
+        ai_cellpose_group_note.setWordWrap(True)
+        ai_cellpose_group_note.setStyleSheet("color: #888; font-size: 10px;")
+        self._ai_cellpose_group_layout.addWidget(ai_cellpose_group_note)
 
         cfg = self._state.get("config", {})
 
@@ -2147,6 +2185,16 @@ class ZFMicrogliaAIWidget(QWidget):
         ctg = QGroupBox("Train Cellpose-SAM")
         ctl = QVBoxLayout()
         ctl.setSpacing(6)
+
+        ct_note = QLabel(
+            "Launches Cellpose-SAM fine-tuning on the crops from Extract "
+            "XZYZ Patches above (~20h for 200 epochs on this project's usual "
+            "dataset sizes). Runs as a detached process — closing napari "
+            "doesn't stop it, and reopening reconnects automatically."
+        )
+        ct_note.setWordWrap(True)
+        ct_note.setStyleSheet("color: #888; font-size: 10px;")
+        ctl.addWidget(ct_note)
 
         ct_data_row = QHBoxLayout()
         ct_data_row.addWidget(QLabel("Data dir:"))
