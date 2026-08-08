@@ -23,14 +23,21 @@
    - [8a. GT Annotation](#8a-gt-annotation)
    - [8b. MONAI Training](#8b-monai-training)
    - [8c. Cellpose-SAM Training](#8c-cellpose-sam-training)
-9. [Output files and folder structure](#9-output-files-and-folder-structure)
-10. [Statistics CSV — all columns explained](#10-statistics-csv--all-columns-explained) — for the algorithm/formula behind each column instead, see the separate [STATISTICS_GUIDE.md](STATISTICS_GUIDE.md)
-11. [Setting up description backends](#11-setting-up-description-backends)
-    - [11a. Setting up email notification (Gmail App Password)](#11a-setting-up-email-notification-gmail-app-password)
-12. [Full workflow: from raw stack to labelled cells](#12-full-workflow-from-raw-stack-to-labelled-cells)
+9. [Tab 5 — Sweeps & Utilities](#9-tab-5--sweeps--utilities)
+   - [9a. Verify MONAI Threshold / Erosion (GT Sweep)](#9a-verify-monai-threshold--erosion-gt-sweep)
+   - [9b. Verify BG Threshold / Erosion (GT Sweep)](#9b-verify-bg-threshold--erosion-gt-sweep)
+   - [9c. Verify Cellprob / Large-contact (GT Sweep)](#9c-verify-cellprob--large-contact-gt-sweep)
+   - [9d. Verify Best Epoch (GT Sweep)](#9d-verify-best-epoch-gt-sweep)
+   - [9e. Score Against GT](#9e-score-against-gt)
+   - [9f. Build GT-Correction Package](#9f-build-gt-correction-package)
+10. [Output files and folder structure](#10-output-files-and-folder-structure)
+11. [Statistics CSV — all columns explained](#11-statistics-csv--all-columns-explained) — for the algorithm/formula behind each column instead, see the separate [STATISTICS_GUIDE.md](STATISTICS_GUIDE.md)
+12. [Setting up description backends](#12-setting-up-description-backends)
+    - [12a. Setting up email notification (Gmail App Password)](#12a-setting-up-email-notification-gmail-app-password)
+13. [Full workflow: from raw stack to labelled cells](#13-full-workflow-from-raw-stack-to-labelled-cells)
     - [Step 8a. Assign cells to optic tectum / hindbrain](#step-8a--assign-cells-to-brain-regions-optional)
-13. [Reinstalling after an update](#13-reinstalling-after-an-update)
-14. [Troubleshooting](#14-troubleshooting)
+14. [Reinstalling after an update](#14-reinstalling-after-an-update)
+15. [Troubleshooting](#15-troubleshooting)
 
 ---
 
@@ -46,9 +53,11 @@ This plugin does two things, in order:
 
 **Step C — Analyse (Tab 3):** Computes a comprehensive set of shape statistics for each labelled cell and exports them to a CSV file, with an optional AI-generated plain-language description per cell.
 
-> **Every numeric field with a slider next to it (in all three tabs) is directly editable** — click the number box and type an exact value instead of dragging the slider. Both stay in sync.
+Beyond these three core steps, **Tab 4** launches GT annotation and MONAI/Cellpose-SAM training, and **Tab 5 — Sweeps & Utilities** ([Section 9](#9-tab-5--sweeps--utilities)) collects every GT-verification sweep tool plus two related utilities in one place, so Tabs 1-3 stay focused on running the pipeline rather than tuning it.
 
-> **Every group box (the titled, bordered sections throughout all four tabs) is collapsible** — click its title checkbox to hide its contents, freeing up vertical space so groups further down become reachable. Useful on smaller screens where a tab has more sections than fit on screen at once. Collapsing doesn't discard anything — every field keeps its value, and re-expanding restores it exactly as it was.
+> **Every numeric field with a slider next to it is directly editable** — click the number box and type an exact value instead of dragging the slider. Both stay in sync.
+
+> **Every group box (the titled, bordered sections throughout all five tabs) is collapsible** — click its title checkbox to hide its contents, freeing up vertical space so groups further down become reachable. Useful on smaller screens where a tab has more sections than fit on screen at once. Collapsing doesn't discard anything — every field keeps its value, and re-expanding restores it exactly as it was.
 
 > **Each tab also scrolls independently** — if a tab is taller than your napari window even with some groups collapsed, a vertical scrollbar appears on the right edge of the panel so you can reach everything below the fold. Only vertical scrolling is enabled; the panel's width work means nothing should ever need to scroll sideways.
 
@@ -66,7 +75,7 @@ All dependencies (PyTorch, MONAI, scikit-image, etc.) are installed automaticall
 
 > **Mac with Apple Silicon (M1/M2/M3):** The plugin automatically uses your GPU via Metal (MPS). No extra steps needed.
 
-> **Windows / Linux with NVIDIA GPU:** CUDA is detected and used automatically for Tab 1 inference and Tab 2 GPU-accelerated labelling (`cupy-cuda12x`, which has wheels for both platforms). Tab 3's *fastest* statistics path additionally uses `cucim` for GPU batch regionprops — this only has Linux wheels (RAPIDS/cuCIM has no native Windows build), so on Windows Tab 3 automatically falls back to a CPU-threaded path instead; nothing breaks, statistics just run somewhat slower. See Section 14 for details.
+> **Windows / Linux with NVIDIA GPU:** CUDA is detected and used automatically for Tab 1 inference and Tab 2 GPU-accelerated labelling (`cupy-cuda12x`, which has wheels for both platforms). Tab 3's *fastest* statistics path additionally uses `cucim` for GPU batch regionprops — this only has Linux wheels (RAPIDS/cuCIM has no native Windows build), so on Windows Tab 3 automatically falls back to a CPU-threaded path instead; nothing breaks, statistics just run somewhat slower. See Section 15 for details.
 
 > **No GPU:** Works on CPU too, just slower (~30–60 minutes per stack for inference).
 
@@ -140,7 +149,7 @@ Click this button to open your confocal stack (`.tif`, `.tiff`, or `.ims` format
   - Channel 2 → magenta
   - Channel 3 → cyan
 - Voxel size (physical scale in µm) is read automatically from the file metadata and applied to all layers.
-- The folder and filename are remembered for automatic output file naming (see Section 9).
+- The folder and filename are remembered for automatic output file naming (see Section 10).
 
 > **Important:** After loading, **click on the channel you want to process** in the Layers panel on the left. The plugin always runs on whichever image layer is currently selected (highlighted). For microglia, this is usually the green channel (ch1).
 
@@ -268,7 +277,7 @@ pixels  > threshold → kept (treated as signal)
 - **Save brain\_only.tif** (checked by default) — saves the brain-only volume with background removed
 - **Save brain\_mask.tif** (checked by default) — saves the binary mask as 0/255 uint8
 
-Both files are saved in the output folder (see Section 9). The `brain_only` filename includes a background-mode suffix:
+Both files are saved in the output folder (see Section 10). The `brain_only` filename includes a background-mode suffix:
 
 | Mode | Suffix | Example filename |
 |------|--------|-----------------|
@@ -295,20 +304,7 @@ Processing time:
 
 ---
 
-### Verify MONAI Threshold / Erosion (GT Sweep)
-
-The third of this plugin's three GT-sweep tools (the other two: Tab 2's BG Threshold/Erosion sweep for microglia labels, Tab 4's Cellpose-SAM epoch sweep). This one checks MONAI's own brain segmentation — is the current **MONAI Threshold** and **Erosion** combination actually the one closest to a hand-corrected brain mask?
-
-Unlike the other two sweepers, this scores a single whole-volume mask, not multiple per-cell labels — Dice/IoU/precision/recall between the predicted brain mask and a GT mask directly, no complex-cell selection or bounding-box cropping needed.
-
-1. **Image** — the raw volume to run inference on.
-2. **GT brain mask** — a *hand-corrected* brain_mask.tif, e.g. from **GT Annotation** in Tab 4 (the polygon annotation tool's own rasterized output) — not a MONAI prediction.
-3. **Threshold min/max/step** and **Erosion min/max/step** — define the grid. Defaults (0.15–0.35 step 0.05, 0–4 step 1) span 5×5=25 points centered on the recommended threshold.
-4. Click **Run Threshold/Erosion Sweep**.
-
-This is the cheapest of the three sweepers: MONAI's sliding-window inference (the only genuinely expensive, GPU-bound step) runs **exactly once**, producing a raw probability map. Every threshold and erosion value in the grid is then just a cheap re-threshold + largest-component/fill-holes + optional erosion on that same probability map — no reloading the model, no repeat sliding-window passes. A full 25-point grid typically finishes in well under a minute on GPU, and still works (just slower) on CPU/MPS since it uses the same device selection as **Run Skin-Remover**.
-
-The report is a 2D grid (rows = Erosion, columns = Threshold, cells = Dice%), with your current Tab 1 slider values marked. Same policy as the other sweepers: once the sweep finishes, its best point is **applied directly to the Tab 1 Threshold/Erosion sliders and saved to config** — no manual copy-over needed, and the recalibrated values persist across napari restarts. The report still shows the full grid so you can see how confident the recommendation is.
+**Verify MONAI Threshold / Erosion (GT Sweep)** — moved to [Section 9a](#9a-verify-monai-threshold--erosion-gt-sweep), Tab 5 — Sweeps & Utilities. Recalibrates the Threshold/Erosion sliders above directly from a hand-corrected GT brain mask.
 
 ---
 
@@ -425,25 +421,7 @@ When done, a `*_labels` layer appears in napari with each detected cell shown in
 
 ---
 
-### Verify BG Threshold / Erosion (GT Sweep)
-
-Answers the same kind of question as Tab 4's "Verify Best Epoch" tool, but for the Pixel Classifier path instead of Cellpose-SAM: is the current **BG Threshold** (Tab 1) and **Erosion** (Tab 1) combination actually the one that produces microglia labels closest to ground truth, or does a nearby combination do better?
-
-1. **GT image** — the full-fish raw/brain_only image, same one Tab 1 ran on.
-2. **brain_mask.tif** — the *raw* (un-eroded) mask Tab 1 saves. MONAI inference itself is **not** re-run by this sweep — it only varies what happens *after* inference (erosion, background thresholding, labelling), so it needs an already-computed mask from a normal Tab 1 run rather than the model checkpoint.
-3. **GT labels** — the corrected ground-truth microglia label volume for that fish.
-4. **BG Threshold min/max/step** and **Erosion min/max/step** — define the grid. Defaults (1.0–1.8 step 0.2, 0–4 step 1) span 5×5=25 points centered loosely on the recommended BG Threshold.
-5. Click **Run BG/Erosion Sweep**. For each grid point, it: finds the N most complex GT cells (same branch-count ranking as the Cellpose-SAM sweep, computed once), applies that erosion + BG Threshold to each cell's cropped region, runs Create Labels (using this section's own σ XY / σ Z above, plus a **Min volume** measured automatically from the GT itself — see below) on the crop, and best-IoU-matches the result against GT.
-
-**Min volume is measured from the GT, not read from the slider.** The small-blob cleanup threshold used during the sweep is the true smallest labeled cell's own voxel volume in the GT labels you provided, not whatever the Min volume slider above happens to show. A fixed guessed number (this used to default to a flat 7500 regardless of fish) risks discarding a real small cell as noise if it's too high.
-
-A small text line below the Min volume slider — **"Recommended minimum (from GT sweeps so far): N vox"** — tracks the running floor across every sweep you've run, independently of the slider itself. This tracking is deliberately *not* the same thing as "whatever the slider currently shows": the Min volume slider stays fully user-editable like every other field in this plugin (e.g. to test a different value by hand), but that manual experimentation should never corrupt the evidence-based recommendation. So the recommendation only ever **decreases** — once one fish's GT proves a cell of a given size is real, a *different* fish's sweep (which may simply lack any cell that small) can't raise it back above that. Each sweep still auto-applies its recommendation to the live Min volume slider as a convenient default, exactly like the BG Threshold/Erosion sliders above — but feel free to change the slider afterward for your own testing; the recommended-minimum text line keeps the real number safe regardless.
-
-This sweep is considerably cheaper than the Cellpose-SAM one: MONAI inference only ever runs once (outside this tool, via a normal Tab 1 run), and neither Erosion nor BG Threshold require reloading a model — Erosion is a cheap morphological operation and the background "mode" statistic is computed once per erosion value, not once per grid point. A full 25-point grid typically finishes in minutes. It also runs on CPU if no GPU is present (Create Labels already has a CPU fallback), unlike the Cellpose-SAM sweep.
-
-The report is a 2D grid (rows = Erosion, columns = BG Threshold, cells = average IoU%), with your current Tab 1 slider values marked and compared against whatever the sweep found best. Once the sweep finishes, its best point is **applied directly to the Tab 1 BG Threshold/Erosion sliders, the Min volume slider above, and saved to config**, the same way the MONAI Threshold/Erosion sweep does — the report is still shown in full so you can judge how confident the recommendation is (only a handful of cells and grid points are tested, so a narrow win shouldn't be trusted as blindly as a wide one).
-
-> This tool depends on Erosion and BG Threshold actually composing correctly in Tab 1's own pipeline. An earlier version of `_on_run` silently discarded Erosion whenever any Background mode was active (the final mask always used the raw, un-eroded mask in that code path) — fixed as of this version, so Erosion now has a real, sweepable effect in the recommended Background mode 2 workflow this tool targets.
+**Verify BG Threshold / Erosion (GT Sweep)** — moved to [Section 9b](#9b-verify-bg-threshold--erosion-gt-sweep), Tab 5 — Sweeps & Utilities. Also measures the Min volume field above directly from GT (a running floor that only ever decreases) rather than leaving it a guessed constant.
 
 ---
 
@@ -497,52 +475,13 @@ A second, separate merge pass for large blobs that got split apart through a thi
 
 Click to start. `do_3D` inference is slow — it can take **hours** for a full-size fish — and runs in a background thread with live status updates, so napari itself stays responsive while it works. When complete, a `*_labels` layer appears, exactly as with the Pixel Classifier.
 
-> If this button errors with `No module named 'cellpose'`, install it in your environment: `pip install cellpose` (already listed in `environment.yml`/`environment-mac.yml` for fresh installs — see Section 14).
+> If this button errors with `No module named 'cellpose'`, install it in your environment: `pip install cellpose` (already listed in `environment.yml`/`environment-mac.yml` for fresh installs — see Section 15).
 
 ---
 
-### Verify Cellprob / Large-contact (GT Sweep)
+**Verify Cellprob / Large-contact (GT Sweep)** — moved to [Section 9c](#9c-verify-cellprob--large-contact-gt-sweep), Tab 5 — Sweeps & Utilities. Also recalibrates Safe-merge GT-min volume above from GT.
 
-Sweeps **Cellprob** × **Large-contact merge** against a full-fish GT labels volume, scored with the exact same whole-fish Hungarian-matched methodology as **Score Against GT** in Tab 3 — this is how the current defaults were actually found historically (e.g. the cellprob=-2.5/large_contact=20 combination), now automated instead of requiring a CLI sweep script.
-
-1. **Image** / **GT labels** — a full-fish `brain_only` image + its corresponding GT labels volume.
-2. **Voxel scale Z/XY** — drives the do_3D `anisotropy` parameter (Z/XY ratio); independent of whatever's open in the viewer.
-3. **Cellprob min/max/step** and **Large-contact min/max/step** — define the grid.
-4. Click **Run Cellprob/Large-contact Sweep**. Uses this section's current **Flow**, **Safe-merge max gap**, and **Safe-merge min contact** values above — only Cellprob and Large-contact vary.
-
-**Cellprob requires a real `do_3D` re-inference per value** — it changes what Cellpose-SAM actually predicts, so this is the expensive, GPU-preferred dimension (same device fallback as Run Cellpose-SAM Segmentation). **Large-contact is cheap** — it's a post-processing merge threshold applied after `do_3D` + GMM cleanup + Krendl safe-merge, so the sweep runs `do_3D` (+ GMM + safe-merge) exactly once per Cellprob value, then varies Large-contact freely on that same intermediate result — the same shortcut this project's own research scripts have long used (`--skip_inference`).
-
-Because of that, total sweep time scales with the number of **Cellprob** values only, not the full grid size — a 5×5 grid costs about the same as 5 individual `do_3D` runs, not 25. **Stop Sweep** cancels between Cellprob values (not mid-inference or mid-Large-contact). The report is a 2D grid of Score (`TP − 0.5×(FP+FN)`), with your current Tab 2 slider values marked.
-
-**Safe-merge GT-min volume is also recalibrated every time you run this sweep** — measured directly from the GT labels volume's own smallest labeled cell, rather than a frozen historical constant (see the field's description above). Once the sweep finishes, its best Cellprob/Large-contact point **and** the measured GT-min are all applied directly to the Tab 2 sliders and saved to config — no manual copy-over needed.
-
----
-
-### Build GT-Correction Package
-
-Packages a Krendl segmentation result for external manual correction — the exact file layout this project has assembled by hand for every fish sent out for ground-truth creation. The corrected result becomes future training/GT data, closing the loop between inference and the training tools in Tab 4.
-
-1. **Fish stem** — the identifier used to name every file in the package (e.g. `NT39-3dpf-D1F4_2024-09-05_15.38.01`).
-2. **Source image** — the `brain_only` image the segmentation ran on.
-3. **Krendl masks** — the output of **Run Cellpose-SAM Segmentation** above. Becomes `<stem>_masks_corrected.tif` — the file the reviewer edits first ("start here" per the guide).
-4. **Raw Cellpose masks** (optional) — the pre-merge `do_3D` output, if you have it, included as `<stem>_cp_masks_3D.tif` for reference only (not corrected).
-5. **Creation guide** (optional override) — defaults to this project's own `GROUND_TRUTH_CREATION_GUIDE.md`; only set this if it lives somewhere else on your machine.
-6. **Output folder** — where the package folder and `.zip` are created.
-
-Click **Build GT-Correction Package**. Output:
-
-```
-<output folder>/
-├── <stem>_GT_package/
-│   ├── GROUND_TRUTH_CREATION_GUIDE.md
-│   ├── <stem>_masks_corrected.tif
-│   ├── <stem>_cp_masks_3D.tif        (only if provided)
-│   ├── <stem>_cell_statistics.csv    (label/volume/centroid/bbox — quick reference, not the full Tab 3 output)
-│   └── <stem>_brain_only_ExtRm.tif
-└── <stem>_GT_package.zip             (the folder above, zipped)
-```
-
-The statistics CSV is deliberately minimal (label, volume, centroid, bounding box) — a quick reference for someone correcting labels, not the full ~51-column Tab 3 Statistics output.
+**Build GT-Correction Package** — moved to [Section 9f](#9f-build-gt-correction-package), Tab 5 — Sweeps & Utilities.
 
 ---
 
@@ -626,7 +565,7 @@ If the algorithm cannot find N distinct sub-volumes, an error message is shown. 
 
 ### Save Labels
 
-Opens a file-save dialog pre-filled with the output folder (see Section 9) and the current layer name as the filename. Choose a location and filename, then click Save.
+Opens a file-save dialog pre-filled with the output folder (see Section 10) and the current layer name as the filename. Choose a location and filename, then click Save.
 
 Labels are saved as `int32` TIFF. Each voxel value = label number (0 = background).
 
@@ -640,7 +579,7 @@ Labels are saved as `int32` TIFF. Each voxel value = label number (0 = backgroun
 
 This tab computes a comprehensive set of morphological, spatial, intensity, and brain-region measurements for every label and saves them to a CSV file. It is intentionally separate from Tab 2 so there is room to configure all options comfortably before clicking Generate.
 
-For what each output column means, see [Section 10](#10-statistics-csv--all-columns-explained) below. For the algorithm/formula/library behind each one — useful if you're auditing a result or citing the method — see the separate [STATISTICS_GUIDE.md](STATISTICS_GUIDE.md).
+For what each output column means, see [Section 11](#11-statistics-csv--all-columns-explained) below. For the algorithm/formula/library behind each one — useful if you're auditing a result or citing the method — see the separate [STATISTICS_GUIDE.md](STATISTICS_GUIDE.md).
 
 > Make sure a Labels layer is selected in napari before using this tab.
 
@@ -657,7 +596,7 @@ Selects the engine used to generate the plain-language `description` column in t
 | **OpenAI API (paid)** | Yes | Pay-per-token | GPT-4o-mini recommended for low cost |
 | **Claude API (paid)** | Yes | Pay-per-token | claude-haiku-4-5 recommended for low cost |
 
-See Section 11 for detailed setup instructions for each backend.
+See Section 12 for detailed setup instructions for each backend.
 
 ---
 
@@ -728,26 +667,14 @@ Two additional columns are added to the CSV:
 
 Click to compute. Runs in a background thread. When complete:
 
-- A CSV file is saved to the output folder (see Section 9), named `{source_file_stem}_statistics.csv`.
+- A CSV file is saved to the output folder (see Section 10), named `{source_file_stem}_statistics.csv`.
 - The status line shows how many labels were processed.
 
-The CSV contains one row per label with up to 45 columns depending on which optional features are enabled. See Section 10 for a full description of every column.
+The CSV contains one row per label with up to 45 columns depending on which optional features are enabled. See Section 11 for a full description of every column.
 
 ---
 
-### Score Against GT
-
-Whole-fish instance-segmentation scoring: Hungarian-matched TP/FP/FN/Score plus mean IoU/Dice (over matched pairs only), between any two Labels layers already loaded in the viewer. This is the same methodology (`compare_pred_gt.py`) this project has used to validate essentially every real modeling decision — checkpoint picks, cellprob/large_contact tuning, before/after model comparisons — ported into the plugin instead of staying a CLI-only script.
-
-1. **Predicted labels** / **GT labels** — pick any two Labels layers from the dropdowns (same shape required).
-2. **IoU threshold for a match** — the minimum IoU for a predicted object to count as a true positive for a given GT object (default 0.5, matching this project's historical convention).
-3. Click **Score Against GT**.
-
-Runs synchronously (pure CPU, `scipy.optimize.linear_sum_assignment`) — fast enough at typical whole-fish object counts (tens to low hundreds) that a background thread isn't needed. Object pairs are only compared when their bounding boxes actually intersect (IoU is necessarily 0 otherwise), so this stays fast without ever missing a possible match.
-
-**Score = TP − 0.5×(FP + FN)**, matching the exact formula used throughout this project's historical result tables. The report lists every matched pair (IoU%, Dice%, voxel counts, size delta), plus the FN (missed GT) and FP (spurious predicted) object IDs.
-
-This is a genuinely different tool from the three GT-sweep tools elsewhere in the plugin (Tab 1/2/4): those each test a handful of parameter combinations against a handful of complex cells (or one mask) as a fast proxy; this scores one specific pair of label volumes completely, the way a final reported result would be scored.
+**Score Against GT** — moved to [Section 9e](#9e-score-against-gt), Tab 5 — Sweeps & Utilities. Scores any two Labels layers already in the viewer against each other.
 
 ---
 
@@ -767,7 +694,7 @@ This used to be a hard gate — the whole tab was hidden below 8GB VRAM. Changed
 
 A small panel at the top of the tab, above the MONAI/Cellpose-SAM switch, applying to whichever group you launch: **Notify email**, **SMTP server**/**port**, **SMTP username**, **SMTP password**. Leave **Notify email** blank to disable it entirely — that's the default.
 
-When set, one email is sent whenever a training run stops — finishes normally, crashes, or gets early-stopped — with the best checkpoint's epoch/metric value and the exit status. Free with any Gmail account, no other signup needed. **See Section 11a for the full step-by-step setup** (turning on 2-Step Verification, generating a Google App Password, and what to type into each field) — the short version: server `smtp.gmail.com`, port `465`, username = your Gmail address, password = a Google App Password, not your normal Gmail password, which won't work here.
+When set, one email is sent whenever a training run stops — finishes normally, crashes, or gets early-stopped — with the best checkpoint's epoch/metric value and the exit status. Free with any Gmail account, no other signup needed. **See Section 12a for the full step-by-step setup** (turning on 2-Step Verification, generating a Google App Password, and what to type into each field) — the short version: server `smtp.gmail.com`, port `465`, username = your Gmail address, password = a Google App Password, not your normal Gmail password, which won't work here.
 
 Only the address/server/port/username are saved between napari sessions — the password never is (same policy as the API key in the Statistics tab), so you'll need to re-enter it before each launch. If **Notify email** is filled in but username/password is missing, Launch Training refuses to start until you either fill both in or clear the email field.
 
@@ -786,7 +713,7 @@ Hand-draw polygon boundaries on key slices to create brain/skin ground-truth mas
 1. **Image layer** — pick the Image layer to annotate from the dropdown (populated from whatever's open in the viewer — use **Open TIF / IMS file** in Tab 1 first if nothing is loaded yet). Selecting a layer here automatically creates a `brain_polygons` Shapes layer (yellow) if one doesn't already exist.
 2. **Draw polygons** — select the `brain_polygons` layer in the Layers panel, choose napari's polygon tool, and trace the brain boundary on key slices — roughly every 10 slices (e.g. 0, 10, 20, 30...). You don't need to draw every slice: the polygon on slice 90 is automatically propagated to all slices beyond it.
 3. **1. Interpolate Polygons** — smooths and resamples each drawn polygon to 96 points, then interpolates point-to-point between key slices along Z. Produces a `brain_polygons_interpolated` layer (cyan) — review it before continuing.
-4. **2. Generate Masks** — rasterizes the interpolated polygons into a brain mask, saves `brain_mask.tif`, `skin_mask.tif`, `original.tif`, `brain_only.tif`, `skin_only.tif`, and both polygon `.npz` files to `<source_folder>/<source_stem>/` (the same output-folder convention as every other tab — see Section 9). Also adds `brain_mask`, `skin_mask`, and a new `brain_only` layer to the viewer, without touching or hiding any of your other layers.
+4. **2. Generate Masks** — rasterizes the interpolated polygons into a brain mask, saves `brain_mask.tif`, `skin_mask.tif`, `original.tif`, `brain_only.tif`, `skin_only.tif`, and both polygon `.npz` files to `<source_folder>/<source_stem>/` (the same output-folder convention as every other tab — see Section 10). Also adds `brain_mask`, `skin_mask`, and a new `brain_only` layer to the viewer, without touching or hiding any of your other layers.
 
 > **Note:** unlike Tabs 1-3, this section doesn't have its own file-open button — it always annotates whichever file was most recently opened via **Open TIF / IMS file** in Tab 1, matching that same output-folder convention.
 
@@ -818,19 +745,7 @@ Extracts fine-tuning crops and launches Cellpose-SAM training — the model Tab 
 
 **Calibrate branch_radius (from GT)** measures the real branch thickness of actual GT-labeled cells instead of guessing `branch_radius` by hand. Browse to a GT labels volume, set **scale Z**/**scale XY** to match its voxel scale, and click **Calibrate branch_radius**. The tool 3D-skeletonizes every labeled cell, decomposes each skeleton into branch segments, measures each segment's mean diameter via an anisotropic distance transform, and takes the **thinnest quartile** (the distal branch tips — the fine processes `branch_weight` exists to protect, as opposed to thick soma-adjacent segments) as the basis for the recommendation, converting that radius from microns to pixels at the given scale. The result is applied directly to the `branch_radius` field above and saved to config — no manual copy-over. This can take anywhere from several seconds to a couple of minutes depending on how many cells are in the GT volume; it runs in a background thread so napari stays responsive.
 
-**Verify Best Epoch (GT Sweep)** answers a specific question the recommended checkpoint alone can't: `test_loss` (what picks the recommendation) is a proxy for segmentation quality, not the real thing, and checkpoints often plateau within noise of each other. This tool checks the recommendation against actual ground truth on a small, deliberately hard sample:
-
-1. **GT image** / **GT labels** — browse to a full-fish raw/brain_only image and its corrected ground-truth label volume (the same pair used to build training crops). Doesn't need to be a fish the current model was trained on, but usually is — it's the same file pair you'd use to sanity-check any checkpoint.
-2. **Recommended epoch** — click **Read from pointer file** to pull it from `<model_name>_best_recommended.txt` (uses this section's own Data dir/model_name from Train Cellpose-SAM above), or type it in manually if no pointer exists yet.
-3. Click **Run Epoch Sweep**. The tool:
-   - Finds the **N most morphologically complex cells** in the GT volume (default 5) — ranked by skeleton branch count (most-branched first), sphericity as a tiebreak, *not* by cell size. A large cell is often simple/amoeboid; a genuinely branchy one is what actually stresses the branch-weighted loss.
-   - Crops each to its bounding box + padding (default 15 vox Z, 40 vox XY).
-   - Runs `do_3D` inference at the recommended epoch plus **N checkpoints below and above it** (default 2 and 2 — a 5-epoch × 5-cell = 25-inference sweep by default), best-IoU-matches each prediction against its GT cell, and averages.
-   - Reports a table (same format as the project's earlier manual sweeps) plus a plain confirm/disagree verdict against the recommended epoch.
-
-This can take a while — each `do_3D` call is a few minutes, so a default 5×5 sweep is roughly 30 minutes to a couple of hours depending on cell/crop size and GPU. **Stop Sweep** cancels between checkpoints (not mid-inference) and still shows whatever completed. Unlike Launch Training, this does **not** run as a detached process and does **not** survive closing napari — it's meant to be watched, in the same tier as Extract Training Crops, not the multi-hour/day training jobs.
-
-If the sweep disagrees with the recommendation, it's applied automatically: the recommended-checkpoint pointer (`<model_name>_best_recommended.txt`) is rewritten to the sweep-confirmed epoch, and that checkpoint is loaded as Tab 2's active Cellpose-SAM model — the same effect as browsing to it by hand, but done for you. The report is still shown in full so you can judge how confident the disagreement actually is (only a handful of cells and epochs were tested).
+**Verify Best Epoch (GT Sweep)** — moved to [Section 9d](#9d-verify-best-epoch-gt-sweep), Tab 5 — Sweeps & Utilities. Confirms or corrects the recommended-checkpoint pointer above against real GT.
 
 ---
 
@@ -849,7 +764,123 @@ Both "Launch Training" buttons (MONAI and Cellpose-SAM) start a **detached backg
 
 ---
 
-## 9. Output files and folder structure
+## 9. Tab 5 — Sweeps & Utilities
+
+Six tools, consolidated here from Tabs 1-4 (where they used to sit right alongside — and clutter — the primary pipeline controls). Each is individually collapsible: click a section's title checkbox to hide its contents, so you can keep only the one you're actively using expanded. Every tool below still operates on its *original* tab's own sliders/fields and auto-applies its findings back there — moving where a tool is displayed doesn't change what it reads from or writes to. Four are GT-*sweep* tools (test a small parameter grid against a handful of proxy cells or one mask, as a fast approximation); the other two (Score Against GT, Build GT-Correction Package) are related GT utilities that don't fit that "sweep" shape but belonged with the others more than with their old tab's core workflow.
+
+### 9a. Verify MONAI Threshold / Erosion (GT Sweep)
+
+The cheapest of the four sweepers here. Checks MONAI's own brain segmentation — is the current **MONAI Threshold** and **Erosion** (both Tab 1 fields) combination actually the one closest to a hand-corrected brain mask? Unlike the other sweepers, this scores a single whole-volume mask, not multiple per-cell labels — Dice/IoU/precision/recall between the predicted brain mask and a GT mask directly, no complex-cell selection or bounding-box cropping needed.
+
+1. **Image** — the raw volume to run inference on. Must be a **TIFF, not `.ims`** (loaded via `tifffile.imread`, unlike Tab 1 itself which does support `.ims`), and must be the true pre-MONAI raw image — feeding it an already brain-masked image would bias the very segmentation this tool is scoring.
+2. **GT brain mask** — a *hand-corrected* brain_mask.tif, e.g. from **GT Annotation** in Tab 4 (the polygon annotation tool's own rasterized output) — not a MONAI prediction.
+3. **Threshold min/max/step** and **Erosion min/max/step** — define the grid. Defaults (0.15–0.35 step 0.05, 0–4 step 1) span 5×5=25 points centered on the recommended threshold.
+4. Click **Run Threshold/Erosion Sweep**.
+
+MONAI's sliding-window inference (the only genuinely expensive, GPU-bound step) runs **exactly once**, producing a raw probability map. Every threshold and erosion value in the grid is then just a cheap re-threshold + largest-component/fill-holes + optional erosion on that same probability map — no reloading the model, no repeat sliding-window passes. A full 25-point grid typically finishes in well under a minute on GPU, and still works (just slower) on CPU/MPS since it uses the same device selection as **Run Skin-Remover**.
+
+The report is a 2D grid (rows = Erosion, columns = Threshold, cells = Dice%), with your current Tab 1 slider values marked. Once the sweep finishes, its best point is **applied directly to the Tab 1 Threshold/Erosion sliders and saved to config** — no manual copy-over needed, and the recalibrated values persist across napari restarts.
+
+---
+
+### 9b. Verify BG Threshold / Erosion (GT Sweep)
+
+Answers the same kind of question as 9d below, but for the Pixel Classifier path instead of Cellpose-SAM: is the current **BG Threshold** (Tab 1) and **Erosion** (Tab 1) combination actually the one that produces microglia labels closest to ground truth, or does a nearby combination do better?
+
+1. **GT image** — the full-fish raw/brain_only image, same one Tab 1 ran on.
+2. **brain_mask.tif** — the *raw* (un-eroded) mask Tab 1 saves. MONAI inference itself is **not** re-run by this sweep — it only varies what happens *after* inference (erosion, background thresholding, labelling), so it needs an already-computed mask from a normal Tab 1 run rather than the model checkpoint.
+3. **GT labels** — the corrected ground-truth microglia label volume for that fish.
+4. **BG Threshold min/max/step** and **Erosion min/max/step** — define the grid. Defaults (1.0–1.8 step 0.2, 0–4 step 1) span 5×5=25 points centered loosely on the recommended BG Threshold.
+5. Click **Run BG/Erosion Sweep**. For each grid point, it: finds the N most complex GT cells (same branch-count ranking as the Cellpose-SAM sweep, computed once), applies that erosion + BG Threshold to each cell's cropped region, runs Create Labels (using this section's own σ XY / σ Z above, plus a **Min volume** measured automatically from the GT itself — see below) on the crop, and best-IoU-matches the result against GT.
+
+**Min volume is measured from the GT, not read from the slider.** The small-blob cleanup threshold used during the sweep is the true smallest labeled cell's own voxel volume in the GT labels you provided, not whatever the Min volume slider (Tab 2) happens to show. A fixed guessed number (this used to default to a flat 7500 regardless of fish) risks discarding a real small cell as noise if it's too high.
+
+A small text line below Tab 2's Min volume slider — **"Recommended minimum (from GT sweeps so far): N vox"** — tracks the running floor across every sweep you've run, independently of the slider itself. This tracking is deliberately *not* the same thing as "whatever the slider currently shows": the Min volume slider stays fully user-editable like every other field in this plugin (e.g. to test a different value by hand), but that manual experimentation should never corrupt the evidence-based recommendation. So the recommendation only ever **decreases** — once one fish's GT proves a cell of a given size is real, a *different* fish's sweep (which may simply lack any cell that small) can't raise it back above that. Each sweep still auto-applies its recommendation to the live Min volume slider as a convenient default — but feel free to change the slider afterward for your own testing; the recommended-minimum text line keeps the real number safe regardless.
+
+This sweep is considerably cheaper than the Cellpose-SAM one: MONAI inference only ever runs once (outside this tool, via a normal Tab 1 run), and neither Erosion nor BG Threshold require reloading a model. A full 25-point grid typically finishes in minutes, and works on CPU too (Create Labels already has a CPU fallback).
+
+The report is a 2D grid (rows = Erosion, columns = BG Threshold, cells = average IoU%), with your current Tab 1 slider values marked and compared against whatever the sweep found best. Once the sweep finishes, its best point is **applied directly to the Tab 1 BG Threshold/Erosion sliders, Tab 2's Min volume slider, and saved to config**.
+
+> This tool depends on Erosion and BG Threshold actually composing correctly in Tab 1's own pipeline. An earlier version of `_on_run` silently discarded Erosion whenever any Background mode was active (the final mask always used the raw, un-eroded mask in that code path) — fixed as of this version.
+
+---
+
+### 9c. Verify Cellprob / Large-contact (GT Sweep)
+
+Sweeps **Cellprob** × **Large-contact merge** (both Tab 2, Cellpose-SAM Segmentation) against a full-fish GT labels volume, scored with the exact same whole-fish Hungarian-matched methodology as **Score Against GT** (9e below) — this is how the current defaults were actually found historically (e.g. the cellprob=-2.5/large_contact=20 combination), now automated instead of requiring a CLI sweep script.
+
+1. **Image** / **GT labels** — a full-fish `brain_only` image + its corresponding GT labels volume.
+2. **Voxel scale Z/XY** — drives the do_3D `anisotropy` parameter (Z/XY ratio); independent of whatever's open in the viewer.
+3. **Cellprob min/max/step** and **Large-contact min/max/step** — define the grid.
+4. Click **Run Cellprob/LC Sweep**. Uses Tab 2's current **Flow**, **Safe-merge max gap**, and **Safe-merge min contact** values — only Cellprob and Large-contact vary.
+
+**Cellprob requires a real `do_3D` re-inference per value** — it changes what Cellpose-SAM actually predicts, so this is the expensive, GPU-preferred dimension. **Large-contact is cheap** — it's a post-processing merge threshold applied after `do_3D` + GMM cleanup + Krendl safe-merge, so the sweep runs `do_3D` (+ GMM + safe-merge) exactly once per Cellprob value, then varies Large-contact freely on that same intermediate result. Total sweep time scales with the number of **Cellprob** values only, not the full grid size — a 5×5 grid costs about the same as 5 individual `do_3D` runs, not 25.
+
+**Safe-merge GT-min volume is also recalibrated every time you run this sweep** — measured directly from the GT labels volume's own smallest labeled cell, rather than a frozen historical constant. Once the sweep finishes, its best Cellprob/Large-contact point **and** the measured GT-min are all applied directly to the Tab 2 sliders and saved to config.
+
+---
+
+### 9d. Verify Best Epoch (GT Sweep)
+
+Answers a specific question the recommended Cellpose-SAM checkpoint alone can't: `test_loss` (what picks the recommendation, in Tab 4's Train Cellpose-SAM section) is a proxy for segmentation quality, not the real thing, and checkpoints often plateau within noise of each other. This tool checks the recommendation against actual ground truth on a small, deliberately hard sample:
+
+1. **GT image** / **GT labels** — browse to a full-fish raw/brain_only image and its corrected ground-truth label volume (the same pair used to build training crops). Doesn't need to be a fish the current model was trained on, but usually is.
+2. **Recommended epoch** — click **From pointer file** to pull it from `<model_name>_best_recommended.txt` (uses Tab 4's Train Cellpose-SAM section's own Data dir/model_name), or type it in manually if no pointer exists yet.
+3. Click **Run Epoch Sweep**. The tool:
+   - Finds the **N most morphologically complex cells** in the GT volume (default 5) — ranked by skeleton branch count (most-branched first), sphericity as a tiebreak, *not* by cell size.
+   - Crops each to its bounding box + padding (default 15 vox Z, 40 vox XY).
+   - Runs `do_3D` inference at the recommended epoch plus **N checkpoints below and above it** (default 2 and 2 — a 5-epoch × 5-cell = 25-inference sweep by default), best-IoU-matches each prediction against its GT cell, and averages.
+   - Reports a table plus a plain confirm/disagree verdict against the recommended epoch.
+
+This can take a while — each `do_3D` call is a few minutes, so a default 5×5 sweep is roughly 30 minutes to a couple of hours. **Stop Sweep** cancels between checkpoints (not mid-inference). Unlike Launch Training, this does **not** run as a detached process and does **not** survive closing napari.
+
+If the sweep disagrees with the recommendation, it's applied automatically: the recommended-checkpoint pointer is rewritten to the sweep-confirmed epoch, and that checkpoint is loaded as Tab 2's active Cellpose-SAM model.
+
+---
+
+### 9e. Score Against GT
+
+Whole-fish instance-segmentation scoring: Hungarian-matched TP/FP/FN/Score plus mean IoU/Dice (over matched pairs only), between any two Labels layers already loaded in the viewer. This is the same methodology (`compare_pred_gt.py`) this project has used to validate essentially every real modeling decision — checkpoint picks, cellprob/large_contact tuning, before/after model comparisons — ported into the plugin instead of staying a CLI-only script.
+
+1. **Predicted labels** / **GT labels** — pick any two Labels layers from the dropdowns (same shape required).
+2. **IoU threshold for a match** — the minimum IoU for a predicted object to count as a true positive for a given GT object (default 0.5).
+3. Click **Score Against GT**.
+
+Runs synchronously (pure CPU, `scipy.optimize.linear_sum_assignment`) — fast enough at typical whole-fish object counts that a background thread isn't needed. **Score = TP − 0.5×(FP + FN)**. The report lists every matched pair (IoU%, Dice%, voxel counts, size delta), plus the FN (missed GT) and FP (spurious predicted) object IDs.
+
+This is a genuinely different tool from the four sweepers above: those each test a handful of parameter combinations against a handful of complex cells (or one mask) as a fast proxy; this scores one specific pair of label volumes completely, the way a final reported result would be scored.
+
+---
+
+### 9f. Build GT-Correction Package
+
+Packages a Krendl segmentation result for external manual correction — the exact file layout this project has assembled by hand for every fish sent out for ground-truth creation. The corrected result becomes future training/GT data, closing the loop between inference and the training tools in Tab 4.
+
+1. **Fish stem** — the identifier used to name every file in the package (e.g. `NT39-3dpf-D1F4_2024-09-05_15.38.01`).
+2. **Source image** — the `brain_only` image the segmentation ran on.
+3. **Krendl masks** — the output of Tab 2's **Run Cellpose-SAM Segmentation**. Becomes `<stem>_masks_corrected.tif` — the file the reviewer edits first ("start here" per the guide).
+4. **Raw Cellpose masks** (optional) — the pre-merge `do_3D` output, if you have it, included as `<stem>_cp_masks_3D.tif` for reference only (not corrected).
+5. **Creation guide** (optional override) — defaults to this project's own `GROUND_TRUTH_CREATION_GUIDE.md`; only set this if it lives somewhere else on your machine.
+6. **Output folder** — where the package folder and `.zip` are created.
+
+Click **Build GT-Correction Package**. Output:
+
+```
+<output folder>/
+├── <stem>_GT_package/
+│   ├── GROUND_TRUTH_CREATION_GUIDE.md
+│   ├── <stem>_masks_corrected.tif
+│   ├── <stem>_cp_masks_3D.tif        (only if provided)
+│   ├── <stem>_cell_statistics.csv    (label/volume/centroid/bbox — quick reference, not the full Tab 3 output)
+│   └── <stem>_brain_only_ExtRm.tif
+└── <stem>_GT_package.zip             (the folder above, zipped)
+```
+
+The statistics CSV is deliberately minimal (label, volume, centroid, bounding box) — a quick reference for someone correcting labels, not the full ~51-column Tab 3 Statistics output.
+
+---
+
+## 10. Output files and folder structure
 
 All files saved by the plugin go into a dedicated folder named after your original input file:
 
@@ -876,7 +907,7 @@ The folder is created the first time a file is saved. If no input file has been 
 
 ---
 
-## 10. Statistics CSV — all columns explained
+## 11. Statistics CSV — all columns explained
 
 The CSV produced by Generate Statistics has one row per label, with up to 51 columns. 46 are always present; the remaining columns appear only when the corresponding optional feature is enabled. This section explains what each column *means*; for the algorithm/formula/library behind each one, see the separate [STATISTICS_GUIDE.md](STATISTICS_GUIDE.md).
 
@@ -1018,7 +1049,7 @@ These columns use all cell centroids together to compute neighbourhood statistic
 
 ---
 
-## 11. Setting up description backends
+## 12. Setting up description backends
 
 ### Rule-based (offline) — no setup needed
 
@@ -1136,7 +1167,7 @@ In **Tab 3 — Statistics**:
 
 ---
 
-### 11a. Setting up email notification (Gmail App Password)
+### 12a. Setting up email notification (Gmail App Password)
 
 The **Email notification** panel in **Tab 4 — AI Tools** (see Section 8) sends one email when a training run stops, even if napari isn't open at the time. It works with any SMTP-over-SSL provider, but Gmail is the easiest and free path — this walks through it end to end. If you'd rather use a different provider (Outlook/Office365, a work email server, etc.), skip to **Using a non-Gmail provider** at the bottom.
 
@@ -1170,7 +1201,7 @@ In **Tab 4 — AI Tools**, in the **Email notification (optional)** panel above 
 5. **SMTP password:** paste the 16-character App Password from Step 2 — *not* your normal Gmail password.
 6. Click **Launch Training** as usual. You should get one email the next time that run stops (finishes, crashes, or gets early-stopped).
 
-> The SMTP password is **not saved to disk** for security (same policy as the API keys in Section 11) — you'll need to paste it again each time you open napari and want notifications for a new run. **Notify email**/**SMTP server**/**port**/**SMTP username** *are* remembered between sessions, since none of those are secret on their own.
+> The SMTP password is **not saved to disk** for security (same policy as the API keys in Section 12) — you'll need to paste it again each time you open napari and want notifications for a new run. **Notify email**/**SMTP server**/**port**/**SMTP username** *are* remembered between sessions, since none of those are secret on their own.
 
 **Using a non-Gmail provider**
 
@@ -1186,7 +1217,7 @@ Any SMTP server that supports SSL on a fixed port works the same way — just ch
 
 ---
 
-## 12. Full workflow: from raw stack to labelled cells
+## 13. Full workflow: from raw stack to labelled cells
 
 ### Step 1 — Open your file
 
@@ -1348,7 +1379,7 @@ You can then filter the CSV in Excel or Python by `brain_region` to compare micr
 
 ---
 
-## 13. Reinstalling after an update
+## 14. Reinstalling after an update
 
 ```bash
 pip uninstall napari-zf-microglia-ai -y
@@ -1361,7 +1392,7 @@ Then **fully close and reopen napari**. If napari is running when you reinstall,
 
 ---
 
-## 14. Troubleshooting
+## 15. Troubleshooting
 
 ### `conda env create -f environment.yml` fails on Windows with `Didn't find wheel for cucim-cu12`
 
@@ -1511,7 +1542,6 @@ The active layer's name must end in `_ExtRm` (Cellpose-SAM) or `_NoBG` (Pixel Cl
 | Erosion | 0 | Strips voxels from mask edge |
 | Background | Option 2 | Removes background globally (best for labels) |
 | BG Threshold | 1.40 | Fine-tunes background removal level |
-| Verify MONAI Threshold / Erosion (GT Sweep) | 5x5 grid | Confirms current values against a hand-corrected GT brain mask — MONAI runs once, rest is cheap — **best point auto-applied to the sliders and saved** |
 
 ### Tab 2 — Create Labels
 
@@ -1524,8 +1554,7 @@ Shown automatically based on active layer suffix — `_ExtRm` → Cellpose-SAM, 
 | Smooth σ XY | 1.5 | Contour softness within each slice |
 | Smooth σ Z | 3.0 | Cross-slice blob connectivity |
 | Min overlap | 10% | Overlap needed to link blobs across slices |
-| Min volume | 7500 | Minimum voxels to keep a 3D object |
-| Verify BG Threshold / Erosion (GT Sweep) | 5x5 grid | Confirms current BG Threshold/Erosion against real GT IoU — CPU-OK, doesn't survive closing napari — **best point auto-applied to the sliders and saved** |
+| Min volume | 7500 (until a Tab 5 sweep measures a real recommendation from GT) | Minimum voxels to keep a 3D object |
 
 **Cellpose-SAM Segmentation**
 
@@ -1535,10 +1564,8 @@ Shown automatically based on active layer suffix — `_ExtRm` → Cellpose-SAM, 
 | Flow threshold | 0.4 | Rejects self-inconsistent flow predictions |
 | Safe-merge max gap | 2 vox | Max gap allowed when merging fragments |
 | Safe-merge min contact | 10 vox | Min touching surface required to merge |
-| Safe-merge GT-min volume | 10230 vox | Smallest volume trusted as already a whole cell — recalibrated from real GT by the sweep below, not usually set by hand |
+| Safe-merge GT-min volume | 10230 vox | Smallest volume trusted as already a whole cell — recalibrated from real GT by a Tab 5 sweep, not usually set by hand |
 | Large-contact merge | 20 vox | Second merge pass for thick-junction splits |
-| Verify Cellprob / Large-contact (GT Sweep) | 5x5 grid | Confirms against whole-fish GT — Cellprob needs re-inference (GPU-preferred), Large-contact is cheap — **best point + measured GT-min auto-applied to the sliders and saved** |
-| Build GT-Correction Package | — | Zips Krendl output + stats CSV + creation guide for external manual correction |
 
 **Both methods (once labels exist)**
 
@@ -1556,7 +1583,6 @@ Shown automatically based on active layer suffix — `_ExtRm` → Cellpose-SAM, 
 | Boundary lines | Any Shapes layer / None | Assigns cells to named brain regions |
 | Region names | Comma-separated text | Names for each region (N lines → N+1 names) |
 | Generate Statistics | — | Computes up to 45 metrics per label, saves CSV |
-| Score Against GT | any 2 Labels layers | Whole-fish Hungarian-matched TP/FP/FN/Score/MeanIoU/MeanDice — synchronous, no GPU needed |
 
 ### Tab 4 — AI Tools
 
@@ -1577,8 +1603,20 @@ Always shown — a banner at the top warns if your GPU is missing or under the r
 | Patience (checkpoints) | 5 | Both — stop after N checkpoints with no improvement (Dice/test_loss); 0 disables |
 | Launch Training | — | Starts a detached process that survives closing napari; GUI reconnects automatically next time |
 | *(on stop, Cellpose-SAM only)* | — | Writes `<model_name>_best_recommended.txt` in `models/` — a pointer, not a copy, to the best-test_loss checkpoint |
-| Verify Best Epoch (GT Sweep) | 5 cells, ±2 checkpoints | (Cellpose-SAM) confirms the recommendation against real GT IoU/Dice, not just test_loss — doesn't survive closing napari — **if the sweep disagrees, rewrites the pointer to the confirmed epoch and loads it as Tab 2's active model** |
 | Stop Training | — | Kills the training process and its children |
+
+### Tab 5 — Sweeps & Utilities
+
+Six tools consolidated from Tabs 1-4, each individually collapsible — see [Section 9](#9-tab-5--sweeps--utilities) for full detail. Every row reads from/writes back to the tab noted in parentheses.
+
+| Control | Scope | What it does |
+|---------|-------|--------------|
+| Verify MONAI Threshold / Erosion (GT Sweep) | 5x5 grid | (Tab 1) Confirms current values against a hand-corrected GT brain mask — MONAI runs once, rest is cheap — **best point auto-applied to the sliders and saved** |
+| Verify BG Threshold / Erosion (GT Sweep) | 5x5 grid | (Tab 1/2) Confirms current BG Threshold/Erosion against real GT IoU, and measures Min volume as a never-rising floor from GT — CPU-OK, doesn't survive closing napari — **best point + Min volume auto-applied and saved** |
+| Verify Cellprob / Large-contact (GT Sweep) | 5x5 grid | (Tab 2) Confirms against whole-fish GT — Cellprob needs re-inference (GPU-preferred), Large-contact is cheap — **best point + measured GT-min auto-applied to the sliders and saved** |
+| Verify Best Epoch (GT Sweep) | 5 cells, ±2 checkpoints | (Tab 4, Cellpose-SAM) confirms the recommendation against real GT IoU/Dice, not just test_loss — doesn't survive closing napari — **if the sweep disagrees, rewrites the pointer to the confirmed epoch and loads it as Tab 2's active model** |
+| Score Against GT | any 2 Labels layers | Whole-fish Hungarian-matched TP/FP/FN/Score/MeanIoU/MeanDice between any two Labels layers — synchronous, no GPU needed |
+| Build GT-Correction Package | — | (Tab 2) Zips Krendl output + stats CSV + creation guide for external manual correction |
 
 ---
 

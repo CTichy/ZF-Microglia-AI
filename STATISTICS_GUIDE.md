@@ -1,6 +1,6 @@
 # Statistics Guide — algorithms and methods behind Tab 3
 
-This document explains **how** each column in the Tab 3 "Generate Statistics" CSV is computed — the specific algorithm, library, and formula behind it — not just what the number means. For a plain-English, biology-oriented explanation of each column instead, see [GUIDE.md, Section 10](GUIDE.md#10-statistics-csv--all-columns-explained). This document is the companion reference for anyone extending `_statistics.py`, auditing a result, or writing up the method (e.g. a Methods section).
+This document explains **how** each column in the Tab 3 "Generate Statistics" CSV is computed — the specific algorithm, library, and formula behind it — not just what the number means. For a plain-English, biology-oriented explanation of each column instead, see [GUIDE.md, Section 11](GUIDE.md#11-statistics-csv--all-columns-explained). This document is the companion reference for anyone extending `_statistics.py`, auditing a result, or writing up the method (e.g. a Methods section).
 
 All of this lives in one module, `napari_zf_microglia_ai/_statistics.py`, entered through a single function, `compute_stats()`.
 
@@ -306,7 +306,7 @@ The `rule`-based backend is the only one exercised by anything else in the pipel
 | `morphotype` | [§9](#9-morphotype-classification) |
 | `description` | [§10](#10-natural-language-description-generation) |
 
-For the plain-English meaning of every column (rather than the algorithm behind it), see [GUIDE.md §10](GUIDE.md#10-statistics-csv--all-columns-explained).
+For the plain-English meaning of every column (rather than the algorithm behind it), see [GUIDE.md §11](GUIDE.md#11-statistics-csv--all-columns-explained).
 
 ---
 

@@ -322,6 +322,33 @@ class ZFMicrogliaAIWidget(QWidget):
         tabs = QTabWidget()
         self._tabs = tabs
 
+        # Tab 5 — "Sweeps & Utilities": declared up front (not at the end,
+        # where it's added to the QTabWidget) so the six GT-sweep/utility
+        # groups built further down in each of Tabs 1-4's own sections can
+        # simply target t5.addWidget(...) instead of their original tab's
+        # layout at construction time -- moving *where a group is displayed*
+        # doesn't require moving *how it's built*, since every widget it
+        # references is a plain self.-attribute, reachable regardless of
+        # which tab visually contains it. Consolidates every "Verify ... (GT
+        # Sweep)" tool plus two adjacent GT-utility tools (Build
+        # GT-Correction Package, Score Against GT) that were previously
+        # scattered across four tabs, cluttering the primary workflow
+        # sections they were sitting in.
+        tab5 = QWidget()
+        t5 = QVBoxLayout()
+        t5.setSpacing(6)
+        t5_note = QLabel(
+            "GT-verification sweeps and related utilities, consolidated from "
+            "Tabs 1-4 -- each tool below still operates on its own tab's data/"
+            "sliders (e.g. the MONAI sweep still recalibrates Tab 1's "
+            "Threshold/Erosion) and auto-applies its findings back there. "
+            "Nothing here is a separate workflow of its own."
+        )
+        t5_note.setWordWrap(True)
+        t5_note.setStyleSheet("color: #888; font-size: 10px;")
+        t5.addWidget(t5_note)
+        t5.addWidget(_sep())
+
         # Sliders that the plugin's own GT-verification sweeps can now
         # auto-apply their recommendation to (per explicit instruction:
         # "report but set the values for the next use" -- otherwise
@@ -573,7 +600,7 @@ class ZFMicrogliaAIWidget(QWidget):
 
         bsg.setLayout(bsl)
         bsg = _make_collapsible(bsg)
-        t1.addWidget(bsg)
+        t5.addWidget(bsg)
 
         self._brain_sweep_job = {"thread": None, "cancel_event": None, "timer": None}
 
@@ -823,7 +850,7 @@ class ZFMicrogliaAIWidget(QWidget):
 
         psg.setLayout(psl)
         psg = _make_collapsible(psg)
-        t2.addWidget(psg)
+        t5.addWidget(psg)
 
         self._pixel_sweep_job = {"thread": None, "cancel_event": None, "timer": None}
 
@@ -1068,7 +1095,7 @@ class ZFMicrogliaAIWidget(QWidget):
 
         krg.setLayout(krl)
         krg = _make_collapsible(krg)
-        t2.addWidget(krg)
+        t5.addWidget(krg)
 
         self._krendl_sweep_job = {"thread": None, "cancel_event": None, "timer": None}
 
@@ -1164,7 +1191,7 @@ class ZFMicrogliaAIWidget(QWidget):
 
         gtpg.setLayout(gtpl)
         gtpg = _make_collapsible(gtpg)
-        t2.addWidget(gtpg)
+        t5.addWidget(gtpg)
 
         self._gt_package_job = {"thread": None, "timer": None}
 
@@ -1524,7 +1551,7 @@ class ZFMicrogliaAIWidget(QWidget):
 
         gtg.setLayout(gtl)
         gtg = _make_collapsible(gtg)
-        t3.addWidget(gtg)
+        t5.addWidget(gtg)
 
         t3.addStretch()
         tab3.setLayout(t3)
@@ -2438,7 +2465,7 @@ class ZFMicrogliaAIWidget(QWidget):
 
         esg.setLayout(esl)
         esg = _make_collapsible(esg)
-        self._ai_cellpose_group_layout.addWidget(esg)
+        t5.addWidget(esg)
 
         self._epoch_sweep_job = {"thread": None, "cancel_event": None, "timer": None}
         self._branch_calib_job = {"thread": None}
@@ -2453,6 +2480,18 @@ class ZFMicrogliaAIWidget(QWidget):
         tab4.setLayout(t4)
         tabs.addTab(_wrap_scroll(tab4), "AI Tools")
         self._tabs.setTabVisible(3, True)
+
+        # ============================================================ #
+        # TAB 5 — Sweeps & Utilities
+        # ============================================================ #
+        # Content (bsg, psg, krg, gtpg, gtg, esg) was built inline within
+        # Tabs 1-4's own sections above, targeting t5.addWidget(...)
+        # directly at each site -- see the t5 setup note near the top of
+        # _build_ui for why moving *where* a group displays doesn't
+        # require moving *how* it's built.
+        t5.addStretch()
+        tab5.setLayout(t5)
+        tabs.addTab(_wrap_scroll(tab5), "Sweeps & Utilities")
 
         # ── outer layout ────────────────────────────────────────────── #
         outer = QVBoxLayout()
