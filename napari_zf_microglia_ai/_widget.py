@@ -169,6 +169,45 @@ def _add_reliable_spinbox(row_layout, slider, minimum, maximum, step,
     return spin
 
 
+def _set_layout_widgets_visible(layout, visible):
+    """Recursively show/hide every widget reachable from `layout` -- rows in
+    this file are a mix of addWidget(...) and addLayout(...) (nested
+    QHBoxLayout rows), and only widgets (not layouts) support setVisible(),
+    so nested layouts need walking rather than a single flat loop."""
+    for i in range(layout.count()):
+        item = layout.itemAt(i)
+        w = item.widget()
+        if w is not None:
+            w.setVisible(visible)
+        else:
+            sub = item.layout()
+            if sub is not None:
+                _set_layout_widgets_visible(sub, visible)
+
+
+def _make_collapsible(groupbox: QGroupBox, start_expanded: bool = True) -> QGroupBox:
+    """Turn an already-built QGroupBox into a collapsible section: clicking
+    its title checkbox hides/shows its contents, so a collapsed group
+    shrinks to just its title bar and whatever comes after it in the same
+    QVBoxLayout moves up -- the fix for a tab having more groups than fit
+    on a laptop screen at once (no scroll area wraps each tab, so content
+    below the fold was previously just unreachable). Works generically on
+    any groupbox already populated via setLayout(...), whether its rows
+    were added with addWidget or addLayout -- no need to restructure how
+    each group was built."""
+    groupbox.setCheckable(True)
+    groupbox.setChecked(start_expanded)
+
+    def _on_toggled(checked):
+        lay = groupbox.layout()
+        if lay is not None:
+            _set_layout_widgets_visible(lay, checked)
+
+    groupbox.toggled.connect(_on_toggled)
+    _on_toggled(start_expanded)
+    return groupbox
+
+
 def _sep():
     """Thin horizontal separator line."""
     w = QWidget()
@@ -510,6 +549,7 @@ class ZFMicrogliaAIWidget(QWidget):
         bsl.addWidget(self._bs_report_view)
 
         bsg.setLayout(bsl)
+        bsg = _make_collapsible(bsg)
         t1.addWidget(bsg)
 
         self._brain_sweep_job = {"thread": None, "cancel_event": None, "timer": None}
@@ -592,6 +632,7 @@ class ZFMicrogliaAIWidget(QWidget):
         pcg.addWidget(self._labels_status_lbl)
 
         self._pixel_classifier_group.setLayout(pcg)
+        self._pixel_classifier_group = _make_collapsible(self._pixel_classifier_group)
         t2.addWidget(self._pixel_classifier_group)
 
         # ── Verify BG Threshold / Erosion (GT sweep) — always visible, ──
@@ -746,6 +787,7 @@ class ZFMicrogliaAIWidget(QWidget):
         psl.addWidget(self._ps_report_view)
 
         psg.setLayout(psl)
+        psg = _make_collapsible(psg)
         t2.addWidget(psg)
 
         self._pixel_sweep_job = {"thread": None, "cancel_event": None, "timer": None}
@@ -869,6 +911,7 @@ class ZFMicrogliaAIWidget(QWidget):
         cpg.addWidget(self._cp_status_lbl)
 
         self._cellpose_group.setLayout(cpg)
+        self._cellpose_group = _make_collapsible(self._cellpose_group)
         t2.addWidget(self._cellpose_group)
 
         # ── Verify Cellprob / Large-contact (GT sweep) — always visible, ──
@@ -989,6 +1032,7 @@ class ZFMicrogliaAIWidget(QWidget):
         krl.addWidget(self._kr_report_view)
 
         krg.setLayout(krl)
+        krg = _make_collapsible(krg)
         t2.addWidget(krg)
 
         self._krendl_sweep_job = {"thread": None, "cancel_event": None, "timer": None}
@@ -1084,6 +1128,7 @@ class ZFMicrogliaAIWidget(QWidget):
         gtpl.addWidget(self._gtp_status_lbl)
 
         gtpg.setLayout(gtpl)
+        gtpg = _make_collapsible(gtpg)
         t2.addWidget(gtpg)
 
         self._gt_package_job = {"thread": None, "timer": None}
@@ -1443,6 +1488,7 @@ class ZFMicrogliaAIWidget(QWidget):
         gtl.addWidget(self._gtscore_report_view)
 
         gtg.setLayout(gtl)
+        gtg = _make_collapsible(gtg)
         t3.addWidget(gtg)
 
         t3.addStretch()
@@ -1556,6 +1602,7 @@ class ZFMicrogliaAIWidget(QWidget):
         nl.addWidget(notify_note)
 
         ng.setLayout(nl)
+        ng = _make_collapsible(ng)
         t4.addWidget(ng)
 
         t4.addWidget(_sep())
@@ -1614,6 +1661,7 @@ class ZFMicrogliaAIWidget(QWidget):
         gtl.addWidget(self._gt_status_lbl)
 
         gtg.setLayout(gtl)
+        gtg = _make_collapsible(gtg)
         self._ai_monai_group_layout.addWidget(gtg)
         self._ai_monai_group_layout.addWidget(_sep())
 
@@ -1697,6 +1745,7 @@ class ZFMicrogliaAIWidget(QWidget):
         pdl.addWidget(self._pd_status_lbl)
 
         pdg.setLayout(pdl)
+        pdg = _make_collapsible(pdg)
         self._ai_monai_group_layout.addWidget(pdg)
         self._ai_monai_group_layout.addWidget(_sep())
 
@@ -1806,6 +1855,7 @@ class ZFMicrogliaAIWidget(QWidget):
         mtl.addWidget(self._mt_log_view)
 
         mtg.setLayout(mtl)
+        mtg = _make_collapsible(mtg)
         self._ai_monai_group_layout.addWidget(mtg)
 
         # In-memory job state (PID/log path/timer) — mirrors the config
@@ -1813,6 +1863,7 @@ class ZFMicrogliaAIWidget(QWidget):
         self._monai_job = {"pid": None, "log_path": None, "timer": None}
 
         self._ai_monai_group.setLayout(self._ai_monai_group_layout)
+        self._ai_monai_group = _make_collapsible(self._ai_monai_group)
         t4.addWidget(self._ai_monai_group)
 
         # ── Group 2 — Cellpose-SAM crop extraction + training ───────────── #
@@ -1892,6 +1943,7 @@ class ZFMicrogliaAIWidget(QWidget):
         ecl.addWidget(self._ec_status_lbl)
 
         ecg.setLayout(ecl)
+        ecg = _make_collapsible(ecg)
         self._ai_cellpose_group_layout.addWidget(ecg)
         self._ai_cellpose_group_layout.addWidget(_sep())
 
@@ -2023,6 +2075,7 @@ class ZFMicrogliaAIWidget(QWidget):
         xzl.addWidget(self._xz_status_lbl)
 
         xzg.setLayout(xzl)
+        xzg = _make_collapsible(xzg)
         self._ai_cellpose_group_layout.addWidget(xzg)
         self._ai_cellpose_group_layout.addWidget(_sep())
 
@@ -2188,6 +2241,7 @@ class ZFMicrogliaAIWidget(QWidget):
         ctl.addWidget(self._ct_log_view)
 
         ctg.setLayout(ctl)
+        ctg = _make_collapsible(ctg)
         self._ai_cellpose_group_layout.addWidget(ctg)
         self._ai_cellpose_group_layout.addWidget(_sep())
 
@@ -2348,6 +2402,7 @@ class ZFMicrogliaAIWidget(QWidget):
         esl.addWidget(self._es_report_view)
 
         esg.setLayout(esl)
+        esg = _make_collapsible(esg)
         self._ai_cellpose_group_layout.addWidget(esg)
 
         self._epoch_sweep_job = {"thread": None, "cancel_event": None, "timer": None}
@@ -2356,6 +2411,7 @@ class ZFMicrogliaAIWidget(QWidget):
         self._cellpose_job = {"pid": None, "log_path": None, "timer": None}
 
         self._ai_cellpose_group.setLayout(self._ai_cellpose_group_layout)
+        self._ai_cellpose_group = _make_collapsible(self._ai_cellpose_group)
         t4.addWidget(self._ai_cellpose_group)
 
         t4.addStretch()
