@@ -614,12 +614,15 @@ class ZFMicrogliaAIWidget(QWidget):
         area_row = QHBoxLayout()
         area_row.addWidget(QLabel("Min volume (vox):"))
         self._area_slider = QLabeledSlider(Qt.Horizontal)
-        self._area_slider.setMinimum(5000)
-        self._area_slider.setMaximum(10000)
-        self._area_slider.setValue(7500)
+        init_min_volume = _root_cfg.get("min_volume_vox", 7500)
+        area_slider_min = min(5000, init_min_volume)
+        area_slider_max = max(10000, init_min_volume)
+        self._area_slider.setMinimum(area_slider_min)
+        self._area_slider.setMaximum(area_slider_max)
+        self._area_slider.setValue(init_min_volume)
         area_row.addWidget(self._area_slider)
         self._area_spin = _add_reliable_spinbox(
-            area_row, self._area_slider, 5000, 10000, 100
+            area_row, self._area_slider, area_slider_min, area_slider_max, 100
         )
         pcg.addLayout(area_row)
 
@@ -4445,7 +4448,6 @@ class ZFMicrogliaAIWidget(QWidget):
         scale_zyx = (self._ps_scalez_spin.value(), self._ps_scalexy_spin.value(), self._ps_scalexy_spin.value())
         sigma_xy = self._sxy_slider.value()
         sigma_z = self._sz_slider.value()
-        min_volume = self._area_slider.value()
         n_cells = self._ps_ncells_spin.value()
         pad_z = self._ps_padz_spin.value()
         pad_xy = self._ps_padxy_spin.value()
@@ -4465,7 +4467,7 @@ class ZFMicrogliaAIWidget(QWidget):
             try:
                 sweep = _psw.run_pixel_sweep(
                     img_path, mask_path, lbl_path, bg_thresholds, erosions, scale_zyx,
-                    sigma_xy=sigma_xy, sigma_z=sigma_z, min_volume=min_volume,
+                    sigma_xy=sigma_xy, sigma_z=sigma_z, min_volume=None,
                     n_cells=n_cells, pad_z=pad_z, pad_xy=pad_xy,
                     progress_cb=_progress_cb, cancel_event=cancel_event,
                 )
@@ -4533,16 +4535,49 @@ class ZFMicrogliaAIWidget(QWidget):
                 self._ps_status_lbl.setText("Sweep cancelled — partial results above.")
             elif sweep["best_point"] is not None:
                 best_bt, best_er = sweep["best_point"]
+                # min_volume is a "never discard a real cell" floor, not a
+                # per-fish measurement to overwrite each time: once one
+                # fish's GT proves a cell of size N is real, no other
+                # fish's sweep (which may simply lack any cell that small)
+                # should be allowed to raise the threshold back above N.
+                # So this only ever decreases -- take the smaller of what
+                # this sweep just measured and whatever's already applied
+                # (which itself reflects either a prior sweep this session
+                # or the persisted value from a previous one).
+                measured_this_fish = sweep["min_volume_used"]
+                min_vol_used = min(measured_this_fish, self._area_slider.value())
                 # Auto-apply: report is not the point of running a sweep,
                 # using the finding is -- update the live Tab 1 sliders and
-                # persist so this survives a napari restart too.
+                # this section's own Min volume slider, and persist so this
+                # survives a napari restart too. min_volume was measured
+                # from this GT's own smallest labeled cell (see
+                # _pixel_sweep.min_volume_from_gt), not a guessed constant.
                 self._tol_slider.setValue(best_bt)
                 self._erosion_slider.setValue(best_er)
-                self._save_cfg(bg_tolerance=best_bt, erosion_voxels=best_er)
+                # Widen the slider's (and its paired spinbox's -- the two
+                # are separate widgets with independently-set bounds, kept
+                # in sync only via signals, see _add_reliable_spinbox)
+                # range first if the real measured value (from this GT's
+                # own smallest cell) falls outside the fixed [5000, 10000]
+                # default -- that range was only ever tuned around the old
+                # guessed constant, not guaranteed to fit every fish's true
+                # smallest cell. Without widening both, setValue() on the
+                # slider would trigger the synced spinbox to clamp back to
+                # its own stale bounds, which then forces the slider back
+                # too -- silently wrong instead of the real measurement.
+                if min_vol_used < self._area_slider.minimum():
+                    self._area_slider.setMinimum(min_vol_used)
+                    self._area_spin.setMinimum(min_vol_used)
+                if min_vol_used > self._area_slider.maximum():
+                    self._area_slider.setMaximum(min_vol_used)
+                    self._area_spin.setMaximum(min_vol_used)
+                self._area_slider.setValue(min_vol_used)
+                self._save_cfg(bg_tolerance=best_bt, erosion_voxels=best_er, min_volume_vox=min_vol_used)
                 self._ps_status_lbl.setText(
                     f"Best: BG Threshold={best_bt}, Erosion={best_er} "
                     f"(avg IoU={sweep['per_point_avg'][sweep['best_point']]['iou']:.1f}%). "
-                    f"Applied to Tab 1 and saved."
+                    f"Min volume={min_vol_used} vox (measured from this GT's smallest cell). "
+                    f"Applied to Tab 1/2 and saved."
                 )
             else:
                 self._ps_status_lbl.setText("Sweep finished but no grid points could be scored.")

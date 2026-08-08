@@ -30,10 +30,35 @@ from ._background import _threshold as _bg_threshold
 from ._epoch_sweep import find_complex_cells, bbox_crop, _best_gt_match
 from ._labeling import create_labels
 
+_DEFAULT_MIN_VOLUME = 7500  # fallback only -- see min_volume_from_gt()
+
+
+def min_volume_from_gt(gt_labels):
+    """Smallest true voxel volume among the labeled cells in gt_labels.
+
+    min_volume (the small-blob cleanup threshold Create Labels drops
+    after union-find) used to always default to a single hardcoded
+    constant (7500) regardless of which fish was being processed -- a
+    guess, not a measurement, and not necessarily right for a fish whose
+    real microglia run smaller or larger than whatever fish that number
+    happened to come from. Since a real gt_labels volume is already an
+    input to this sweep, there's no reason to guess: the true smallest
+    labeled cell in the GT itself is exactly the number that should
+    never be discarded, so it's measured directly here every time,
+    mirroring _krendl_sweep.gt_min_from_labels()'s identical fix for the
+    same category of problem (Krendl safe-merge's gt_min parameter).
+
+    Falls back to _DEFAULT_MIN_VOLUME if gt_labels has no labeled cells
+    at all (degenerate input, shouldn't happen in practice)."""
+    _, counts = np.unique(gt_labels[gt_labels > 0], return_counts=True)
+    if len(counts) == 0:
+        return _DEFAULT_MIN_VOLUME
+    return int(counts.min())
+
 
 def run_pixel_sweep(image_path, brain_mask_path, gt_labels_path,
                      bg_thresholds, erosions, scale_zyx,
-                     sigma_xy=1.5, sigma_z=3.0, min_volume=7500,
+                     sigma_xy=1.5, sigma_z=3.0, min_volume=None,
                      n_cells=5, pad_z=15, pad_xy=40,
                      progress_cb=None, cancel_event=None):
     """
@@ -51,8 +76,13 @@ def run_pixel_sweep(image_path, brain_mask_path, gt_labels_path,
                          percent-of-data-range tolerance)
     erosions            : list of erosion radii (voxels) to sweep
     scale_zyx           : (Z, Y, X) um/voxel -- drives complexity ranking
-    sigma_xy/sigma_z/min_volume : held fixed, passed straight to
-                         create_labels() (same defaults as Tab 2)
+    sigma_xy/sigma_z    : held fixed, passed straight to create_labels()
+                         (same defaults as Tab 2)
+    min_volume          : small-blob cleanup threshold passed to
+                         create_labels(). If None (default), measured
+                         from gt_labels itself via min_volume_from_gt()
+                         instead of guessed -- see that function's
+                         docstring. Pass an explicit value to override.
 
     progress_cb(str), if given, is called with a one-line status message
     as work proceeds. cancel_event (threading.Event), if given, is
@@ -66,6 +96,7 @@ def run_pixel_sweep(image_path, brain_mask_path, gt_labels_path,
       'results': {(bg_threshold, erosion, label_id): {...}},
       'per_point_avg': {(bg_threshold, erosion): {'iou': x, 'dice': y}},
       'best_point': (bg_threshold, erosion) or None,  # highest average IoU
+      'min_volume_used': int,                         # see min_volume above
       'cancelled': bool,
     }
     """
@@ -73,6 +104,11 @@ def run_pixel_sweep(image_path, brain_mask_path, gt_labels_path,
     brain_mask = tifffile.imread(brain_mask_path).astype(bool)
     gt_labels = tifffile.imread(gt_labels_path).astype(np.int32)
     data_range = float(image.max()) - float(image.min())
+
+    if min_volume is None:
+        min_volume = min_volume_from_gt(gt_labels)
+        if progress_cb:
+            progress_cb(f"min_volume: measured {min_volume} vox from this GT's smallest labeled cell.")
 
     objs = find_objects(gt_labels)
     cells = find_complex_cells(gt_labels, scale_zyx, n_cells=n_cells, objs=objs)
@@ -150,7 +186,8 @@ def run_pixel_sweep(image_path, brain_mask_path, gt_labels_path,
     scored_grid = [k for k in grid if k in per_point_avg]
 
     return dict(cells=cells, grid=scored_grid, results=results,
-                per_point_avg=per_point_avg, best_point=best_point, cancelled=cancelled)
+                per_point_avg=per_point_avg, best_point=best_point,
+                min_volume_used=min_volume, cancelled=cancelled)
 
 
 def format_pixel_sweep_report(sweep, current_bg_threshold=None, current_erosion=None):
