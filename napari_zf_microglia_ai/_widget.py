@@ -465,7 +465,7 @@ class ZFMicrogliaAIWidget(QWidget):
 
         bg_note = QLabel(
             "  Probe: inside-brain mode (post-inference)\n"
-            "  Mode 1 && 2 use BG Threshold  |  Mode 3: no threshold"
+            "  Mode 1 & 2 use BG Threshold  |  Mode 3: no threshold"
         )
         bg_note.setStyleSheet("color: #aaa; font-size: 10px;")
         t1.addWidget(bg_note)
