@@ -48,6 +48,8 @@ This plugin does two things, in order:
 
 > **Every numeric field with a slider next to it (in all three tabs) is directly editable** — click the number box and type an exact value instead of dragging the slider. Both stay in sync.
 
+> **Every group box (the titled, bordered sections throughout all four tabs) is collapsible** — click its title checkbox to hide its contents, freeing up vertical space so groups further down become reachable. Useful on smaller screens where a tab has more sections than fit on screen at once. Collapsing doesn't discard anything — every field keeps its value, and re-expanding restores it exactly as it was.
+
 ---
 
 ## 2. Installation
