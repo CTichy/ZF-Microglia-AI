@@ -615,7 +615,8 @@ class ZFMicrogliaAIWidget(QWidget):
         area_row.addWidget(QLabel("Min volume (vox):"))
         self._area_slider = QLabeledSlider(Qt.Horizontal)
         init_min_volume = _root_cfg.get("min_volume_vox", 7500)
-        area_slider_min = min(5000, init_min_volume)
+        init_min_volume_recommended = _root_cfg.get("min_volume_recommended_vox")
+        area_slider_min = min(5000, init_min_volume, init_min_volume_recommended or 5000)
         area_slider_max = max(10000, init_min_volume)
         self._area_slider.setMinimum(area_slider_min)
         self._area_slider.setMaximum(area_slider_max)
@@ -625,6 +626,14 @@ class ZFMicrogliaAIWidget(QWidget):
             area_row, self._area_slider, area_slider_min, area_slider_max, 100
         )
         pcg.addLayout(area_row)
+        self._area_recommended_lbl = QLabel(
+            f"  Recommended minimum (from GT sweeps so far): {init_min_volume_recommended} vox"
+            if init_min_volume_recommended is not None else
+            "  Recommended minimum: not yet measured — run Verify BG Threshold / Erosion (GT Sweep) below."
+        )
+        self._area_recommended_lbl.setStyleSheet("color: #aaa; font-size: 10px;")
+        self._area_recommended_lbl.setWordWrap(True)
+        pcg.addWidget(self._area_recommended_lbl)
 
         self._labels_btn = QPushButton("Create Labels")
         self._labels_btn.setStyleSheet("QPushButton { font-weight: bold; padding: 6px; }")
@@ -4535,49 +4544,61 @@ class ZFMicrogliaAIWidget(QWidget):
                 self._ps_status_lbl.setText("Sweep cancelled — partial results above.")
             elif sweep["best_point"] is not None:
                 best_bt, best_er = sweep["best_point"]
-                # min_volume is a "never discard a real cell" floor, not a
-                # per-fish measurement to overwrite each time: once one
-                # fish's GT proves a cell of size N is real, no other
-                # fish's sweep (which may simply lack any cell that small)
-                # should be allowed to raise the threshold back above N.
-                # So this only ever decreases -- take the smaller of what
-                # this sweep just measured and whatever's already applied
-                # (which itself reflects either a prior sweep this session
-                # or the persisted value from a previous one).
+                # The recommended floor is tracked separately from the
+                # live, user-editable Min volume slider/spinbox -- reading
+                # the slider itself here would be wrong, since the user is
+                # free to hand-tune it for an experiment at any time (see
+                # below), and that manual value has no relation to what
+                # GT evidence has actually proven. min_volume is a "never
+                # discard a real cell" floor: once one fish's GT proves a
+                # cell of size N is real, no other fish's sweep (which may
+                # simply lack any cell that small) should be allowed to
+                # raise the recommendation back above N -- so this only
+                # ever decreases, tracked against the last *recommended*
+                # value (persisted config), not the current slider value.
                 measured_this_fish = sweep["min_volume_used"]
-                min_vol_used = min(measured_this_fish, self._area_slider.value())
-                # Auto-apply: report is not the point of running a sweep,
-                # using the finding is -- update the live Tab 1 sliders and
-                # this section's own Min volume slider, and persist so this
-                # survives a napari restart too. min_volume was measured
-                # from this GT's own smallest labeled cell (see
-                # _pixel_sweep.min_volume_from_gt), not a guessed constant.
+                prev_recommended = self._state["config"].get("min_volume_recommended_vox")
+                recommended = (
+                    min(measured_this_fish, prev_recommended)
+                    if prev_recommended is not None else measured_this_fish
+                )
+                self._save_cfg(min_volume_recommended_vox=recommended)
+                self._area_recommended_lbl.setText(
+                    f"  Recommended minimum (from GT sweeps so far): {recommended} vox"
+                )
+
+                # Auto-apply the recommendation to the live sliders as a
+                # default -- but the Min volume slider stays fully
+                # user-editable afterward (like every slider in this
+                # plugin); the label above is what preserves the real
+                # evidence-based recommendation regardless of whatever the
+                # user later types into the slider for their own testing.
                 self._tol_slider.setValue(best_bt)
                 self._erosion_slider.setValue(best_er)
                 # Widen the slider's (and its paired spinbox's -- the two
                 # are separate widgets with independently-set bounds, kept
                 # in sync only via signals, see _add_reliable_spinbox)
-                # range first if the real measured value (from this GT's
-                # own smallest cell) falls outside the fixed [5000, 10000]
-                # default -- that range was only ever tuned around the old
-                # guessed constant, not guaranteed to fit every fish's true
-                # smallest cell. Without widening both, setValue() on the
-                # slider would trigger the synced spinbox to clamp back to
-                # its own stale bounds, which then forces the slider back
-                # too -- silently wrong instead of the real measurement.
-                if min_vol_used < self._area_slider.minimum():
-                    self._area_slider.setMinimum(min_vol_used)
-                    self._area_spin.setMinimum(min_vol_used)
-                if min_vol_used > self._area_slider.maximum():
-                    self._area_slider.setMaximum(min_vol_used)
-                    self._area_spin.setMaximum(min_vol_used)
-                self._area_slider.setValue(min_vol_used)
-                self._save_cfg(bg_tolerance=best_bt, erosion_voxels=best_er, min_volume_vox=min_vol_used)
+                # range first if the recommendation falls outside the
+                # fixed [5000, 10000] default -- that range was only ever
+                # tuned around the old guessed constant. Without widening
+                # both, setValue() on the slider would trigger the synced
+                # spinbox to clamp back to its own stale bounds, which
+                # then forces the slider back too -- silently wrong
+                # instead of the real recommendation.
+                if recommended < self._area_slider.minimum():
+                    self._area_slider.setMinimum(recommended)
+                    self._area_spin.setMinimum(recommended)
+                if recommended > self._area_slider.maximum():
+                    self._area_slider.setMaximum(recommended)
+                    self._area_spin.setMaximum(recommended)
+                self._area_slider.setValue(recommended)
+                self._save_cfg(bg_tolerance=best_bt, erosion_voxels=best_er, min_volume_vox=recommended)
                 self._ps_status_lbl.setText(
                     f"Best: BG Threshold={best_bt}, Erosion={best_er} "
                     f"(avg IoU={sweep['per_point_avg'][sweep['best_point']]['iou']:.1f}%). "
-                    f"Min volume={min_vol_used} vox (measured from this GT's smallest cell). "
-                    f"Applied to Tab 1/2 and saved."
+                    f"Recommended min volume={recommended} vox (this fish measured "
+                    f"{measured_this_fish}). Applied to Tab 1/2 and saved -- edit the "
+                    f"Min volume field freely if you want to test a different value."
                 )
             else:
                 self._ps_status_lbl.setText("Sweep finished but no grid points could be scored.")
