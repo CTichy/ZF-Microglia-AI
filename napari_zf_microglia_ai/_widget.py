@@ -364,6 +364,17 @@ class ZFMicrogliaAIWidget(QWidget):
         t1 = QVBoxLayout()
         t1.setSpacing(6)
 
+        t1_note = QLabel(
+            "Runs a trained MONAI 3D U-Net to detect and remove everything "
+            "outside the brain from a raw confocal stack, producing a clean "
+            "brain_only image for Tab 2 to label. Open a file below, adjust "
+            "the threshold/background options if needed, then Run."
+        )
+        t1_note.setWordWrap(True)
+        t1_note.setStyleSheet("color: #888; font-size: 10px;")
+        t1.addWidget(t1_note)
+        t1.addWidget(_sep())
+
         self._open_btn = QPushButton("Open TIF / IMS file")
         t1.addWidget(self._open_btn)
 
@@ -614,6 +625,18 @@ class ZFMicrogliaAIWidget(QWidget):
         tab2 = QWidget()
         t2 = QVBoxLayout()
         t2.setSpacing(6)
+
+        t2_note = QLabel(
+            "Detects and labels individual microglia in 3D from Tab 1's "
+            "brain_only output. Shows exactly one of two interchangeable "
+            "methods below, chosen automatically from your active layer's "
+            "filename suffix — Pixel Classifier (_NoBG) or Cellpose-SAM "
+            "Segmentation (_ExtRm, recommended if you have a GPU)."
+        )
+        t2_note.setWordWrap(True)
+        t2_note.setStyleSheet("color: #888; font-size: 10px;")
+        t2.addWidget(t2_note)
+        t2.addWidget(_sep())
 
         self._labels_mode_hint = QLabel("")
         self._labels_mode_hint.setWordWrap(True)
