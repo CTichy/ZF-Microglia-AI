@@ -7,7 +7,7 @@ name = "napari-zf-microglia-ai"
 version = "0.3.0"
 description = "ZF-Microglia-AI napari plugin — zebrafish brain extraction, microglia segmentation (Pixel Classifier / Cellpose-SAM), AI-assisted statistics, and AI Tools (GT annotation, MONAI/Cellpose-SAM training)"
 requires-python = ">=3.8"
-dependencies = ["napari", "monai", "tifffile", "numpy", "qtpy", "superqt", "cellpose", "scipy", "pandas", "psutil"]
+dependencies = ["napari", "monai", "tifffile", "numpy", "qtpy", "superqt", "cellpose", "scipy", "pandas", "psutil", "keyring"]
 
 [project.scripts]
 zf-microglia-ai = "napari_zf_microglia_ai.__main__:main"

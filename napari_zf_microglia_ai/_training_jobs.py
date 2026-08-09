@@ -177,6 +177,36 @@ def _popen_detached(argv, cwd, log_path, conda_env):
     return proc.pid
 
 
+def send_notification_email(to_addr, smtp_host, smtp_port, smtp_user, smtp_password,
+                             subject, body):
+    """Send a plain-text notification email directly via SMTP_SSL, for
+    long operations that run in-process (a background thread inside this
+    still-open napari process — Tab 1 Run, Tab 2 Cellpose-SAM Segmentation,
+    Tab 5's Cellprob/Large-contact and Best-Epoch sweeps), as opposed to
+    Tab 4's detached training launches, which need the standalone
+    supervisor-script approach above since they must keep running (and
+    therefore be able to email) even after napari itself has closed. Only
+    a "napari must stay open" version is needed here since these
+    operations already don't survive napari closing either way.
+
+    Returns None on success, or a short error string on failure — never
+    raises, so a broken email config can't crash the operation whose
+    completion it was reporting."""
+    try:
+        from email.mime.text import MIMEText
+        import smtplib
+        msg = MIMEText(body)
+        msg["Subject"] = subject
+        msg["From"] = smtp_user
+        msg["To"] = to_addr
+        with smtplib.SMTP_SSL(smtp_host, smtp_port, timeout=30) as server:
+            server.login(smtp_user, smtp_password)
+            server.sendmail(smtp_user, [to_addr], msg.as_string())
+        return None
+    except Exception as exc:
+        return str(exc)
+
+
 def is_running(pid) -> bool:
     """True if `pid` still exists and isn't a zombie."""
     if not pid:

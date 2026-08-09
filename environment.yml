@@ -45,6 +45,12 @@ dependencies:
     - pandas
     - psutil
 
+    # ── Encrypted credential storage (SMTP app password, LLM API key) ───
+    # OS-native store (Windows Credential Manager / macOS Keychain /
+    # Linux Secret Service) instead of the plugin's own plaintext
+    # config.json. Falls back gracefully if unavailable -- see _secrets.py.
+    - keyring
+
     # ── Napari + plugins ─────────────────────────────────────────────────
     - "napari[all]>=0.5"
     - napari-console

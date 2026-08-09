@@ -44,6 +44,7 @@ from . import _crop_truncation as _ctr
 from . import _epoch_sweep as _esw
 from . import _branch_calibration as _bcal
 from ._live_progress import capture_live_output
+from . import _secrets
 
 _CONFIG_PATH = Path.home() / ".config" / "napari-zf-microglia-ai" / "config.json"
 
@@ -232,6 +233,25 @@ def _sep():
     return w
 
 
+def _make_notify_checkbox():
+    """'Email me when done' checkbox for the plugin's longer-running, non-
+    detached operations (Tab 1 Run, Tab 2 Cellpose-SAM Segmentation, Tab
+    5's Cellprob/Large-contact and Best-Epoch sweeps) -- each can run
+    well past 30 minutes. Unchecked by default; uses the shared SMTP
+    credentials configured once in Tab 5 -- Sweeps & Utilities, General
+    category, Email notification panel. Kept as a plain function (not a
+    QCheckBox subclass) since every call site still needs to persist its
+    own checked-state to config and wire completion separately -- this
+    only removes the repeated construction/tooltip boilerplate."""
+    cb = QCheckBox("Email me when done")
+    cb.setToolTip(
+        "Sends one email when this finishes (or errors), using the SMTP "
+        "credentials set once in Tab 5 -- Sweeps & Utilities, General "
+        "category, Email notification panel."
+    )
+    return cb
+
+
 def _extract_region_lines_um(shapes_lyr):
     """
     Extract boundary curves from a Shapes layer as (M, 2) YX arrays in µm.
@@ -283,6 +303,9 @@ class ZFMicrogliaAIWidget(QWidget):
         super().__init__()
         self._viewer = napari_viewer
         cfg = _load_config()
+        cfg, _migrated_secrets = _secrets.migrate_plaintext_secrets(cfg)
+        if _migrated_secrets:
+            _save_config(cfg)
         # Model path priority: saved config > hardcoded default > None
         # NOTE: must use is_file(), not exists() -- Path(cfg.get(key, ""))
         # is Path("") when nothing was ever saved, which pathlib silently
@@ -525,6 +548,9 @@ class ZFMicrogliaAIWidget(QWidget):
         t1.addWidget(self._save_mask_cb)
 
         t1.addWidget(_sep())
+
+        self._run_notify_cb = _make_notify_checkbox()
+        t1.addWidget(self._run_notify_cb)
 
         self._run_btn = QPushButton("Run Skin-Remover")
         self._run_btn.setStyleSheet("QPushButton { font-weight: bold; padding: 6px; }")
@@ -1217,6 +1243,9 @@ class ZFMicrogliaAIWidget(QWidget):
         )
         cpg.addLayout(cp_largecontact_row)
 
+        self._cp_run_notify_cb = _make_notify_checkbox()
+        cpg.addWidget(self._cp_run_notify_cb)
+
         self._cp_run_btn = QPushButton("Run Cellpose-SAM Segmentation")
         self._cp_run_btn.setStyleSheet("QPushButton { font-weight: bold; padding: 6px; }")
         cpg.addWidget(self._cp_run_btn)
@@ -1344,6 +1373,9 @@ class ZFMicrogliaAIWidget(QWidget):
         self._kr_lcstep_spin.setValue(30)
         kr_lc_row2.addWidget(self._kr_lcstep_spin)
         krl.addLayout(kr_lc_row2)
+
+        self._kr_notify_cb = _make_notify_checkbox()
+        krl.addWidget(self._kr_notify_cb)
 
         kr_btn_row = QHBoxLayout()
         self._kr_run_btn = QPushButton("Run Cellprob/LC Sweep")
@@ -1683,9 +1715,9 @@ class ZFMicrogliaAIWidget(QWidget):
         ap.setSpacing(3)
         ak_row = QHBoxLayout()
         ak_row.addWidget(QLabel("  API Key:"))
-        self._api_key_edit = QLineEdit(cfg.get("api_key", ""))
+        self._api_key_edit = QLineEdit(_secrets.get_secret("api_key"))
         self._api_key_edit.setEchoMode(QLineEdit.Password)
-        self._api_key_edit.setPlaceholderText("sk-… or ant-…")
+        self._api_key_edit.setPlaceholderText("sk-… or ant-… (saved encrypted, OS credential store)")
         ak_row.addWidget(self._api_key_edit)
         ap.addLayout(ak_row)
         am_row = QHBoxLayout()
@@ -1867,6 +1899,79 @@ class ZFMicrogliaAIWidget(QWidget):
         t5.addWidget(gtg)
         self._t5_category_groups.setdefault("general", []).append(gtg)
 
+        # ── Email notification (optional, shared by both Tab 4 training ── #
+        # groups) -- wraps the launched training command in a small
+        # self-contained supervisor script (see _training_jobs.launch_
+        # detached's `notify` param) that IS the detached process, so the
+        # completion email still gets sent even if napari (and this whole
+        # plugin process) isn't running when the job finishes, same
+        # guarantee as the training itself surviving napari closing.
+        notify_cfg = self._state.get("config", {})
+        ng = QGroupBox("Email notification (optional)")
+        nl = QVBoxLayout()
+        nl.setSpacing(6)
+
+        ng_note = QLabel(
+            "Sends one email when a Tab 4 training run stops (finishes, "
+            "crashes, or is early-stopped) — even if napari is closed at the "
+            "time. Leave Notify email blank to disable (the default). Shared "
+            "by both MONAI and Cellpose-SAM training, whichever is active."
+        )
+        ng_note.setWordWrap(True)
+        ng_note.setStyleSheet("color: #888; font-size: 10px;")
+        nl.addWidget(ng_note)
+
+        nto_row = QHBoxLayout()
+        nto_row.addWidget(QLabel("Notify email:"))
+        self._notify_to_edit = QLineEdit(notify_cfg.get("notify_email_to", ""))
+        self._notify_to_edit.setPlaceholderText("leave blank to disable — e.g. you@example.com")
+        nto_row.addWidget(self._notify_to_edit)
+        nl.addLayout(nto_row)
+
+        nsmtp_row = QHBoxLayout()
+        nsmtp_row.addWidget(QLabel("SMTP server:"))
+        self._notify_smtp_host_edit = QLineEdit(notify_cfg.get("notify_smtp_host", "smtp.gmail.com"))
+        nsmtp_row.addWidget(self._notify_smtp_host_edit)
+        nsmtp_row.addWidget(QLabel("port:"))
+        self._notify_smtp_port_spin = QSpinBox()
+        self._notify_smtp_port_spin.setRange(1, 65535)
+        self._notify_smtp_port_spin.setValue(int(notify_cfg.get("notify_smtp_port", 465)))
+        nsmtp_row.addWidget(self._notify_smtp_port_spin)
+        nl.addLayout(nsmtp_row)
+
+        nuser_row = QHBoxLayout()
+        nuser_row.addWidget(QLabel("SMTP username:"))
+        self._notify_smtp_user_edit = QLineEdit(notify_cfg.get("notify_smtp_user", ""))
+        nuser_row.addWidget(self._notify_smtp_user_edit)
+        nl.addLayout(nuser_row)
+
+        npass_row = QHBoxLayout()
+        npass_row.addWidget(QLabel("SMTP password:"))
+        self._notify_smtp_password_edit = QLineEdit(_secrets.get_secret("notify_smtp_password"))
+        self._notify_smtp_password_edit.setEchoMode(QLineEdit.Password)
+        self._notify_smtp_password_edit.setPlaceholderText("saved encrypted (OS credential store) — use a Gmail App Password, never your real password")
+        npass_row.addWidget(self._notify_smtp_password_edit)
+        nl.addLayout(npass_row)
+
+        notify_note = QLabel(
+            "Configure this once, opt in per tool with each 'Email me when done' checkbox "
+            "elsewhere in the plugin. Free with any Gmail account: smtp.gmail.com, port 465, "
+            "username = your Gmail address, password = a Google App Password "
+            "(myaccount.google.com/apppasswords — requires 2-Step Verification), not your normal "
+            "Gmail password. All four fields, including the password, are saved to config so you "
+            "only need to set this up once — safe because an App Password is a separate, "
+            "revocable credential Google issues specifically for this kind of unattended use, "
+            "never your real account password."
+        )
+        notify_note.setWordWrap(True)
+        notify_note.setStyleSheet("color: #888; font-size: 10px;")
+        nl.addWidget(notify_note)
+
+        ng.setLayout(nl)
+        ng = _make_collapsible(ng)
+        t5.addWidget(ng)
+        self._t5_category_groups.setdefault("general", []).append(ng)
+
         t3.addStretch()
         tab3.setLayout(t3)
         tabs.addTab(_wrap_scroll(tab3), "Statistics")
@@ -1935,76 +2040,10 @@ class ZFMicrogliaAIWidget(QWidget):
 
         t4.addWidget(_sep())
 
-        # ── Email notification (optional, shared by both groups) ────────── #
-        # Wraps the launched training command in a small self-contained
-        # supervisor script (see _training_jobs.launch_detached's `notify`
-        # param) that IS the detached process -- so the completion email
-        # still gets sent even if napari (and this whole plugin process)
-        # isn't running when the job finishes, same guarantee as the
-        # training itself surviving napari closing.
-        cfg = self._state.get("config", {})
-        ng = QGroupBox("Email notification (optional)")
-        nl = QVBoxLayout()
-        nl.setSpacing(6)
-
-        ng_note = QLabel(
-            "Sends one email when a training run below stops (finishes, "
-            "crashes, or is early-stopped) — even if napari is closed at the "
-            "time. Leave Notify email blank to disable (the default)."
-        )
-        ng_note.setWordWrap(True)
-        ng_note.setStyleSheet("color: #888; font-size: 10px;")
-        nl.addWidget(ng_note)
-
-        nto_row = QHBoxLayout()
-        nto_row.addWidget(QLabel("Notify email:"))
-        self._notify_to_edit = QLineEdit(cfg.get("notify_email_to", ""))
-        self._notify_to_edit.setPlaceholderText("leave blank to disable — e.g. you@example.com")
-        nto_row.addWidget(self._notify_to_edit)
-        nl.addLayout(nto_row)
-
-        nsmtp_row = QHBoxLayout()
-        nsmtp_row.addWidget(QLabel("SMTP server:"))
-        self._notify_smtp_host_edit = QLineEdit(cfg.get("notify_smtp_host", "smtp.gmail.com"))
-        nsmtp_row.addWidget(self._notify_smtp_host_edit)
-        nsmtp_row.addWidget(QLabel("port:"))
-        self._notify_smtp_port_spin = QSpinBox()
-        self._notify_smtp_port_spin.setRange(1, 65535)
-        self._notify_smtp_port_spin.setValue(int(cfg.get("notify_smtp_port", 465)))
-        nsmtp_row.addWidget(self._notify_smtp_port_spin)
-        nl.addLayout(nsmtp_row)
-
-        nuser_row = QHBoxLayout()
-        nuser_row.addWidget(QLabel("SMTP username:"))
-        self._notify_smtp_user_edit = QLineEdit(cfg.get("notify_smtp_user", ""))
-        nuser_row.addWidget(self._notify_smtp_user_edit)
-        nl.addLayout(nuser_row)
-
-        npass_row = QHBoxLayout()
-        npass_row.addWidget(QLabel("SMTP password:"))
-        self._notify_smtp_password_edit = QLineEdit("")
-        self._notify_smtp_password_edit.setEchoMode(QLineEdit.Password)
-        self._notify_smtp_password_edit.setPlaceholderText("never saved to disk — re-enter each session")
-        npass_row.addWidget(self._notify_smtp_password_edit)
-        nl.addLayout(npass_row)
-
-        notify_note = QLabel(
-            "Sends one email when a training run stops (finishes, crashes, or is early-stopped), "
-            "even if napari is closed at the time. Free with any Gmail account: smtp.gmail.com, "
-            "port 465, username = your Gmail address, password = a Google App Password "
-            "(myaccount.google.com/apppasswords — requires 2-Step Verification), not your normal "
-            "Gmail password. Only the address/server/username are saved between sessions — the "
-            "password never is, same as the API key in the Statistics tab."
-        )
-        notify_note.setWordWrap(True)
-        notify_note.setStyleSheet("color: #888; font-size: 10px;")
-        nl.addWidget(notify_note)
-
-        ng.setLayout(nl)
-        ng = _make_collapsible(ng)
-        t4.addWidget(ng)
-
-        t4.addWidget(_sep())
+        # Email notification (optional, shared by both MONAI and
+        # Cellpose-SAM training below) now lives in Tab 5 -- Sweeps &
+        # Utilities, General category -- not gated behind either group,
+        # nothing else here needs to change to reach it.
 
         # ── Group switch ──────────────────────────────────────────────── #
         switch_row = QHBoxLayout()
@@ -2256,6 +2295,10 @@ class ZFMicrogliaAIWidget(QWidget):
         mt_pat_note.setStyleSheet("color: #aaa; font-size: 10px;")
         mt_pat_note.setWordWrap(True)
         mtl.addWidget(mt_pat_note)
+
+        self._mt_notify_cb = _make_notify_checkbox()
+        self._mt_notify_cb.setText("Email me when this training run stops")
+        mtl.addWidget(self._mt_notify_cb)
 
         mt_btn_row = QHBoxLayout()
         self._mt_launch_btn = QPushButton("Launch Training")
@@ -2588,6 +2631,10 @@ class ZFMicrogliaAIWidget(QWidget):
         ct_pat_note.setWordWrap(True)
         ctl.addWidget(ct_pat_note)
 
+        self._ct_notify_cb = _make_notify_checkbox()
+        self._ct_notify_cb.setText("Email me when this training run stops")
+        ctl.addWidget(self._ct_notify_cb)
+
         ct_btn_row = QHBoxLayout()
         self._ct_launch_btn = QPushButton("Launch Training")
         self._ct_launch_btn.setStyleSheet("QPushButton { font-weight: bold; padding: 5px; }")
@@ -2748,6 +2795,9 @@ class ZFMicrogliaAIWidget(QWidget):
         self._es_flow_spin.setValue(self._cp_flow_spin.value())
         es_inf_row.addWidget(self._es_flow_spin)
         esl.addLayout(es_inf_row)
+
+        self._es_notify_cb = _make_notify_checkbox()
+        esl.addWidget(self._es_notify_cb)
 
         es_btn_row = QHBoxLayout()
         self._es_run_btn = QPushButton("Run Epoch Sweep")
@@ -3165,10 +3215,12 @@ class ZFMicrogliaAIWidget(QWidget):
         session = f"monai_train_{datetime.now():%Y%m%d_%H%M%S}"
         log_path = Path(model_dir) / f"gui_launch_{session}.log"
 
-        notify, notify_err = self._build_notify_cfg("MONAI U-Net", _tj.MONAI_METRIC)
-        if notify_err:
-            self._mt_status_lbl.setText(notify_err)
-            return
+        notify = None
+        if self._mt_notify_cb.isChecked():
+            notify, notify_err = self._build_notify_cfg("MONAI U-Net", _tj.MONAI_METRIC)
+            if notify_err:
+                self._mt_status_lbl.setText(notify_err)
+                return
 
         try:
             pid = _tj.launch_detached(argv, cwd, log_path, conda_env, notify=notify)
@@ -3415,10 +3467,12 @@ class ZFMicrogliaAIWidget(QWidget):
         log_dir.mkdir(parents=True, exist_ok=True)
         log_path = log_dir / f"gui_launch_{session}.log"
 
-        notify, notify_err = self._build_notify_cfg("Cellpose-SAM", _tj.CELLPOSE_METRIC)
-        if notify_err:
-            self._ct_status_lbl.setText(notify_err)
-            return
+        notify = None
+        if self._ct_notify_cb.isChecked():
+            notify, notify_err = self._build_notify_cfg("Cellpose-SAM", _tj.CELLPOSE_METRIC)
+            if notify_err:
+                self._ct_status_lbl.setText(notify_err)
+                return
 
         try:
             pid = _tj.launch_detached(argv, cwd, log_path, conda_env, notify=notify)
@@ -3659,6 +3713,11 @@ class ZFMicrogliaAIWidget(QWidget):
             if "error" in result:
                 self._es_status_lbl.setText(f"ERROR during sweep: {result['error'].splitlines()[0]}")
                 self._es_report_view.append("\n" + result["error"])
+                self._maybe_send_notify(
+                    self._es_notify_cb,
+                    "[ZF-Microglia-AI] Verify Best Epoch sweep failed",
+                    f"Verify Best Epoch (GT Sweep) failed:\n\n{result['error']}",
+                )
                 return
 
             sweep = result["sweep"]
@@ -3693,6 +3752,12 @@ class ZFMicrogliaAIWidget(QWidget):
                     f"(avg IoU={sweep['per_epoch_avg'][best_epoch]['iou']:.1f}%), "
                     f"not the recommended {job['recommended']}.{applied_msg}"
                 )
+
+            self._maybe_send_notify(
+                self._es_notify_cb,
+                "[ZF-Microglia-AI] Verify Best Epoch sweep done",
+                f"Verify Best Epoch (GT Sweep) finished.\n\n{self._es_status_lbl.text()}",
+            )
 
         timer.timeout.connect(_poll)
         timer.start(500)
@@ -3953,14 +4018,35 @@ class ZFMicrogliaAIWidget(QWidget):
         out.mkdir(parents=True, exist_ok=True)
         return out
 
-    def _build_notify_cfg(self, job_label, metric_cfg):
-        """Read the shared Email notification fields (Tab 4, above the
-        MONAI/Cellpose-SAM switch) and return (notify_dict_or_None,
-        error_or_None) for _tj.launch_detached's `notify` param.
-        notify is None when the feature is disabled (recipient left
-        blank) -- not an error. Persists address/server/username so
-        they're prefilled next session; the password is never persisted,
-        same policy as the Statistics tab's LLM API key."""
+    def _get_notify_creds(self):
+        """Read the shared Email notification fields (Tab 5 -- Sweeps &
+        Utilities, General category) and return (creds_dict_or_None,
+        error_or_None). creds is None when the feature is disabled
+        (recipient left blank) -- not an error. Persists the SMTP
+        password to the OS's encrypted credential store (Windows
+        Credential Manager / macOS Keychain / Linux Secret Service via
+        `keyring` -- see _secrets.py), not the plugin's own plaintext
+        config.json, so notification works out of the box every session
+        without re-entering it. Deliberately different from the
+        Statistics tab's LLM API key policy: this password is meant to
+        always be a Gmail App Password (or equivalent scoped credential
+        for another provider), not a real account password -- Google
+        issues it specifically for unattended third-party use and it's
+        revocable independently of the main account password.
+
+        If the OS credential store is unavailable (e.g. Linux with no
+        unlocked Secret Service session -- confirmed to actually happen
+        on this project's own workstation, not just a hypothetical), the
+        password still works for *this* run -- it's already in the text
+        field -- it just won't be there next session; a warning is
+        printed rather than blocking the operation over a storage
+        failure that doesn't affect anything happening right now.
+
+        Shared by every "Email me when done" checkbox in the plugin (Tab 1
+        Run, Tab 2 Cellpose-SAM Segmentation, Tab 4's two training
+        launchers via _build_notify_cfg below, Tab 5's Cellprob/Large-
+        contact and Best-Epoch sweeps) -- one set of credentials, opted
+        into per tool."""
         to_addr = self._notify_to_edit.text().strip()
         if not to_addr:
             return None, None
@@ -3971,17 +4057,56 @@ class ZFMicrogliaAIWidget(QWidget):
         if not smtp_user or not smtp_password:
             return None, (
                 "ERROR: Notify email is set but SMTP username/password is missing "
-                "— fill both in, or clear the Notify email field to launch without notification."
+                "— fill both in, or clear the Notify email field in Tab 5's Email "
+                "notification panel to proceed without notification."
             )
         self._save_cfg(
             notify_email_to=to_addr, notify_smtp_host=smtp_host,
             notify_smtp_port=smtp_port, notify_smtp_user=smtp_user,
         )
+        secret_err = _secrets.set_secret("notify_smtp_password", smtp_password)
+        if secret_err:
+            print(f"SMTP password not saved for next session: {secret_err}")
         return dict(
             to_addr=to_addr, smtp_host=smtp_host, smtp_port=smtp_port,
             smtp_user=smtp_user, smtp_password=smtp_password,
-            job_label=job_label, metric_cfg=metric_cfg,
         ), None
+
+    def _build_notify_cfg(self, job_label, metric_cfg):
+        """Wraps _get_notify_creds() with the extra job_label/metric_cfg
+        fields _tj.launch_detached's supervisor-script `notify` param
+        needs (Tab 4's two detached training launchers only)."""
+        creds, err = self._get_notify_creds()
+        if creds is None:
+            return None, err
+        return dict(**creds, job_label=job_label, metric_cfg=metric_cfg), None
+
+    def _maybe_send_notify(self, checkbox, subject, body):
+        """For the in-process "Email me when done" checkboxes (Tab 1 Run,
+        Tab 2 Cellpose-SAM Segmentation, Tab 5's Cellprob/Large-contact and
+        Best-Epoch sweeps) -- call from the worker thread right before it
+        finishes (not the GUI/poll thread, so the SMTP round-trip doesn't
+        block the UI). No-op if the checkbox is unchecked. Errors (bad
+        creds, network failure) are swallowed into a print() rather than
+        raised, matching send_notification_email's own contract -- a
+        broken email config must never take down the operation whose
+        result it was reporting."""
+        if checkbox is None or not checkbox.isChecked():
+            return
+        creds, err = self._get_notify_creds()
+        if err:
+            print(f"Email notification skipped: {err}")
+            return
+        if creds is None:
+            print("Email notification checkbox is checked but Notify email "
+                  "(Tab 5, General) is blank -- skipped.")
+            return
+        send_err = _tj.send_notification_email(
+            creds["to_addr"], creds["smtp_host"], creds["smtp_port"],
+            creds["smtp_user"], creds["smtp_password"], subject, body,
+        )
+        if send_err:
+            print(f"Email notification failed: {send_err}")
 
     def _save_cfg(self, **kwargs) -> None:
         """Merge kwargs into the config and persist."""
@@ -4133,6 +4258,11 @@ class ZFMicrogliaAIWidget(QWidget):
             if "error" in result:
                 self._status(f"ERROR: {result['error']}")
                 self._run_btn.setEnabled(True)
+                self._maybe_send_notify(
+                    self._run_notify_cb,
+                    f"[ZF-Microglia-AI] Run Skin-Remover failed — {stem}",
+                    f"Run Skin-Remover on {stem} failed:\n\n{result['error']}",
+                )
                 return
 
             brain_mask  = result["brain_mask"]
@@ -4183,6 +4313,11 @@ class ZFMicrogliaAIWidget(QWidget):
 
             self._status(f"Done — brain={nonzero_pct:.1f}% of volume.")
             self._run_btn.setEnabled(True)
+            self._maybe_send_notify(
+                self._run_notify_cb,
+                f"[ZF-Microglia-AI] Run Skin-Remover done — {stem}",
+                f"Run Skin-Remover on {stem} finished.\n\nBrain: {nonzero_pct:.1f}% of volume.",
+            )
 
             print(f"{'='*70}")
             print("SKIN-REMOVER COMPLETE")
@@ -4529,8 +4664,10 @@ class ZFMicrogliaAIWidget(QWidget):
             mo  = self._api_model_edit.text().strip()
             url = self._api_url_edit.text().strip()
             backend_config.update(api_key=ak, api_model=mo, api_url=url)
-            # Persist model + URL but NOT the API key for security
             self._save_cfg(api_model=mo, api_url=url)
+            secret_err = _secrets.set_secret("api_key", ak)
+            if secret_err:
+                print(f"API key not saved for next session: {secret_err}")
 
         # Intensity image (optional)
         image = None
@@ -5222,6 +5359,11 @@ class ZFMicrogliaAIWidget(QWidget):
             if "error" in result:
                 self._cp_status_lbl.setText(f"ERROR: {result['error']}")
                 self._cp_run_btn.setEnabled(True)
+                self._maybe_send_notify(
+                    self._cp_run_notify_cb,
+                    f"[ZF-Microglia-AI] Cellpose-SAM Segmentation failed — {stem}",
+                    f"Cellpose-SAM Segmentation on {stem} failed:\n\n{result['error']}",
+                )
                 return
 
             labels = result["labels"]
@@ -5238,6 +5380,13 @@ class ZFMicrogliaAIWidget(QWidget):
                 f"safe={stats['n_after_safe_merge']} -> large={stats['n_after_large_contact']})."
             )
             self._cp_run_btn.setEnabled(True)
+            self._maybe_send_notify(
+                self._cp_run_notify_cb,
+                f"[ZF-Microglia-AI] Cellpose-SAM Segmentation done — {stem}",
+                f"Cellpose-SAM Segmentation on {stem} finished.\n\n"
+                f"{stats['n_final']} cells (raw={stats['n_raw']} -> gmm={stats['n_after_gmm']} "
+                f"-> safe={stats['n_after_safe_merge']} -> large={stats['n_after_large_contact']}).",
+            )
 
             print(f"{'='*70}")
             print(f"CELLPOSE-SAM SEGMENTATION COMPLETE — {stats['n_final']} cells")
@@ -5379,6 +5528,11 @@ class ZFMicrogliaAIWidget(QWidget):
             if "error" in result:
                 self._kr_status_lbl.setText(f"ERROR during sweep: {result['error'].splitlines()[0]}")
                 self._kr_report_view.append("\n" + result["error"])
+                self._maybe_send_notify(
+                    self._kr_notify_cb,
+                    "[ZF-Microglia-AI] Cellprob/Large-contact sweep failed",
+                    f"Verify Cellprob / Large-contact (GT Sweep) failed:\n\n{result['error']}",
+                )
                 return
 
             sweep = result["sweep"]
@@ -5405,6 +5559,12 @@ class ZFMicrogliaAIWidget(QWidget):
                 )
             else:
                 self._kr_status_lbl.setText("Sweep finished but no grid points could be scored.")
+
+            self._maybe_send_notify(
+                self._kr_notify_cb,
+                "[ZF-Microglia-AI] Cellprob/Large-contact sweep done",
+                f"Verify Cellprob / Large-contact (GT Sweep) finished.\n\n{self._kr_status_lbl.text()}",
+            )
 
         timer.timeout.connect(_poll)
         timer.start(500)
