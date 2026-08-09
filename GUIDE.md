@@ -819,6 +819,8 @@ Sweeps **Cellprob** × **Large-contact merge** (both Tab 2, Cellpose-SAM Segment
 
 **Cellprob requires a real `do_3D` re-inference per value** — it changes what Cellpose-SAM actually predicts, so this is the expensive, GPU-preferred dimension. **Large-contact is cheap** — it's a post-processing merge threshold applied after `do_3D` + GMM cleanup + Krendl safe-merge, so the sweep runs `do_3D` (+ GMM + safe-merge) exactly once per Cellprob value, then varies Large-contact freely on that same intermediate result. Total sweep time scales with the number of **Cellprob** values only, not the full grid size — a 5×5 grid costs about the same as 5 individual `do_3D` runs, not 25.
 
+**This is by far the slowest of the four GT-sweep tools, because it runs on the full fish rather than a handful of cropped cells.** A single `do_3D` call on a full-size fish has historically taken around 3 hours in this project (e.g. D1F4: ~187 minutes) — so a default 5-value Cellprob grid is roughly **~15 hours** end to end, not minutes. Budget accordingly; **Stop Sweep** only cancels between Cellprob values, not mid-`do_3D`, and this does **not** run detached — it won't survive closing napari.
+
 **Safe-merge GT-min volume is also recalibrated every time you run this sweep** — measured directly from the GT labels volume's own smallest labeled cell, rather than a frozen historical constant. Once the sweep finishes, its best Cellprob/Large-contact point **and** the measured GT-min are all applied directly to the Tab 2 sliders and saved to config.
 
 ---
@@ -1631,7 +1633,7 @@ Seven tools consolidated from Tabs 1-4, each individually collapsible — see [S
 | Verify MONAI Threshold / Erosion (GT Sweep) | 5x5 grid | (Tab 1) Confirms current values against a hand-corrected GT brain mask — MONAI runs once, rest is cheap — **best point auto-applied to the sliders and saved** |
 | Verify BG Threshold / Erosion (GT Sweep) | 5x5 grid | (Tab 1/2) Confirms current BG Threshold/Erosion against real GT IoU, and measures Min volume as a never-rising floor from GT — CPU-OK, doesn't survive closing napari — **best point + Min volume auto-applied and saved** |
 | Verify Smooth σ XY / σ Z (GT Sweep) | grid | (Tab 2) Confirms current Smooth σ XY/Z against real GT IoU, BG Threshold/Erosion held fixed — CPU-OK, doesn't survive closing napari — **best point + Min volume auto-applied and saved** |
-| Verify Cellprob / Large-contact (GT Sweep) | 5x5 grid | (Tab 2) Confirms against whole-fish GT — Cellprob needs re-inference (GPU-preferred), Large-contact is cheap — **best point + measured GT-min auto-applied to the sliders and saved** |
+| Verify Cellprob / Large-contact (GT Sweep) | 5x5 grid, full fish, ~15h | (Tab 2) Confirms against whole-fish GT — Cellprob needs re-inference (GPU-preferred, ~3h/value on a full-size fish), Large-contact is cheap — **best point + measured GT-min auto-applied to the sliders and saved** |
 | Verify Best Epoch (GT Sweep) | 5 cells, ±2 checkpoints | (Tab 4, Cellpose-SAM) confirms the recommendation against real GT IoU/Dice, not just test_loss — doesn't survive closing napari — **if the sweep disagrees, rewrites the pointer to the confirmed epoch and loads it as Tab 2's active model** |
 | Score Against GT | any 2 Labels layers | Whole-fish Hungarian-matched TP/FP/FN/Score/MeanIoU/MeanDice between any two Labels layers — synchronous, no GPU needed |
 | Build GT-Correction Package | — | (Tab 2) Zips Krendl output + stats CSV + creation guide for external manual correction |
