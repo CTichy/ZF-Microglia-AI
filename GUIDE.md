@@ -446,9 +446,9 @@ Cellpose-SAM's own confidence cutoff for what counts as foreground (cell) vs. ba
 
 #### Flow threshold
 
-**Range:** 0.0 to 1.0 — **Default: 0.4**
+**Range:** 0.0 to 1.0 — **Default: 0.4 — has no effect in this pipeline**
 
-Rejects predicted objects whose internal flow field doesn't self-consistently point back to a single centre (a sign of a malformed or noisy detection). Lower values are stricter — fewer, more confident objects.
+In Cellpose generally, this rejects predicted objects whose internal flow field doesn't self-consistently point back to a single centre. In this plugin specifically it does nothing: Cellpose only applies that flow-error QC filter in 2D/stitch mode — reading `cellpose/dynamics.py`'s `compute_masks()` shows the filter call sits inside `if not do_3D:`, and this plugin always runs `do_3D=True`. The field is kept visible only because `do_3D`'s own function signature still accepts a value; changing it will not change your results.
 
 #### Safe-merge max gap (vox)
 
@@ -771,6 +771,17 @@ Both "Launch Training" buttons (MONAI and Cellpose-SAM) start a **detached backg
 
 Seven tools, consolidated here from Tabs 1-4 (where they used to sit right alongside — and clutter — the primary pipeline controls). Each is individually collapsible: click a section's title checkbox to hide its contents, so you can keep only the one you're actively using expanded. Every tool below still operates on its *original* tab's own sliders/fields and auto-applies its findings back there — moving where a tool is displayed doesn't change what it reads from or writes to. Five are GT-*sweep* tools (test a small parameter grid against a handful of proxy cells or one mask, as a fast approximation); the other two (Score Against GT, Build GT-Correction Package) are related GT utilities that don't fit that "sweep" shape but belonged with the others more than with their old tab's core workflow.
 
+**"Show tools for..." filter** — with seven tools stacked in one tab and no indication of which pipeline each belongs to, it wasn't obvious at a glance what any given tool was even for. Four checkboxes at the top of the tab let you hide the ones you don't need:
+
+| Category | Tools shown |
+|---|---|
+| Skin Removal (MONAI) | 9a. Verify MONAI Threshold / Erosion |
+| Pixel Classifier segmentation | 9b. Verify BG Threshold / Erosion, 9g. Verify Smooth σ XY / σ Z |
+| Cellpose-SAM segmentation | 9c. Verify Cellprob / Large-contact, 9d. Verify Best Epoch, 9f. Build GT-Correction Package |
+| General (any pipeline) | 9e. Score Against GT |
+
+All four are checked by default (nothing is hidden until you actually uncheck something), and your choice is saved to config and restored next time you open napari. Unlike Tab 4's MONAI/Cellpose-SAM training switch, these are independent checkboxes, not a mutually-exclusive radio choice — you can leave several checked at once if you work with more than one pipeline.
+
 ### 9a. Verify MONAI Threshold / Erosion (GT Sweep)
 
 The cheapest of the four sweepers here. Checks MONAI's own brain segmentation — is the current **MONAI Threshold** and **Erosion** (both Tab 1 fields) combination actually the one closest to a hand-corrected brain mask? Unlike the other sweepers, this scores a single whole-volume mask, not multiple per-cell labels — Dice/IoU/precision/recall between the predicted brain mask and a GT mask directly, no complex-cell selection or bounding-box cropping needed.
@@ -817,9 +828,11 @@ Sweeps **Cellprob** × **Large-contact merge** (both Tab 2, Cellpose-SAM Segment
 3. **Cellprob min/max/step** and **Large-contact min/max/step** — define the grid.
 4. Click **Run Cellprob/LC Sweep**. Uses Tab 2's current **Flow**, **Safe-merge max gap**, and **Safe-merge min contact** values — only Cellprob and Large-contact vary.
 
-**Cellprob requires a real `do_3D` re-inference per value** — it changes what Cellpose-SAM actually predicts, so this is the expensive, GPU-preferred dimension. **Large-contact is cheap** — it's a post-processing merge threshold applied after `do_3D` + GMM cleanup + Krendl safe-merge, so the sweep runs `do_3D` (+ GMM + safe-merge) exactly once per Cellprob value, then varies Large-contact freely on that same intermediate result. Total sweep time scales with the number of **Cellprob** values only, not the full grid size — a 5×5 grid costs about the same as 5 individual `do_3D` runs, not 25.
+**Cellprob is now cheap to sweep, not just Large-contact.** Cellpose's own `CellposeModel.eval()` internally splits into two independent steps: the network forward pass that predicts a flow field (the one genuinely expensive, GPU-bound part — completely unrelated to Cellprob or any other threshold) and a separate, cheap mask-formation step that Cellprob threshold feeds into. This sweep now runs the network pass **exactly once** for the whole grid, then re-thresholds cheaply for every Cellprob value, then runs GMM cleanup + Krendl safe-merge per Cellprob value, with **Large-contact** varying freely on top of that as before. Total sweep time is now roughly **one `do_3D` network pass, period** — not one per Cellprob value.
 
-**This is by far the slowest of the four GT-sweep tools, because it runs on the full fish rather than a handful of cropped cells.** A single `do_3D` call on a full-size fish has historically taken around 3 hours in this project (e.g. D1F4: ~187 minutes) — so a default 5-value Cellprob grid is roughly **~15 hours** end to end, not minutes. Budget accordingly; **Stop Sweep** only cancels between Cellprob values, not mid-`do_3D`, and this does **not** run detached — it won't survive closing napari. The report box streams Cellpose's internal `do_3D` progress live rather than sitting on one static message for hours at a time — see the note under [Run Cellpose-SAM Segmentation](#run-cellpose-sam-segmentation-button) in Section 6c.
+**Flow is not swept**, and never was worth sweeping in this pipeline: reading `cellpose/dynamics.py` shows its flow-error QC filter only runs when `do_3D=False` (2D/stitch mode) — under `do_3D=True`, which this plugin always uses, changing Flow threshold changes nothing about the result. It's held fixed at Tab 2's current value purely because `do_3D`'s call signature still accepts it — see the note under [Flow threshold](#flow-threshold) in Section 6c.
+
+**This used to be by far the slowest of the four GT-sweep tools, because it ran on the full fish rather than a handful of cropped cells — that's no longer true.** A single `do_3D` network pass on a full-size fish has historically taken around 3 hours in this project (e.g. D1F4: ~187 minutes), and that's now the sweep's entire cost, regardless of how many Cellprob or Large-contact values are in the grid. **Stop Sweep** only cancels between grid points, and since the network pass now happens once upfront it can't itself be interrupted mid-pass — but that pass is also the whole sweep's cost now, not a multiplier on it. This does **not** run detached — it won't survive closing napari. The report box streams Cellpose's internal `do_3D` progress live during that one pass rather than sitting on one static message — see the note under [Run Cellpose-SAM Segmentation](#run-cellpose-sam-segmentation-button) in Section 6c.
 
 **Safe-merge GT-min volume is also recalibrated every time you run this sweep** — measured directly from the GT labels volume's own smallest labeled cell, rather than a frozen historical constant. Once the sweep finishes, its best Cellprob/Large-contact point **and** the measured GT-min are all applied directly to the Tab 2 sliders and saved to config.
 
@@ -1626,14 +1639,14 @@ Always shown — a banner at the top warns if your GPU is missing or under the r
 
 ### Tab 5 — Sweeps & Utilities
 
-Seven tools consolidated from Tabs 1-4, each individually collapsible — see [Section 9](#9-tab-5--sweeps--utilities) for full detail. Every row reads from/writes back to the tab noted in parentheses.
+Seven tools consolidated from Tabs 1-4, each individually collapsible — see [Section 9](#9-tab-5--sweeps--utilities) for full detail. Every row reads from/writes back to the tab noted in parentheses. A "Show tools for..." filter at the top of the tab (4 checkboxes: Skin Removal / Pixel Classifier / Cellpose-SAM / General, all on by default) hides whichever categories you don't need.
 
 | Control | Scope | What it does |
 |---------|-------|--------------|
 | Verify MONAI Threshold / Erosion (GT Sweep) | 5x5 grid | (Tab 1) Confirms current values against a hand-corrected GT brain mask — MONAI runs once, rest is cheap — **best point auto-applied to the sliders and saved** |
 | Verify BG Threshold / Erosion (GT Sweep) | 5x5 grid | (Tab 1/2) Confirms current BG Threshold/Erosion against real GT IoU, and measures Min volume as a never-rising floor from GT — CPU-OK, doesn't survive closing napari — **best point + Min volume auto-applied and saved** |
 | Verify Smooth σ XY / σ Z (GT Sweep) | grid | (Tab 2) Confirms current Smooth σ XY/Z against real GT IoU, BG Threshold/Erosion held fixed — CPU-OK, doesn't survive closing napari — **best point + Min volume auto-applied and saved** |
-| Verify Cellprob / Large-contact (GT Sweep) | 5x5 grid, full fish, ~15h | (Tab 2) Confirms against whole-fish GT — Cellprob needs re-inference (GPU-preferred, ~3h/value on a full-size fish), Large-contact is cheap — **best point + measured GT-min auto-applied to the sliders and saved** |
+| Verify Cellprob / Large-contact (GT Sweep) | 5x5 grid, full fish, ~3h total | (Tab 2) Confirms against whole-fish GT — do_3D's network pass runs once for the whole grid (~3h on a full-size fish, GPU-preferred), Cellprob + Large-contact both re-thresholded cheaply on top — **best point + measured GT-min auto-applied to the sliders and saved** |
 | Verify Best Epoch (GT Sweep) | 5 cells, ±2 checkpoints | (Tab 4, Cellpose-SAM) confirms the recommendation against real GT IoU/Dice, not just test_loss — doesn't survive closing napari — **if the sweep disagrees, rewrites the pointer to the confirmed epoch and loads it as Tab 2's active model** |
 | Score Against GT | any 2 Labels layers | Whole-fish Hungarian-matched TP/FP/FN/Score/MeanIoU/MeanDice between any two Labels layers — synchronous, no GPU needed |
 | Build GT-Correction Package | — | (Tab 2) Zips Krendl output + stats CSV + creation guide for external manual correction |

@@ -50,13 +50,66 @@ def _joint_bbox(b1, b2):
 
 
 def run_do3d_inference(volume, model_path, cellprob, flow, anisotropy, gpu=True):
-    """Raw Cellpose-SAM do_3D inference. Returns an int32 label array."""
+    """Raw Cellpose-SAM do_3D inference. Returns an int32 label array.
+
+    Convenience wrapper around predict_flows()+masks_from_flows() for a
+    single (cellprob, flow) point -- see those two for the split used when
+    sweeping multiple cellprob values against the same volume."""
+    model, dP, cellprob_map, shape = predict_flows(volume, model_path, anisotropy, gpu=gpu)
+    return masks_from_flows(model, dP, cellprob_map, shape, cellprob, flow)
+
+
+def predict_flows(volume, model_path, anisotropy, gpu=True):
+    """The one genuinely expensive, GPU-bound step of do_3D inference: the
+    network forward pass producing a per-voxel flow field (dP) and cell
+    probability map (cellprob). Depends on neither cellprob_threshold nor
+    flow_threshold at all -- both are applied afterward in masks_from_flows(),
+    a cheap CPU/light-GPU step (confirmed by reading cellpose/models.py:
+    CellposeModel.eval() calls self._run_net() -- the expensive part -- then
+    separately calls self._compute_masks(shape, dP, cellprob,
+    flow_threshold=..., cellprob_threshold=..., ...) -- the cheap part).
+
+    Splitting these mirrors _inference.py's predict_probability() /
+    postprocess_probability() split for MONAI: run the expensive network
+    pass once, then re-threshold as many times as needed for a sweep
+    without paying for a second forward pass.
+
+    Returns (model, dP, cellprob, shape) -- shape is the original volume
+    shape, needed by masks_from_flows() to resize correctly if dP/cellprob
+    ever come back at a different resolution (only happens with
+    diameter-based rescaling; unused here, this project always passes
+    diameter=None).
+    """
     from cellpose import models as cp_models
     model = cp_models.CellposeModel(pretrained_model=str(model_path), gpu=gpu)
-    masks, _, _ = model.eval(
+    _, flows, _ = model.eval(
         volume, do_3D=True, anisotropy=anisotropy, z_axis=0, channel_axis=None,
-        cellprob_threshold=cellprob, flow_threshold=flow,
-        diameter=None, normalize=True, augment=False,
+        diameter=None, normalize=True, augment=False, compute_masks=False,
+    )
+    dP, cellprob = flows[1], flows[2]
+    return model, dP, cellprob, volume.shape
+
+
+def masks_from_flows(model, dP, cellprob, shape, cellprob_threshold, flow_threshold=0.4,
+                      min_size=15, max_size_fraction=0.4, niter=None):
+    """Cheap step: form instance masks from an already-computed flow field
+    (see predict_flows()). do_3D=True is baked in -- this project's
+    pipeline never uses 2D/stitch mode.
+
+    flow_threshold is accepted only to match do_3D's own call signature and
+    is a documented NO-OP here: reading cellpose/dynamics.py's
+    compute_masks() shows its flow-error QC filter (remove_bad_flow_masks)
+    is called only inside `if not do_3D:` -- under do_3D=True it never
+    runs, confirmed both by that unconditional code-path check and by a
+    call-count spy test (0 calls under do_3D=True regardless of value).
+    It's kept as a parameter (rather than silently dropped) so callers
+    that still pass a Flow value don't get a confusing signature error --
+    it just has no effect on the result, by Cellpose's own design.
+    """
+    masks = model._compute_masks(
+        shape, dP, cellprob, flow_threshold=flow_threshold,
+        cellprob_threshold=cellprob_threshold, min_size=min_size,
+        max_size_fraction=max_size_fraction, niter=niter, do_3D=True,
     )
     return np.asarray(masks, dtype=np.int32)
 
@@ -256,7 +309,7 @@ def relabel_sequential(masks):
 
 def run_full_pipeline(volume, model_path, cellprob=-2.5, flow=0.4, anisotropy=5.747,
                        max_gap=2, min_contact=10, large_contact=20, gt_min=GT_MIN,
-                       gpu=True, progress_cb=None):
+                       gpu=True, progress_cb=None, precomputed_flows=None):
     """
     Full do_3D + 3-GMM + Krendl safe merge + large-contact merge pipeline —
     identical math to krendl_do3d.py, minus the GT-based relabeling/scoring
@@ -264,13 +317,24 @@ def run_full_pipeline(volume, model_path, cellprob=-2.5, flow=0.4, anisotropy=5.
 
     progress_cb, if given, is called with a short status string before each
     stage — safe to call from a worker thread (just writes a string).
+
+    precomputed_flows: optional (model, dP, cellprob_map, shape) tuple from
+    a prior predict_flows() call on this same volume/model -- skips the
+    expensive network pass entirely and goes straight to mask formation.
+    Used by the Cellprob/Large-contact sweep to call this once per Cellprob
+    value without re-running do_3D's network forward pass each time.
     """
     def _report(msg):
         if progress_cb:
             progress_cb(msg)
 
-    _report("Running do_3D inference...")
-    masks = run_do3d_inference(volume, model_path, cellprob, flow, anisotropy, gpu=gpu)
+    if precomputed_flows is not None:
+        model, dP, cellprob_map, shape = precomputed_flows
+        _report(f"cellprob={cellprob}: forming masks from precomputed flows...")
+        masks = masks_from_flows(model, dP, cellprob_map, shape, cellprob, flow)
+    else:
+        _report("Running do_3D inference...")
+        masks = run_do3d_inference(volume, model_path, cellprob, flow, anisotropy, gpu=gpu)
     n0 = len(np.unique(masks[masks > 0]))
 
     _report(f"{n0} raw cells — 3-component GMM cleanup...")

@@ -6,17 +6,41 @@ matched methodology this project has used throughout its own parameter
 tuning history (e.g. the cellprob=-2.5/large_contact=20 discovery that
 became the current default).
 
-cellprob changes what do_3D actually predicts, so it requires a real
-do_3D re-inference per value -- the one expensive, GPU-bound dimension.
-large_contact is a post-processing merge threshold applied after do_3D
-+ GMM cleanup + Krendl safe-merge, so it's cheap to sweep on top of a
-single do_3D result: run do_3D + GMM + safe-merge once per cellprob
-value, then vary large_contact freely on that same intermediate result
--- mirrors this project's own established `--skip_inference` shortcut
-for exactly this kind of sweep. max_gap/min_contact (Krendl safe-merge
-parameters) are held fixed at whatever Tab 2 is currently set to; only
-cellprob and large_contact vary here, matching how every historical
-sweep in this project's history was actually run.
+Originally this called run_do3d_inference() fresh for every cellprob
+value, on the assumption that cellprob changes what do_3D predicts and
+therefore needs a real re-inference each time -- true in spirit, but a
+needless full re-run in practice. Reading cellpose/models.py directly
+shows CellposeModel.eval() internally splits into two independent
+steps: self._run_net() (the actual GPU network forward pass -- the
+genuinely expensive part, unrelated to any threshold) and
+self._compute_masks(..., cellprob_threshold=..., flow_threshold=...)
+(cheap flow-following + thresholding on the already-computed flow
+field). cellprob_threshold only feeds the cheap second step, so the
+network pass only needs to run ONCE per sweep, not once per cellprob
+value -- predict_flows()/masks_from_flows() in _cellpose_seg.py expose
+exactly that split. This sweep now costs roughly one do_3D network
+pass total (~3h on a full-size fish, this project's own historical
+figure) regardless of how many cellprob values are in the grid,
+instead of one pass per value (~3h x N).
+
+flow (flow_threshold) was considered as a second swept axis alongside
+cellprob, but reading cellpose/dynamics.py's compute_masks() shows its
+flow-error QC filter (remove_bad_flow_masks) is called only inside
+`if not do_3D:` -- under do_3D=True (this project's pipeline, always)
+it never runs, confirmed both by that code path and by a call-count
+spy test. Sweeping it here would be a wasted axis; it's held fixed
+purely because do_3D's own function signature still accepts it.
+
+large_contact is a post-processing merge threshold applied after
+do_3D + GMM cleanup + Krendl safe-merge, and stays cheap to sweep on
+top of a single do_3D+GMM+safe-merge result exactly as before: GMM +
+safe-merge run once per cellprob value, large_contact then varies
+freely on that same intermediate result -- mirrors this project's own
+established `--skip_inference` shortcut for exactly this kind of
+sweep. max_gap/min_contact (Krendl safe-merge parameters) are held
+fixed at whatever Tab 2 is currently set to; only cellprob and
+large_contact vary here, matching how every historical sweep in this
+project's history was actually run.
 
 gt_min (the smallest real-cell volume Krendl safe-merge trusts as
 "already a whole cell", below which a fragment is a merge candidate)
@@ -32,8 +56,8 @@ every time it runs, instead of trusting a frozen number.
 """
 
 from ._cellpose_seg import (
-    run_do3d_inference, gmm_cleanup, krendl_safe_merge,
-    large_contact_merge, relabel_sequential, _get_info, GT_MIN,
+    predict_flows, masks_from_flows, gmm_cleanup,
+    krendl_safe_merge, large_contact_merge, relabel_sequential, _get_info, GT_MIN,
 )
 from ._gt_score import score_against_gt
 
@@ -81,6 +105,12 @@ def run_krendl_sweep(volume, gt_labels, model_path, cellprobs, large_contacts,
         if progress_cb:
             progress_cb(f"gt_min computed from this GT's smallest labeled cell: {gt_min} vox")
 
+    if progress_cb:
+        progress_cb("Predicting flows (do_3D network pass -- the one expensive step, runs once)...")
+    precomputed = predict_flows(volume, model_path, anisotropy, gpu=gpu)
+    if progress_cb:
+        progress_cb("Flows ready — forming masks per Cellprob value (cheap, no re-inference)...")
+
     results = {}
     cancelled = False
     for cellprob in cellprobs:
@@ -88,9 +118,8 @@ def run_krendl_sweep(volume, gt_labels, model_path, cellprobs, large_contacts,
             cancelled = True
             break
 
-        if progress_cb:
-            progress_cb(f"cellprob={cellprob}: running do_3D inference...")
-        masks = run_do3d_inference(volume, model_path, cellprob, flow, anisotropy, gpu=gpu)
+        model, dP, cellprob_map, shape = precomputed
+        masks = masks_from_flows(model, dP, cellprob_map, shape, cellprob, flow)
         n0 = len(set(masks[masks > 0].tolist()))
         if progress_cb:
             progress_cb(f"cellprob={cellprob}: {n0} raw cells — GMM + Krendl safe-merge...")

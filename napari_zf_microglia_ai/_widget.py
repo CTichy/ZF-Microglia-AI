@@ -349,6 +349,40 @@ class ZFMicrogliaAIWidget(QWidget):
         t5.addWidget(t5_note)
         t5.addWidget(_sep())
 
+        # Category filter -- with 7 tools stacked in one tab and no
+        # indication of which pipeline each belongs to, it was unclear at a
+        # glance what any given tool was even for. Each checkbox toggles
+        # visibility of every tool tagged with that category (populated via
+        # self._t5_category_groups.setdefault(category, []).append(group)
+        # at each tool's own construction site below, since the groups
+        # themselves don't exist yet at this point in the method -- the
+        # checkboxes are wired and given their initial visibility only once
+        # all seven groups have been built, see _on_t5_filter_changed()
+        # near the end of this tab's section). Independent checkboxes, not
+        # a mutually-exclusive radio switch like Tab 4's MONAI/Cellpose-SAM
+        # mode -- unlike training, a user may genuinely want e.g. both
+        # Pixel Classifier and Cellpose-SAM tools visible at once if they
+        # use both pipelines across different fish.
+        self._t5_category_groups = {}
+        t5fg = QGroupBox("Show tools for...")
+        t5fl = QVBoxLayout()
+        t5fl.setSpacing(4)
+        _t5f_cfg = self._state.get("config", {}).get("t5_filters", {})
+        self._t5_filter_skin_cb = QCheckBox("Skin Removal (MONAI)")
+        self._t5_filter_skin_cb.setChecked(_t5f_cfg.get("skin", True))
+        self._t5_filter_pixel_cb = QCheckBox("Pixel Classifier segmentation")
+        self._t5_filter_pixel_cb.setChecked(_t5f_cfg.get("pixel", True))
+        self._t5_filter_cellpose_cb = QCheckBox("Cellpose-SAM segmentation")
+        self._t5_filter_cellpose_cb.setChecked(_t5f_cfg.get("cellpose", True))
+        self._t5_filter_general_cb = QCheckBox("General (any pipeline)")
+        self._t5_filter_general_cb.setChecked(_t5f_cfg.get("general", True))
+        for cb in (self._t5_filter_skin_cb, self._t5_filter_pixel_cb,
+                   self._t5_filter_cellpose_cb, self._t5_filter_general_cb):
+            t5fl.addWidget(cb)
+        t5fg.setLayout(t5fl)
+        t5.addWidget(t5fg)
+        t5.addWidget(_sep())
+
         # Sliders that the plugin's own GT-verification sweeps can now
         # auto-apply their recommendation to (per explicit instruction:
         # "report but set the values for the next use" -- otherwise
@@ -621,6 +655,7 @@ class ZFMicrogliaAIWidget(QWidget):
         bsg.setLayout(bsl)
         bsg = _make_collapsible(bsg)
         t5.addWidget(bsg)
+        self._t5_category_groups.setdefault("skin", []).append(bsg)
 
         self._brain_sweep_job = {"thread": None, "cancel_event": None, "timer": None}
 
@@ -894,6 +929,7 @@ class ZFMicrogliaAIWidget(QWidget):
         psg.setLayout(psl)
         psg = _make_collapsible(psg)
         t5.addWidget(psg)
+        self._t5_category_groups.setdefault("pixel", []).append(psg)
 
         self._pixel_sweep_job = {"thread": None, "cancel_event": None, "timer": None}
 
@@ -1053,6 +1089,7 @@ class ZFMicrogliaAIWidget(QWidget):
         sgg.setLayout(sgl)
         sgg = _make_collapsible(sgg)
         t5.addWidget(sgg)
+        self._t5_category_groups.setdefault("pixel", []).append(sgg)
 
         self._sigma_sweep_job = {"thread": None, "cancel_event": None, "timer": None}
 
@@ -1114,6 +1151,15 @@ class ZFMicrogliaAIWidget(QWidget):
             cp_flow_row, self._cp_flow_slider, 0.0, 1.0, 0.05, decimals=2
         )
         cpg.addLayout(cp_flow_row)
+        cp_flow_note = QLabel(
+            "  Has no effect in this pipeline — Cellpose only applies Flow "
+            "threshold's QC filter in 2D/stitch mode, never under do_3D "
+            "(confirmed by reading cellpose's own dynamics.py). Kept "
+            "visible only because do_3D's call signature still accepts it."
+        )
+        cp_flow_note.setWordWrap(True)
+        cp_flow_note.setStyleSheet("color: #888; font-size: 10px;")
+        cpg.addWidget(cp_flow_note)
 
         cp_maxgap_row = QHBoxLayout()
         cp_maxgap_row.addWidget(QLabel("Safe-merge max gap (vox):"))
@@ -1207,10 +1253,17 @@ class ZFMicrogliaAIWidget(QWidget):
             "Sweeps Cellprob x Large-contact merge against a full-fish GT "
             "labels volume, scored with the same whole-fish Hungarian-"
             "matched methodology as \"Score Against GT\" in Tab 3 (not a "
-            "handful of proxy cells). Uses this section's model/Flow/"
-            "Safe-merge values above — only Cellprob and Large-contact vary. "
-            "Safe-merge GT-min volume is also recalibrated automatically "
-            "from this GT's own smallest labeled cell."
+            "handful of proxy cells). Uses this section's Safe-merge values "
+            "above — only Cellprob and Large-contact vary. do_3D's network "
+            "pass runs exactly ONCE for the whole sweep (~3h on a full-size "
+            "fish), not once per Cellprob value — Cellprob only feeds a "
+            "cheap re-thresholding step on the same predicted flow field, "
+            "so the grid costs roughly one do_3D call total regardless of "
+            "size. Flow threshold is not swept: it has no effect under "
+            "do_3D (Cellpose only applies it in 2D/stitch mode), so it's "
+            "held at this section's value purely to match do_3D's own call "
+            "signature. Safe-merge GT-min volume is also recalibrated "
+            "automatically from this GT's own smallest labeled cell."
         )
         kr_note.setWordWrap(True)
         kr_note.setStyleSheet("color: #888; font-size: 10px;")
@@ -1314,6 +1367,7 @@ class ZFMicrogliaAIWidget(QWidget):
         krg.setLayout(krl)
         krg = _make_collapsible(krg)
         t5.addWidget(krg)
+        self._t5_category_groups.setdefault("cellpose", []).append(krg)
 
         self._krendl_sweep_job = {"thread": None, "cancel_event": None, "timer": None}
 
@@ -1410,6 +1464,7 @@ class ZFMicrogliaAIWidget(QWidget):
         gtpg.setLayout(gtpl)
         gtpg = _make_collapsible(gtpg)
         t5.addWidget(gtpg)
+        self._t5_category_groups.setdefault("cellpose", []).append(gtpg)
 
         self._gt_package_job = {"thread": None, "timer": None}
 
@@ -1810,6 +1865,7 @@ class ZFMicrogliaAIWidget(QWidget):
         gtg.setLayout(gtl)
         gtg = _make_collapsible(gtg)
         t5.addWidget(gtg)
+        self._t5_category_groups.setdefault("general", []).append(gtg)
 
         t3.addStretch()
         tab3.setLayout(t3)
@@ -2715,6 +2771,28 @@ class ZFMicrogliaAIWidget(QWidget):
         esg.setLayout(esl)
         esg = _make_collapsible(esg)
         t5.addWidget(esg)
+        self._t5_category_groups.setdefault("cellpose", []).append(esg)
+
+        # Now that every Tab 5 tool has registered its category, wire the
+        # filter checkboxes built at the top of this tab and apply their
+        # initial (persisted) state.
+        def _on_t5_filter_changed(*_):
+            state = {
+                "skin": self._t5_filter_skin_cb.isChecked(),
+                "pixel": self._t5_filter_pixel_cb.isChecked(),
+                "cellpose": self._t5_filter_cellpose_cb.isChecked(),
+                "general": self._t5_filter_general_cb.isChecked(),
+            }
+            for category, visible in state.items():
+                for group in self._t5_category_groups.get(category, []):
+                    group.setVisible(visible)
+            self._save_cfg(t5_filters=state)
+
+        self._on_t5_filter_changed = _on_t5_filter_changed
+        for cb in (self._t5_filter_skin_cb, self._t5_filter_pixel_cb,
+                   self._t5_filter_cellpose_cb, self._t5_filter_general_cb):
+            cb.stateChanged.connect(self._on_t5_filter_changed)
+        self._on_t5_filter_changed()
 
         self._epoch_sweep_job = {"thread": None, "cancel_event": None, "timer": None}
         self._branch_calib_job = {"thread": None}
@@ -5261,8 +5339,9 @@ class ZFMicrogliaAIWidget(QWidget):
         self._kr_stop_btn.setEnabled(True)
         self._kr_report_view.clear()
         self._kr_status_lbl.setText(
-            f"Sweeping {len(cellprobs)} Cellprob x {len(large_contacts)} Large-contact "
-            f"values on {'cuda' if gpu else 'cpu'} ..."
+            f"Predicting flows once (do_3D, {'cuda' if gpu else 'cpu'}), then sweeping "
+            f"{len(cellprobs)} Cellprob x {len(large_contacts)} Large-contact values "
+            f"cheaply on top of it..."
         )
         thread.start()
         self._start_krendl_sweep_polling()
