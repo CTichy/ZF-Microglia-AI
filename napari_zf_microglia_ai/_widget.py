@@ -2228,7 +2228,7 @@ class ZFMicrogliaAIWidget(QWidget):
         # Cleanup is on by default, not a separate manual step, per
         # explicit instruction: crops should only ever train on cells
         # that are substantially complete, going forward.
-        xzg = QGroupBox("Extract XZYZ Patches (current production method)")
+        xzg = QGroupBox("Extract XZYZ Patches")
         xzl = QVBoxLayout()
         xzl.setSpacing(6)
 

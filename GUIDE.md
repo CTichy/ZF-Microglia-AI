@@ -1616,7 +1616,7 @@ Always shown — a banner at the top warns if your GPU is missing or under the r
 | branch_radius | 3 px | (Cellpose-SAM) erosion-survival distance threshold for the branch-weighted loss — measurable from real GT via Calibrate branch_radius below |
 | Calibrate branch_radius (from GT) | — | (Cellpose-SAM) measures real branch thickness from a GT labels volume (3D skeleton + distance transform) — **recommendation auto-applied to branch_radius and saved** |
 | pretrained | Tab 2's checkpoint | (Cellpose-SAM) starting point — "continue training" by default |
-| Extract XZYZ Patches | crop_size=512 | (Cellpose-SAM) current production crop method — 3 orientations, cleans truncated labels by default |
+| Extract XZYZ Patches | crop_size=512 | (Cellpose-SAM) generates training crops in 3 orientations, cleans truncated labels by default |
 | Patience (checkpoints) | 5 | Both — stop after N checkpoints with no improvement (Dice/test_loss); 0 disables |
 | Launch Training | — | Starts a detached process that survives closing napari; GUI reconnects automatically next time |
 | *(on stop, Cellpose-SAM only)* | — | Writes `<model_name>_best_recommended.txt` in `models/` — a pointer, not a copy, to the best-test_loss checkpoint |
