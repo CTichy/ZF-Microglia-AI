@@ -293,7 +293,7 @@ Both files are saved in the output folder (see Section 10). The `brain_only` fil
 
 ### Run Skin-Remover
 
-Click to start processing. The button is greyed out while running; the status bar shows progress.
+Click to start processing. The button is greyed out while running; the status bar shows one summary line, and the small live-output box underneath streams MONAI's own sliding-window progress (one line per processed window) as it happens — the same progress you'd see running MONAI from a terminal, previously invisible in the GUI.
 
 When complete, two new layers appear in napari:
 
@@ -418,7 +418,7 @@ After all 2D blobs are linked into 3D objects, any object smaller than this voxe
 
 ### Create Labels
 
-Click to run the 3D labelling algorithm. Processing runs in a background thread — the button is disabled until complete.
+Click to run the 3D labelling algorithm. Processing runs in a background thread — the button is disabled until complete, and the small live-output box underneath shows the same per-stage messages the console gets (backend used, signal voxel count, blobs found/removed), instead of only landing in a terminal you may not have open.
 
 When done, a `*_labels` layer appears in napari with each detected cell shown in a different colour. The console prints how many labels were found.
 
@@ -476,7 +476,7 @@ A second, separate merge pass for large blobs that got split apart through a thi
 
 #### Run Cellpose-SAM Segmentation (button)
 
-Click to start. `do_3D` inference is slow — it can take **hours** for a full-size fish — and runs in a background thread with live status updates, so napari itself stays responsive while it works. When complete, a `*_labels` layer appears, exactly as with the Pixel Classifier.
+Click to start. `do_3D` inference is slow — it can take **hours** for a full-size fish — and runs in a background thread, so napari itself stays responsive while it works. The status line shows which pipeline stage is active (do_3D → GMM cleanup → Krendl safe-merge → large-contact merge), and the live-output box underneath streams Cellpose's own internal progress during `do_3D` itself — normally invisible even from a terminal, since Cellpose only emits it through Python's `logging` module and doesn't configure a handler by default unless its own CLI is used. When complete, a `*_labels` layer appears, exactly as with the Pixel Classifier.
 
 > If this button errors with `No module named 'cellpose'`, install it in your environment: `pip install cellpose` (already listed in `environment.yml`/`environment-mac.yml` for fresh installs — see Section 15).
 
@@ -819,7 +819,7 @@ Sweeps **Cellprob** × **Large-contact merge** (both Tab 2, Cellpose-SAM Segment
 
 **Cellprob requires a real `do_3D` re-inference per value** — it changes what Cellpose-SAM actually predicts, so this is the expensive, GPU-preferred dimension. **Large-contact is cheap** — it's a post-processing merge threshold applied after `do_3D` + GMM cleanup + Krendl safe-merge, so the sweep runs `do_3D` (+ GMM + safe-merge) exactly once per Cellprob value, then varies Large-contact freely on that same intermediate result. Total sweep time scales with the number of **Cellprob** values only, not the full grid size — a 5×5 grid costs about the same as 5 individual `do_3D` runs, not 25.
 
-**This is by far the slowest of the four GT-sweep tools, because it runs on the full fish rather than a handful of cropped cells.** A single `do_3D` call on a full-size fish has historically taken around 3 hours in this project (e.g. D1F4: ~187 minutes) — so a default 5-value Cellprob grid is roughly **~15 hours** end to end, not minutes. Budget accordingly; **Stop Sweep** only cancels between Cellprob values, not mid-`do_3D`, and this does **not** run detached — it won't survive closing napari.
+**This is by far the slowest of the four GT-sweep tools, because it runs on the full fish rather than a handful of cropped cells.** A single `do_3D` call on a full-size fish has historically taken around 3 hours in this project (e.g. D1F4: ~187 minutes) — so a default 5-value Cellprob grid is roughly **~15 hours** end to end, not minutes. Budget accordingly; **Stop Sweep** only cancels between Cellprob values, not mid-`do_3D`, and this does **not** run detached — it won't survive closing napari. The report box streams Cellpose's internal `do_3D` progress live rather than sitting on one static message for hours at a time — see the note under [Run Cellpose-SAM Segmentation](#run-cellpose-sam-segmentation-button) in Section 6c.
 
 **Safe-merge GT-min volume is also recalibrated every time you run this sweep** — measured directly from the GT labels volume's own smallest labeled cell, rather than a frozen historical constant. Once the sweep finishes, its best Cellprob/Large-contact point **and** the measured GT-min are all applied directly to the Tab 2 sliders and saved to config.
 

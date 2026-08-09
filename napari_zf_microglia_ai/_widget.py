@@ -43,6 +43,7 @@ from . import _xzyz_patches as _xzp
 from . import _crop_truncation as _ctr
 from . import _epoch_sweep as _esw
 from . import _branch_calibration as _bcal
+from ._live_progress import capture_live_output
 
 _CONFIG_PATH = Path.home() / ".config" / "napari-zf-microglia-ai" / "config.json"
 
@@ -499,6 +500,15 @@ class ZFMicrogliaAIWidget(QWidget):
         self._status_lbl.setWordWrap(True)
         t1.addWidget(self._status_lbl)
 
+        # Live output -- MONAI's own sliding-window progress (tqdm, one
+        # line per window) forwarded here instead of vanishing into a
+        # terminal that may not exist; see _live_progress.py.
+        self._run_log_view = QTextEdit()
+        self._run_log_view.setReadOnly(True)
+        self._run_log_view.setStyleSheet("font-family: monospace; font-size: 9px;")
+        self._run_log_view.setFixedHeight(120)
+        t1.addWidget(self._run_log_view)
+
         t1.addWidget(_sep())
 
         # ── Verify MONAI Threshold / Erosion (GT sweep) — always visible, ──
@@ -719,6 +729,12 @@ class ZFMicrogliaAIWidget(QWidget):
         self._labels_status_lbl = QLabel("")
         self._labels_status_lbl.setWordWrap(True)
         pcg.addWidget(self._labels_status_lbl)
+
+        self._labels_log_view = QTextEdit()
+        self._labels_log_view.setReadOnly(True)
+        self._labels_log_view.setStyleSheet("font-family: monospace; font-size: 9px;")
+        self._labels_log_view.setFixedHeight(100)
+        pcg.addWidget(self._labels_log_view)
 
         self._pixel_classifier_group.setLayout(pcg)
         self._pixel_classifier_group = _make_collapsible(self._pixel_classifier_group)
@@ -1162,6 +1178,17 @@ class ZFMicrogliaAIWidget(QWidget):
         self._cp_status_lbl = QLabel("")
         self._cp_status_lbl.setWordWrap(True)
         cpg.addWidget(self._cp_status_lbl)
+
+        # Live output -- do_3D's own progress is entirely logging-based
+        # (cellpose attaches a NullHandler to its own logger by default,
+        # so it's normally invisible even in a terminal unless something
+        # calls cellpose.io.logger_setup()); forwarded here instead, see
+        # _live_progress.py.
+        self._cp_log_view = QTextEdit()
+        self._cp_log_view.setReadOnly(True)
+        self._cp_log_view.setStyleSheet("font-family: monospace; font-size: 9px;")
+        self._cp_log_view.setFixedHeight(120)
+        cpg.addWidget(self._cp_log_view)
 
         self._cellpose_group.setLayout(cpg)
         self._cellpose_group = _make_collapsible(self._cellpose_group)
@@ -3946,6 +3973,7 @@ class ZFMicrogliaAIWidget(QWidget):
 
         self._run_btn.setEnabled(False)
         self._status(f"Running on {device} (threshold={threshold:.2f})...")
+        self._run_log_view.clear()
 
         print(f"\n{'='*70}")
         print(f"SKIN-REMOVER — {stem}  shape={volume.shape}")
@@ -3963,13 +3991,20 @@ class ZFMicrogliaAIWidget(QWidget):
         print(f"{'='*70}")
 
         result = {}
+        log_lines = []
+        log_lock = threading.Lock()
+
+        def _push_log(line):
+            with log_lock:
+                log_lines.append(line)
 
         def _worker():
             try:
                 # Step 1: inference on original volume (never bg-removed)
-                brain_mask, brain_only, eroded_mask = run_inference(
-                    volume, model_path, threshold, device, erosion_voxels
-                )
+                with capture_live_output(_push_log):
+                    brain_mask, brain_only, eroded_mask = run_inference(
+                        volume, model_path, threshold, device, erosion_voxels
+                    )
 
                 # Step 2: optional background processing -- uses eroded_mask,
                 # not brain_mask, so Erosion still takes effect here. (Using
@@ -4004,6 +4039,14 @@ class ZFMicrogliaAIWidget(QWidget):
         timer = QTimer(self)
 
         def _poll():
+            with log_lock:
+                new_lines = list(log_lines)
+                log_lines.clear()
+            if new_lines:
+                self._run_log_view.append("\n".join(new_lines))
+                sb = self._run_log_view.verticalScrollBar()
+                sb.setValue(sb.maximum())
+
             if thread.is_alive():
                 return
 
@@ -4136,10 +4179,13 @@ class ZFMicrogliaAIWidget(QWidget):
 
         def _worker():
             try:
-                sweep = _bsw.run_brain_sweep(
-                    img_path, gt_path, model_path, device, thresholds, erosions,
-                    progress_cb=_progress_cb, cancel_event=cancel_event,
-                )
+                # MONAI's sliding-window progress is otherwise invisible --
+                # see _live_progress.py.
+                with capture_live_output(_progress_cb):
+                    sweep = _bsw.run_brain_sweep(
+                        img_path, gt_path, model_path, device, thresholds, erosions,
+                        progress_cb=_progress_cb, cancel_event=cancel_event,
+                    )
                 result["sweep"] = sweep
             except Exception as exc:
                 result["error"] = f"{exc}\n{traceback.format_exc()}"
@@ -4561,6 +4607,7 @@ class ZFMicrogliaAIWidget(QWidget):
 
         self._labels_btn.setEnabled(False)
         self._labels_status_lbl.setText("Running...")
+        self._labels_log_view.clear()
 
         print(f"\n{'='*70}")
         print(f"CREATE LABELS — {stem}  shape={volume.shape}")
@@ -4568,15 +4615,22 @@ class ZFMicrogliaAIWidget(QWidget):
         print(f"{'='*70}")
 
         result = {}
+        log_lines = []
+        log_lock = threading.Lock()
+
+        def _push_log(line):
+            with log_lock:
+                log_lines.append(line)
 
         def _worker():
             try:
-                labels = create_labels(
-                    volume,
-                    sigma_xy=sigma_xy,
-                    sigma_z=sigma_z,
-                    min_volume=min_volume,
-                )
+                with capture_live_output(_push_log):
+                    labels = create_labels(
+                        volume,
+                        sigma_xy=sigma_xy,
+                        sigma_z=sigma_z,
+                        min_volume=min_volume,
+                    )
                 result["labels"] = labels
             except Exception as exc:
                 traceback.print_exc()
@@ -4588,6 +4642,14 @@ class ZFMicrogliaAIWidget(QWidget):
         timer = QTimer(self)
 
         def _poll():
+            with log_lock:
+                new_lines = list(log_lines)
+                log_lines.clear()
+            if new_lines:
+                self._labels_log_view.append("\n".join(new_lines))
+                sb = self._labels_log_view.verticalScrollBar()
+                sb.setValue(sb.maximum())
+
             if thread.is_alive():
                 return
             timer.stop()
@@ -5023,6 +5085,7 @@ class ZFMicrogliaAIWidget(QWidget):
 
         self._cp_run_btn.setEnabled(False)
         self._cp_status_lbl.setText(f"Starting (device={'cuda' if gpu else 'cpu'})...")
+        self._cp_log_view.clear()
 
         print(f"\n{'='*70}")
         print(f"CELLPOSE-SAM SEGMENTATION — {stem}  shape={volume.shape}")
@@ -5033,18 +5096,25 @@ class ZFMicrogliaAIWidget(QWidget):
         print(f"{'='*70}")
 
         result = {}
+        log_lines = []
+        log_lock = threading.Lock()
+
+        def _push_log(line):
+            with log_lock:
+                log_lines.append(line)
 
         def _worker():
             try:
                 def _progress(msg):
                     result["_progress"] = msg
-                labels, stats = _run_cellpose_pipeline(
-                    volume, model_path,
-                    cellprob=cellprob, flow=flow, anisotropy=anisotropy,
-                    max_gap=max_gap, min_contact=min_contact, gt_min=gt_min,
-                    large_contact=large_contact,
-                    gpu=gpu, progress_cb=_progress,
-                )
+                with capture_live_output(_push_log):
+                    labels, stats = _run_cellpose_pipeline(
+                        volume, model_path,
+                        cellprob=cellprob, flow=flow, anisotropy=anisotropy,
+                        max_gap=max_gap, min_contact=min_contact, gt_min=gt_min,
+                        large_contact=large_contact,
+                        gpu=gpu, progress_cb=_progress,
+                    )
                 result["labels"] = labels
                 result["stats"]  = stats
             except Exception as exc:
@@ -5057,6 +5127,14 @@ class ZFMicrogliaAIWidget(QWidget):
         timer2 = QTimer(self)
 
         def _poll2():
+            with log_lock:
+                new_lines = list(log_lines)
+                log_lines.clear()
+            if new_lines:
+                self._cp_log_view.append("\n".join(new_lines))
+                sb = self._cp_log_view.verticalScrollBar()
+                sb.setValue(sb.maximum())
+
             if thread.is_alive():
                 if "_progress" in result:
                     self._cp_status_lbl.setText(result["_progress"])
@@ -5091,7 +5169,7 @@ class ZFMicrogliaAIWidget(QWidget):
             print(f"{'='*70}\n")
 
         timer2.timeout.connect(_poll2)
-        timer2.start(1000)  # 1s poll — this run is long, no need for finer granularity
+        timer2.start(500)
 
     def _on_kr_browse_img(self):
         path_str, _ = QFileDialog.getOpenFileName(self, "Select image to sweep", "", "TIFF files (*.tif *.tiff)")
@@ -5159,11 +5237,14 @@ class ZFMicrogliaAIWidget(QWidget):
             try:
                 volume = tifffile.imread(img_path)
                 gt_labels = tifffile.imread(gt_path).astype(np.int32)
-                sweep = _ksw.run_krendl_sweep(
-                    volume, gt_labels, model_path, cellprobs, large_contacts,
-                    flow=flow, anisotropy=anisotropy, max_gap=max_gap, min_contact=min_contact,
-                    gpu=gpu, progress_cb=_progress_cb, cancel_event=cancel_event,
-                )
+                # do_3D's own progress is otherwise invisible for the ~3h
+                # this can take per Cellprob value -- see _live_progress.py.
+                with capture_live_output(_progress_cb):
+                    sweep = _ksw.run_krendl_sweep(
+                        volume, gt_labels, model_path, cellprobs, large_contacts,
+                        flow=flow, anisotropy=anisotropy, max_gap=max_gap, min_contact=min_contact,
+                        gpu=gpu, progress_cb=_progress_cb, cancel_event=cancel_event,
+                    )
                 result["sweep"] = sweep
             except Exception as exc:
                 result["error"] = f"{exc}\n{traceback.format_exc()}"

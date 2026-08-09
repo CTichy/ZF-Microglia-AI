@@ -79,6 +79,7 @@ def predict_probability(volume, model_path, device):
             predictor=model,
             overlap=0.25,
             mode="gaussian",
+            progress=True,
         )
         pred_prob = torch.sigmoid(pred_logits).cpu().numpy()[0, 0]
 
