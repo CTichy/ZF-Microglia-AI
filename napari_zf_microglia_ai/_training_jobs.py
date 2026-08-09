@@ -94,7 +94,7 @@ else:
     metric_line = "No checkpoints were logged -- check the log file for errors."
 
 status_word = "finished" if proc.returncode == 0 else ("stopped (exit code %s)" % proc.returncode)
-subject = "[napari-zf-microglia-ai] %s training %s" % (job_label, status_word)
+subject = "[ZF-Microglia-AI] %s training %s" % (job_label, status_word)
 body = (
     "%s training has stopped.\\n\\n"
     "Status: %s\\n"
