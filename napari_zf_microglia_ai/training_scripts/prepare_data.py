@@ -140,18 +140,11 @@ def find_gt_folders(data_dir, gt_glob):
 # ── Main ──────────────────────────────────────────────────────────────────────
 
 def main():
-    BASE = ('/home/carlos-eduardo-tichy/Documents/MAI/MasterProject'
-            '/NT Raw Data WT for CNN/Ctrls 4dpf')
-
     parser = argparse.ArgumentParser(description='Prepare v2 training data — full GT dataset')
-    parser.add_argument('--brain_dirs', nargs='+', default=[
-        f'{BASE}/NT26-4dpf-ctrl',
-        f'{BASE}/NT39-4dpf-ctrl',
-        f'{BASE}/NT54 Ctrl',
-    ], help='Dirs with brain+skin GT fish (NT26, NT39, NT54)')
-    parser.add_argument('--skin_dirs', nargs='+', default=[
-        f'{BASE}/NT72-4dpf-IRF ctrl',
-    ], help='Dirs with skin-only GT fish (NT72 negative examples)')
+    parser.add_argument('--brain_dirs', nargs='+', default=[],
+                        help='Dirs with brain+skin GT fish')
+    parser.add_argument('--skin_dirs', nargs='+', default=[],
+                        help='Dirs with skin-only GT fish (negative examples)')
     parser.add_argument('--output_dir',    default='./training_data_v2')
     parser.add_argument('--tissue',        default='brain', choices=['skin', 'brain'])
     parser.add_argument('--n_val',       type=int, default=5,
@@ -163,6 +156,8 @@ def main():
                         default=max(1, int(os.cpu_count() * 0.75)),
                         help='Parallel workers for H5 creation (default: 75%% of CPUs)')
     args = parser.parse_args()
+    if not args.brain_dirs and not args.skin_dirs:
+        parser.error("at least one of --brain_dirs / --skin_dirs must be given")
 
     output_dir = Path(args.output_dir)
     for split in ['train', 'val', 'test']:

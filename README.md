@@ -31,7 +31,7 @@ cd ZF-Microglia-AI
 
 ### 2. Create the environment
 
-**Linux (CUDA GPU):**
+**Windows / Linux (CUDA GPU):**
 ```bash
 conda env create -f environment.yml
 ```
@@ -60,13 +60,12 @@ git pull
 conda env update --name zf-microglia-ai -f environment.yml --prune   # or environment-mac.yml on Mac
 ```
 
-> **Linux only:** after every `conda env update`, restore the correct torch:
+> **Windows / Linux (CUDA GPU):** after every `conda env update`, restore the correct torch:
 > ```bash
-> /home/carlos-eduardo-tichy/anaconda3/envs/zf-microglia-ai/bin/pip install \
->   "torch==2.7.0+cu126" "torchvision==0.22.0+cu126" \
+> pip install "torch==2.7.0+cu126" "torchvision==0.22.0+cu126" \
 >   --index-url https://download.pytorch.org/whl/cu126
 > ```
-> (`conda env update` ignores `--extra-index-url` in environment.yml and resets torch to the wrong version.)
+> (run this with the `zf-microglia-ai` env active — `conda env update` ignores `--extra-index-url` in environment.yml and resets torch to the wrong version. Not needed on Mac, which doesn't use CUDA torch.)
 
 ---
 

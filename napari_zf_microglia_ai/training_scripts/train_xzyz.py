@@ -54,14 +54,9 @@ def make_branch_weighted_loss_fn(radius_thresh, weight_boost):
 
     return _loss_fn
 
-_DEFAULT_DATA_DIR = (
-    "/home/carlos-eduardo-tichy/Documents/MAI/MasterProject/"
-    "NT Raw Data WT for CNN/Ctrls 4dpf/NT39-4dpf-ctrl/"
-    "NT39-4dpf-Crispr-ctrl-D1F1_2024-09-06_13.11.56/train_cellpose_2d"
-)
-
 parser = argparse.ArgumentParser()
-parser.add_argument("--data_dir",    default=_DEFAULT_DATA_DIR)
+parser.add_argument("--data_dir",    required=True,
+                     help="Directory of XZYZ training crops (e.g. from Extract XZYZ Patches).")
 parser.add_argument("--model_name", default="cpsam_microglia_xzyz")
 parser.add_argument("--pretrained", default="cpsam")
 parser.add_argument("--n_epochs",   type=int, default=200)
