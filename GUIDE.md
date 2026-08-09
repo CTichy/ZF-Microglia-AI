@@ -30,6 +30,7 @@
    - [9d. Verify Best Epoch (GT Sweep)](#9d-verify-best-epoch-gt-sweep)
    - [9e. Score Against GT](#9e-score-against-gt)
    - [9f. Build GT-Correction Package](#9f-build-gt-correction-package)
+   - [9g. Verify Smooth σ XY / σ Z (GT Sweep)](#9g-verify-smooth-sigma-xy-sigma-z-gt-sweep)
 10. [Output files and folder structure](#10-output-files-and-folder-structure)
 11. [Statistics CSV — all columns explained](#11-statistics-csv--all-columns-explained) — for the algorithm/formula behind each column instead, see the separate [STATISTICS_GUIDE.md](STATISTICS_GUIDE.md)
 12. [Setting up description backends](#12-setting-up-description-backends)
@@ -768,7 +769,7 @@ Both "Launch Training" buttons (MONAI and Cellpose-SAM) start a **detached backg
 
 ## 9. Tab 5 — Sweeps & Utilities
 
-Six tools, consolidated here from Tabs 1-4 (where they used to sit right alongside — and clutter — the primary pipeline controls). Each is individually collapsible: click a section's title checkbox to hide its contents, so you can keep only the one you're actively using expanded. Every tool below still operates on its *original* tab's own sliders/fields and auto-applies its findings back there — moving where a tool is displayed doesn't change what it reads from or writes to. Four are GT-*sweep* tools (test a small parameter grid against a handful of proxy cells or one mask, as a fast approximation); the other two (Score Against GT, Build GT-Correction Package) are related GT utilities that don't fit that "sweep" shape but belonged with the others more than with their old tab's core workflow.
+Seven tools, consolidated here from Tabs 1-4 (where they used to sit right alongside — and clutter — the primary pipeline controls). Each is individually collapsible: click a section's title checkbox to hide its contents, so you can keep only the one you're actively using expanded. Every tool below still operates on its *original* tab's own sliders/fields and auto-applies its findings back there — moving where a tool is displayed doesn't change what it reads from or writes to. Five are GT-*sweep* tools (test a small parameter grid against a handful of proxy cells or one mask, as a fast approximation); the other two (Score Against GT, Build GT-Correction Package) are related GT utilities that don't fit that "sweep" shape but belonged with the others more than with their old tab's core workflow.
 
 ### 9a. Verify MONAI Threshold / Erosion (GT Sweep)
 
@@ -879,6 +880,20 @@ Click **Build GT-Correction Package**. Output:
 ```
 
 The statistics CSV is deliberately minimal (label, volume, centroid, bounding box) — a quick reference for someone correcting labels, not the full ~51-column Tab 3 Statistics output.
+
+---
+
+### 9g. Verify Smooth σ XY / σ Z (GT Sweep) {#9g-verify-smooth-sigma-xy-sigma-z-gt-sweep}
+
+Checks a parameter every other GT-sweep tool in this plugin had already covered except this one: the Pixel Classifier's pre-threshold Gaussian smoothing (**Smooth σ XY** / **Smooth σ Z**, Tab 2). These have defaulted to 1.5/3.0 since Tab 2 was first built, but — unlike BG Threshold, Erosion, Cellprob, Large-contact, and Min volume, all of which now have a dedicated sweep — they had never actually been verified against real ground truth.
+
+1. **GT image** / **brain_mask.tif** / **GT labels** — same three inputs as [9b](#9b-verify-bg-threshold--erosion-gt-sweep) above (the raw/brain_only image Tab 1 ran on, the raw un-eroded mask, and the corrected GT label volume).
+2. **sigma XY min/max/step** and **sigma Z min/max/step** — define the grid.
+3. Click **Run Sigma Sweep**. **BG Threshold and Erosion are held fixed** at whatever Tab 1's sliders currently show — this sweep isolates sigma specifically, the same way 9c holds Flow/Safe-merge fixed while varying only Cellprob/Large-contact.
+
+Cheaper per grid point than the BG Threshold/Erosion sweep: since BG Threshold and Erosion don't change here, each cell's thresholded `brain_only` crop is computed once and reused across every sigma combination — only the `create_labels()` call itself (the smoothing + union-find step) varies per grid point.
+
+Same auto-apply and Min volume floor-recalibration behavior as [9b](#9b-verify-bg-threshold--erosion-gt-sweep): the best (sigma XY, sigma Z) point is applied directly to Tab 2's Smooth σ XY/Z sliders and saved, and Min volume is recalibrated as the same never-rising floor described there.
 
 ---
 
@@ -1609,12 +1624,13 @@ Always shown — a banner at the top warns if your GPU is missing or under the r
 
 ### Tab 5 — Sweeps & Utilities
 
-Six tools consolidated from Tabs 1-4, each individually collapsible — see [Section 9](#9-tab-5--sweeps--utilities) for full detail. Every row reads from/writes back to the tab noted in parentheses.
+Seven tools consolidated from Tabs 1-4, each individually collapsible — see [Section 9](#9-tab-5--sweeps--utilities) for full detail. Every row reads from/writes back to the tab noted in parentheses.
 
 | Control | Scope | What it does |
 |---------|-------|--------------|
 | Verify MONAI Threshold / Erosion (GT Sweep) | 5x5 grid | (Tab 1) Confirms current values against a hand-corrected GT brain mask — MONAI runs once, rest is cheap — **best point auto-applied to the sliders and saved** |
 | Verify BG Threshold / Erosion (GT Sweep) | 5x5 grid | (Tab 1/2) Confirms current BG Threshold/Erosion against real GT IoU, and measures Min volume as a never-rising floor from GT — CPU-OK, doesn't survive closing napari — **best point + Min volume auto-applied and saved** |
+| Verify Smooth σ XY / σ Z (GT Sweep) | grid | (Tab 2) Confirms current Smooth σ XY/Z against real GT IoU, BG Threshold/Erosion held fixed — CPU-OK, doesn't survive closing napari — **best point + Min volume auto-applied and saved** |
 | Verify Cellprob / Large-contact (GT Sweep) | 5x5 grid | (Tab 2) Confirms against whole-fish GT — Cellprob needs re-inference (GPU-preferred), Large-contact is cheap — **best point + measured GT-min auto-applied to the sliders and saved** |
 | Verify Best Epoch (GT Sweep) | 5 cells, ±2 checkpoints | (Tab 4, Cellpose-SAM) confirms the recommendation against real GT IoU/Dice, not just test_loss — doesn't survive closing napari — **if the sweep disagrees, rewrites the pointer to the confirmed epoch and loads it as Tab 2's active model** |
 | Score Against GT | any 2 Labels layers | Whole-fish Hungarian-matched TP/FP/FN/Score/MeanIoU/MeanDice between any two Labels layers — synchronous, no GPU needed |

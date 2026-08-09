@@ -190,6 +190,185 @@ def run_pixel_sweep(image_path, brain_mask_path, gt_labels_path,
                 min_volume_used=min_volume, cancelled=cancelled)
 
 
+def run_sigma_sweep(image_path, brain_mask_path, gt_labels_path,
+                     sigma_xy_values, sigma_z_values, scale_zyx,
+                     bg_threshold, erosion, min_volume=None,
+                     n_cells=5, pad_z=15, pad_xy=40,
+                     progress_cb=None, cancel_event=None):
+    """
+    Sweep every (sigma_xy, sigma_z) combination in the given lists, scoring
+    the resulting Pixel Classifier labels against the N most complex GT
+    cells -- the Smooth sigma counterpart to run_pixel_sweep's BG
+    Threshold x Erosion sweep, with the roles reversed: BG Threshold and
+    Erosion are held fixed here (at whatever Tab 1 is currently set to),
+    and Smooth sigma XY/Z -- previously never swept at all, always left at
+    whatever default (1.5/3.0) happened to be guessed -- is what varies.
+
+    Cheaper per grid point than run_pixel_sweep: sigma only affects the
+    create_labels() call, not the background-threshold/erosion step that
+    builds each cell's brain_only crop, so that crop is computed once per
+    cell (not once per grid point) and every sigma combination reuses it.
+
+    image_path/brain_mask_path/gt_labels_path : same as run_pixel_sweep
+    sigma_xy_values/sigma_z_values : lists of Smooth sigma values to sweep
+    scale_zyx      : (Z, Y, X) um/voxel -- drives complexity ranking
+    bg_threshold/erosion : held fixed, same units as Tab 1's own fields
+    min_volume     : small-blob cleanup threshold. If None (default),
+                     measured from gt_labels via min_volume_from_gt()
+                     instead of guessed.
+
+    progress_cb(str)/cancel_event : same contract as run_pixel_sweep.
+
+    Returns dict: {
+      'cells': [label_id, ...],
+      'grid': [(sigma_xy, sigma_z), ...],
+      'results': {(sigma_xy, sigma_z, label_id): {...}},
+      'per_point_avg': {(sigma_xy, sigma_z): {'iou': x, 'dice': y}},
+      'best_point': (sigma_xy, sigma_z) or None,
+      'min_volume_used': int,
+      'cancelled': bool,
+    }
+    """
+    image = tifffile.imread(image_path)
+    brain_mask = tifffile.imread(brain_mask_path).astype(bool)
+    gt_labels = tifffile.imread(gt_labels_path).astype(np.int32)
+    data_range = float(image.max()) - float(image.min())
+
+    if min_volume is None:
+        min_volume = min_volume_from_gt(gt_labels)
+        if progress_cb:
+            progress_cb(f"min_volume: measured {min_volume} vox from this GT's smallest labeled cell.")
+
+    objs = find_objects(gt_labels)
+    cells = find_complex_cells(gt_labels, scale_zyx, n_cells=n_cells, objs=objs)
+    if not cells:
+        raise ValueError("No labeled cells found in the GT volume.")
+
+    # bg_threshold/erosion are fixed, so the global background estimate and
+    # each cell's thresholded brain_only crop are each computed exactly
+    # once here, not once per (sigma_xy, sigma_z) grid point.
+    eroded_full = (binary_erosion(brain_mask, iterations=erosion).astype(np.uint8)
+                   if erosion > 0 else brain_mask.astype(np.uint8))
+    _, bg_max, _, _ = _bg_threshold(image, eroded_full, tolerance_pct=0.0)
+    thresh = bg_max + data_range * (bg_threshold / 100.0)
+    if progress_cb:
+        progress_cb(f"Fixed BG Threshold={bg_threshold}, Erosion={erosion} -> bg_max={bg_max:.2f}")
+
+    crops = {}
+    for label_id in cells:
+        img_crop, gt_mask, gt_vox = bbox_crop(image, gt_labels, label_id, pad_z, pad_xy, objs=objs)
+        mask_crop, _, _ = bbox_crop(brain_mask.astype(np.int32), gt_labels, label_id, pad_z, pad_xy, objs=objs)
+        raw_mask = mask_crop.astype(bool)
+        eroded_mask = binary_erosion(raw_mask, iterations=erosion) if erosion > 0 else raw_mask
+        img_thresholded = np.where(img_crop <= thresh, 0, img_crop)
+        brain_only_crop = (img_thresholded * eroded_mask).astype(img_crop.dtype)
+        crops[label_id] = dict(brain_only=brain_only_crop, gt_mask=gt_mask, gt_vox=gt_vox)
+        if progress_cb:
+            progress_cb(f"cell {label_id}: bbox shape={img_crop.shape}  gt_vox={gt_vox}")
+
+    results = {}
+    cancelled = False
+    for sigma_xy in sigma_xy_values:
+        if cancel_event is not None and cancel_event.is_set():
+            cancelled = True
+            break
+        for sigma_z in sigma_z_values:
+            if cancel_event is not None and cancel_event.is_set():
+                cancelled = True
+                break
+            for label_id in cells:
+                c = crops[label_id]
+                pred_labels = create_labels(
+                    c["brain_only"], sigma_xy=sigma_xy, sigma_z=sigma_z, min_volume=min_volume
+                )
+                r = _best_gt_match(pred_labels, c["gt_mask"], c["gt_vox"])
+                results[(sigma_xy, sigma_z, label_id)] = r
+                if progress_cb:
+                    progress_cb(
+                        f"sigma_xy={sigma_xy}, sigma_z={sigma_z}, cell {label_id}: "
+                        f"IoU={r['iou']:.1f}%  Dice={r['dice']:.1f}%  n_obj={r['n_obj']}"
+                    )
+        if cancelled:
+            break
+
+    grid = sorted({(sx, sz) for (sx, sz, _) in results.keys()})
+    per_point_avg = {}
+    for point in grid:
+        sx, sz = point
+        vals = [results[(sx, sz, c)] for c in cells if (sx, sz, c) in results]
+        if len(vals) == len(cells):
+            per_point_avg[point] = dict(
+                iou=sum(v["iou"] for v in vals) / len(vals),
+                dice=sum(v["dice"] for v in vals) / len(vals),
+            )
+    best_point = max(per_point_avg, key=lambda k: per_point_avg[k]["iou"]) if per_point_avg else None
+    scored_grid = [k for k in grid if k in per_point_avg]
+
+    return dict(cells=cells, grid=scored_grid, results=results,
+                per_point_avg=per_point_avg, best_point=best_point,
+                min_volume_used=min_volume, cancelled=cancelled)
+
+
+def format_sigma_sweep_report(sweep, current_sigma_xy=None, current_sigma_z=None):
+    """Plain-text 2D grid report (rows = sigma Z, columns = sigma XY), same
+    spirit as format_pixel_sweep_report."""
+    grid = sweep["grid"]
+    if not grid:
+        return "No grid points completed."
+
+    sigma_xys = sorted({sx for sx, _ in grid})
+    sigma_zs = sorted({sz for _, sz in grid})
+
+    header = f"{'sigmaZ':>8} | " + " | ".join(f"xy={sx:>5} " for sx in sigma_xys)
+    lines = [header, "-" * len(header)]
+    for sz in sigma_zs:
+        row_cells = []
+        for sx in sigma_xys:
+            point = (sx, sz)
+            if point in sweep["per_point_avg"]:
+                row_cells.append(f"{sweep['per_point_avg'][point]['iou']:>8.1f}")
+            else:
+                row_cells.append(f"{'--':>8}")
+        marker = "  <- current" if sz == current_sigma_z else ""
+        lines.append(f"{sz:>8} | " + " | ".join(row_cells) + marker)
+    lines.append("-" * len(header))
+    lines.append("(values are average IoU% across the tested cells)")
+
+    best = sweep["best_point"]
+    if best is not None:
+        best_sx, best_sz = best
+        lines.append("")
+        lines.append(
+            f"Best: Smooth sigma XY={best_sx}, sigma Z={best_sz} "
+            f"(avg IoU={sweep['per_point_avg'][best]['iou']:.1f}%, "
+            f"avg Dice={sweep['per_point_avg'][best]['dice']:.1f}%)"
+        )
+        if current_sigma_xy is not None and current_sigma_z is not None:
+            current = (current_sigma_xy, current_sigma_z)
+            if current in sweep["per_point_avg"] and current != best:
+                lines.append(
+                    f"Current setting (sigma XY={current_sigma_xy}, sigma Z={current_sigma_z}): "
+                    f"avg IoU={sweep['per_point_avg'][current]['iou']:.1f}% -- "
+                    f"the sweep found a better combination above."
+                )
+            elif current == best:
+                lines.append("Current setting matches the sweep's best -- confirmed.")
+
+    if sweep.get("cancelled"):
+        lines.append("\n(sweep was cancelled -- results above are partial.)")
+
+    lines.append("")
+    lines.append("Per-cell winner (grid point with highest IoU for that cell):")
+    for c in sweep["cells"]:
+        best_c = max(grid, key=lambda pt: sweep["results"][(pt[0], pt[1], c)]["iou"])
+        sx_c, sz_c = best_c
+        lines.append(
+            f"  cell {c:>4}: best at sigma XY={sx_c}, sigma Z={sz_c} "
+            f"(IoU={sweep['results'][(sx_c, sz_c, c)]['iou']:.1f}%)"
+        )
+    return "\n".join(lines)
+
+
 def format_pixel_sweep_report(sweep, current_bg_threshold=None, current_erosion=None):
     """Plain-text 2D grid report (rows = erosion, columns = BG Threshold),
     same spirit as _epoch_sweep.format_sweep_report."""

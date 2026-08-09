@@ -668,7 +668,7 @@ class ZFMicrogliaAIWidget(QWidget):
         self._sxy_slider.setMinimum(0.0)
         self._sxy_slider.setMaximum(5.0)
         self._sxy_slider.setSingleStep(0.1)
-        self._sxy_slider.setValue(1.5)
+        self._sxy_slider.setValue(_root_cfg.get("sigma_xy", 1.5))
         sxy_row.addWidget(self._sxy_slider)
         self._sxy_spin = _add_reliable_spinbox(
             sxy_row, self._sxy_slider, 0.0, 5.0, 0.1, decimals=1
@@ -682,7 +682,7 @@ class ZFMicrogliaAIWidget(QWidget):
         self._sz_slider.setMinimum(0.0)
         self._sz_slider.setMaximum(5.0)
         self._sz_slider.setSingleStep(0.1)
-        self._sz_slider.setValue(3.0)
+        self._sz_slider.setValue(_root_cfg.get("sigma_z", 3.0))
         sz_row.addWidget(self._sz_slider)
         self._sz_spin = _add_reliable_spinbox(
             sz_row, self._sz_slider, 0.0, 5.0, 0.1, decimals=1
@@ -881,6 +881,165 @@ class ZFMicrogliaAIWidget(QWidget):
         t5.addWidget(psg)
 
         self._pixel_sweep_job = {"thread": None, "cancel_event": None, "timer": None}
+
+        # ── Verify Smooth sigma XY / Z (GT Sweep) ─────────────────────── #
+        sgg = QGroupBox("Verify Smooth σ XY / σ Z (GT Sweep)")
+        sgl = QVBoxLayout()
+        sgl.setSpacing(6)
+
+        sg_note = QLabel(
+            "Sweeps Smooth sigma XY x sigma Z (the Pixel Classifier's "
+            "pre-threshold Gaussian smoothing) against the N most complex "
+            "cells in a ground-truth-annotated fish, holding BG Threshold "
+            "and Erosion fixed at Tab 1's current values. These sigma "
+            "values have never been swept before in this project -- "
+            "1.5/3.0 has been a guessed starting point since Tab 2 was "
+            "first built, never verified against real GT."
+        )
+        sg_note.setWordWrap(True)
+        sg_note.setStyleSheet("color: #888; font-size: 10px;")
+        sgl.addWidget(sg_note)
+
+        sg_img_row = QHBoxLayout()
+        sg_img_row.addWidget(QLabel("GT image:"))
+        self._sg_img_edit = QLineEdit("")
+        sg_img_row.addWidget(self._sg_img_edit)
+        self._sg_img_browse_btn = QPushButton("...")
+        self._sg_img_browse_btn.setFixedWidth(32)
+        sg_img_row.addWidget(self._sg_img_browse_btn)
+        sgl.addLayout(sg_img_row)
+
+        sg_mask_row = QHBoxLayout()
+        sg_mask_row.addWidget(QLabel("brain_mask.tif:"))
+        self._sg_mask_edit = QLineEdit("")
+        sg_mask_row.addWidget(self._sg_mask_edit)
+        self._sg_mask_browse_btn = QPushButton("...")
+        self._sg_mask_browse_btn.setFixedWidth(32)
+        sg_mask_row.addWidget(self._sg_mask_browse_btn)
+        sgl.addLayout(sg_mask_row)
+
+        sg_lbl_row = QHBoxLayout()
+        sg_lbl_row.addWidget(QLabel("GT labels:"))
+        self._sg_lbl_edit = QLineEdit("")
+        sg_lbl_row.addWidget(self._sg_lbl_edit)
+        self._sg_lbl_browse_btn = QPushButton("...")
+        self._sg_lbl_browse_btn.setFixedWidth(32)
+        sg_lbl_row.addWidget(self._sg_lbl_browse_btn)
+        sgl.addLayout(sg_lbl_row)
+        sg_gt_note = QLabel(
+            "  brain_mask.tif = the RAW (un-eroded) mask Tab 1 saves — "
+            "same fish as GT image/labels. BG Threshold/Erosion are read "
+            "from Tab 1's current sliders when you click below, not swept."
+        )
+        sg_gt_note.setStyleSheet("color: #aaa; font-size: 10px;")
+        sg_gt_note.setWordWrap(True)
+        sgl.addWidget(sg_gt_note)
+
+        sg_scale_row = QHBoxLayout()
+        sg_scale_row.addWidget(QLabel("Z (µm):"))
+        self._sg_scalez_spin = QDoubleSpinBox()
+        self._sg_scalez_spin.setDecimals(4)
+        self._sg_scalez_spin.setRange(0.0001, 100.0)
+        self._sg_scalez_spin.setValue(1.0)
+        sg_scale_row.addWidget(self._sg_scalez_spin)
+        sg_scale_row.addWidget(QLabel("XY (µm):"))
+        self._sg_scalexy_spin = QDoubleSpinBox()
+        self._sg_scalexy_spin.setDecimals(4)
+        self._sg_scalexy_spin.setRange(0.0001, 100.0)
+        self._sg_scalexy_spin.setValue(0.174)
+        sg_scale_row.addWidget(self._sg_scalexy_spin)
+        sgl.addLayout(sg_scale_row)
+
+        sg_sxy_row = QHBoxLayout()
+        sg_sxy_row.addWidget(QLabel("sigma XY min:"))
+        self._sg_sxymin_spin = QDoubleSpinBox()
+        self._sg_sxymin_spin.setDecimals(1)
+        self._sg_sxymin_spin.setRange(0.0, 5.0)
+        self._sg_sxymin_spin.setValue(0.5)
+        sg_sxy_row.addWidget(self._sg_sxymin_spin)
+        sgl.addLayout(sg_sxy_row)
+        sg_sxy_row2 = QHBoxLayout()
+        sg_sxy_row2.addWidget(QLabel("max:"))
+        self._sg_sxymax_spin = QDoubleSpinBox()
+        self._sg_sxymax_spin.setDecimals(1)
+        self._sg_sxymax_spin.setRange(0.0, 5.0)
+        self._sg_sxymax_spin.setValue(2.5)
+        sg_sxy_row2.addWidget(self._sg_sxymax_spin)
+        sg_sxy_row2.addWidget(QLabel("step:"))
+        self._sg_sxystep_spin = QDoubleSpinBox()
+        self._sg_sxystep_spin.setDecimals(1)
+        self._sg_sxystep_spin.setRange(0.1, 5.0)
+        self._sg_sxystep_spin.setValue(0.5)
+        sg_sxy_row2.addWidget(self._sg_sxystep_spin)
+        sgl.addLayout(sg_sxy_row2)
+
+        sg_sz_row = QHBoxLayout()
+        sg_sz_row.addWidget(QLabel("sigma Z min:"))
+        self._sg_szmin_spin = QDoubleSpinBox()
+        self._sg_szmin_spin.setDecimals(1)
+        self._sg_szmin_spin.setRange(0.0, 5.0)
+        self._sg_szmin_spin.setValue(1.0)
+        sg_sz_row.addWidget(self._sg_szmin_spin)
+        sgl.addLayout(sg_sz_row)
+        sg_sz_row2 = QHBoxLayout()
+        sg_sz_row2.addWidget(QLabel("max:"))
+        self._sg_szmax_spin = QDoubleSpinBox()
+        self._sg_szmax_spin.setDecimals(1)
+        self._sg_szmax_spin.setRange(0.0, 5.0)
+        self._sg_szmax_spin.setValue(5.0)
+        sg_sz_row2.addWidget(self._sg_szmax_spin)
+        sg_sz_row2.addWidget(QLabel("step:"))
+        self._sg_szstep_spin = QDoubleSpinBox()
+        self._sg_szstep_spin.setDecimals(1)
+        self._sg_szstep_spin.setRange(0.1, 5.0)
+        self._sg_szstep_spin.setValue(1.0)
+        sg_sz_row2.addWidget(self._sg_szstep_spin)
+        sgl.addLayout(sg_sz_row2)
+
+        sg_cells_row = QHBoxLayout()
+        sg_cells_row.addWidget(QLabel("Complex cells to test:"))
+        self._sg_ncells_spin = QSpinBox()
+        self._sg_ncells_spin.setRange(1, 50)
+        self._sg_ncells_spin.setValue(5)
+        sg_cells_row.addWidget(self._sg_ncells_spin)
+        sgl.addLayout(sg_cells_row)
+        sg_cells_row2 = QHBoxLayout()
+        sg_cells_row2.addWidget(QLabel("Pad Z:"))
+        self._sg_padz_spin = QSpinBox()
+        self._sg_padz_spin.setRange(0, 200)
+        self._sg_padz_spin.setValue(15)
+        sg_cells_row2.addWidget(self._sg_padz_spin)
+        sg_cells_row2.addWidget(QLabel("Pad XY:"))
+        self._sg_padxy_spin = QSpinBox()
+        self._sg_padxy_spin.setRange(0, 500)
+        self._sg_padxy_spin.setValue(40)
+        sg_cells_row2.addWidget(self._sg_padxy_spin)
+        sgl.addLayout(sg_cells_row2)
+
+        sg_btn_row = QHBoxLayout()
+        self._sg_run_btn = QPushButton("Run Sigma Sweep")
+        self._sg_run_btn.setStyleSheet("QPushButton { font-weight: bold; padding: 5px; }")
+        sg_btn_row.addWidget(self._sg_run_btn)
+        self._sg_stop_btn = QPushButton("Stop Sweep")
+        self._sg_stop_btn.setEnabled(False)
+        sg_btn_row.addWidget(self._sg_stop_btn)
+        sgl.addLayout(sg_btn_row)
+
+        self._sg_status_lbl = QLabel("Status: Ready")
+        self._sg_status_lbl.setWordWrap(True)
+        sgl.addWidget(self._sg_status_lbl)
+
+        self._sg_report_view = QTextEdit()
+        self._sg_report_view.setReadOnly(True)
+        self._sg_report_view.setStyleSheet("font-family: monospace; font-size: 9px;")
+        self._sg_report_view.setFixedHeight(160)
+        sgl.addWidget(self._sg_report_view)
+
+        sgg.setLayout(sgl)
+        sgg = _make_collapsible(sgg)
+        t5.addWidget(sgg)
+
+        self._sigma_sweep_job = {"thread": None, "cancel_event": None, "timer": None}
 
         # ── Cellpose-SAM segmentation (do_3D + Krendl corrections) — shown for _ExtRm layers ── #
         self._cellpose_group = QGroupBox("Cellpose-SAM Segmentation")
@@ -2656,6 +2815,11 @@ class ZFMicrogliaAIWidget(QWidget):
         self._ps_lbl_browse_btn.clicked.connect(self._on_ps_browse_lbl)
         self._ps_run_btn.clicked.connect(self._on_ps_run_sweep)
         self._ps_stop_btn.clicked.connect(self._on_ps_stop_sweep)
+        self._sg_img_browse_btn.clicked.connect(self._on_sg_browse_img)
+        self._sg_mask_browse_btn.clicked.connect(self._on_sg_browse_mask)
+        self._sg_lbl_browse_btn.clicked.connect(self._on_sg_browse_lbl)
+        self._sg_run_btn.clicked.connect(self._on_sg_run_sweep)
+        self._sg_stop_btn.clicked.connect(self._on_sg_stop_sweep)
         self._cp_model_browse_btn.clicked.connect(self._on_browse_cp_model)
         self._cp_run_btn.clicked.connect(self._on_run_cellpose_seg)
         self._kr_img_browse_btn.clicked.connect(self._on_kr_browse_img)
@@ -4805,6 +4969,182 @@ class ZFMicrogliaAIWidget(QWidget):
                 )
             else:
                 self._ps_status_lbl.setText("Sweep finished but no grid points could be scored.")
+
+        timer.timeout.connect(_poll)
+        timer.start(500)
+        job["timer"] = timer
+
+    def _on_sg_browse_img(self):
+        path_str, _ = QFileDialog.getOpenFileName(self, "Select GT fish's image", "", "TIFF files (*.tif *.tiff)")
+        if path_str:
+            self._sg_img_edit.setText(path_str)
+
+    def _on_sg_browse_mask(self):
+        path_str, _ = QFileDialog.getOpenFileName(self, "Select brain_mask.tif (raw, un-eroded)", "", "TIFF files (*.tif *.tiff)")
+        if path_str:
+            self._sg_mask_edit.setText(path_str)
+
+    def _on_sg_browse_lbl(self):
+        path_str, _ = QFileDialog.getOpenFileName(self, "Select GT label volume", "", "TIFF files (*.tif *.tiff)")
+        if path_str:
+            self._sg_lbl_edit.setText(path_str)
+
+    def _on_sg_run_sweep(self):
+        if self._sigma_sweep_job.get("thread") and self._sigma_sweep_job["thread"].is_alive():
+            self._sg_status_lbl.setText("A sweep is already running.")
+            return
+
+        img_path = self._sg_img_edit.text().strip()
+        mask_path = self._sg_mask_edit.text().strip()
+        lbl_path = self._sg_lbl_edit.text().strip()
+        if not (img_path and mask_path and lbl_path):
+            self._sg_status_lbl.setText("ERROR: set GT image, brain_mask.tif, and GT labels paths first.")
+            return
+        for label_str, p in (("GT image", img_path), ("brain_mask.tif", mask_path), ("GT labels", lbl_path)):
+            if not Path(p).exists():
+                self._sg_status_lbl.setText(f"ERROR: {label_str} not found: {p}")
+                return
+
+        sxy_min = self._sg_sxymin_spin.value()
+        sxy_max = self._sg_sxymax_spin.value()
+        sxy_step = self._sg_sxystep_spin.value()
+        if sxy_max < sxy_min:
+            self._sg_status_lbl.setText("ERROR: sigma XY max must be >= min.")
+            return
+        sigma_xy_values = list(np.round(np.arange(sxy_min, sxy_max + sxy_step / 2, sxy_step), 2))
+
+        sz_min = self._sg_szmin_spin.value()
+        sz_max = self._sg_szmax_spin.value()
+        sz_step = self._sg_szstep_spin.value()
+        if sz_max < sz_min:
+            self._sg_status_lbl.setText("ERROR: sigma Z max must be >= min.")
+            return
+        sigma_z_values = list(np.round(np.arange(sz_min, sz_max + sz_step / 2, sz_step), 2))
+
+        scale_zyx = (self._sg_scalez_spin.value(), self._sg_scalexy_spin.value(), self._sg_scalexy_spin.value())
+        # Held fixed at Tab 1's current values -- this sweep varies sigma,
+        # not BG Threshold/Erosion (see run_pixel_sweep above for that one).
+        bg_threshold = self._tol_slider.value()
+        erosion = self._erosion_slider.value()
+        n_cells = self._sg_ncells_spin.value()
+        pad_z = self._sg_padz_spin.value()
+        pad_xy = self._sg_padxy_spin.value()
+        current_sxy = self._sxy_slider.value()
+        current_sz = self._sz_slider.value()
+
+        cancel_event = threading.Event()
+        result = {}
+        progress = {"lines": []}
+        progress_lock = threading.Lock()
+
+        def _progress_cb(msg):
+            with progress_lock:
+                progress["lines"].append(msg)
+
+        def _worker():
+            try:
+                sweep = _psw.run_sigma_sweep(
+                    img_path, mask_path, lbl_path, sigma_xy_values, sigma_z_values, scale_zyx,
+                    bg_threshold, erosion, min_volume=None,
+                    n_cells=n_cells, pad_z=pad_z, pad_xy=pad_xy,
+                    progress_cb=_progress_cb, cancel_event=cancel_event,
+                )
+                result["sweep"] = sweep
+            except Exception as exc:
+                result["error"] = f"{exc}\n{traceback.format_exc()}"
+
+        thread = threading.Thread(target=_worker, daemon=True)
+        self._sigma_sweep_job["thread"] = thread
+        self._sigma_sweep_job["cancel_event"] = cancel_event
+        self._sigma_sweep_job["result"] = result
+        self._sigma_sweep_job["progress"] = progress
+        self._sigma_sweep_job["progress_lock"] = progress_lock
+        self._sigma_sweep_job["current_sxy"] = current_sxy
+        self._sigma_sweep_job["current_sz"] = current_sz
+        self._sg_run_btn.setEnabled(False)
+        self._sg_stop_btn.setEnabled(True)
+        self._sg_report_view.clear()
+        self._sg_status_lbl.setText(
+            f"Sweeping {len(sigma_xy_values)} sigma XY x {len(sigma_z_values)} sigma Z "
+            f"values across up to {n_cells} cells (BG Threshold={bg_threshold}, "
+            f"Erosion={erosion} held fixed) ..."
+        )
+        thread.start()
+        self._start_sigma_sweep_polling()
+
+    def _on_sg_stop_sweep(self):
+        cancel_event = self._sigma_sweep_job.get("cancel_event")
+        if cancel_event:
+            cancel_event.set()
+        self._sg_status_lbl.setText("Cancelling — finishing the current grid point, then stopping...")
+        self._sg_stop_btn.setEnabled(False)
+
+    def _start_sigma_sweep_polling(self):
+        """Same fast (500ms) poll and non-detached, doesn't-survive-napari-
+        closing contract as _start_pixel_sweep_polling — see its docstring."""
+        timer = QTimer(self)
+        job = self._sigma_sweep_job
+
+        def _poll():
+            with job["progress_lock"]:
+                lines = list(job["progress"]["lines"])
+                job["progress"]["lines"].clear()
+            if lines:
+                self._sg_report_view.append("\n".join(lines))
+                sb = self._sg_report_view.verticalScrollBar()
+                sb.setValue(sb.maximum())
+
+            if job["thread"].is_alive():
+                return
+            timer.stop()
+            job["timer"] = None
+            self._sg_run_btn.setEnabled(True)
+            self._sg_stop_btn.setEnabled(False)
+
+            result = job["result"]
+            if "error" in result:
+                self._sg_status_lbl.setText(f"ERROR during sweep: {result['error'].splitlines()[0]}")
+                self._sg_report_view.append("\n" + result["error"])
+                return
+
+            sweep = result["sweep"]
+            report = _psw.format_sigma_sweep_report(sweep, job["current_sxy"], job["current_sz"])
+            self._sg_report_view.setPlainText(report)
+            if sweep.get("cancelled"):
+                self._sg_status_lbl.setText("Sweep cancelled — partial results above.")
+            elif sweep["best_point"] is not None:
+                best_sxy, best_sz = sweep["best_point"]
+                # Same never-rises-floor treatment as the BG Threshold/
+                # Erosion sweep's min_volume recommendation -- see that
+                # handler above for the full reasoning.
+                measured_this_fish = sweep["min_volume_used"]
+                prev_recommended = self._state["config"].get("min_volume_recommended_vox")
+                recommended = (
+                    min(measured_this_fish, prev_recommended)
+                    if prev_recommended is not None else measured_this_fish
+                )
+                self._save_cfg(min_volume_recommended_vox=recommended)
+                self._area_recommended_lbl.setText(
+                    f"  Recommended minimum (from GT sweeps so far): {recommended} vox"
+                )
+                if recommended < self._area_slider.minimum():
+                    self._area_slider.setMinimum(recommended)
+                    self._area_spin.setMinimum(recommended)
+                if recommended > self._area_slider.maximum():
+                    self._area_slider.setMaximum(recommended)
+                    self._area_spin.setMaximum(recommended)
+                self._area_slider.setValue(recommended)
+
+                self._sxy_slider.setValue(best_sxy)
+                self._sz_slider.setValue(best_sz)
+                self._save_cfg(sigma_xy=best_sxy, sigma_z=best_sz, min_volume_vox=recommended)
+                self._sg_status_lbl.setText(
+                    f"Best: Smooth sigma XY={best_sxy}, sigma Z={best_sz} "
+                    f"(avg IoU={sweep['per_point_avg'][sweep['best_point']]['iou']:.1f}%). "
+                    f"Applied to Tab 2 and saved."
+                )
+            else:
+                self._sg_status_lbl.setText("Sweep finished but no grid points could be scored.")
 
         timer.timeout.connect(_poll)
         timer.start(500)
