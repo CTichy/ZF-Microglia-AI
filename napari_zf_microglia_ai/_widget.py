@@ -1963,7 +1963,9 @@ class ZFMicrogliaAIWidget(QWidget):
             "plugin's own config file, so you only need to set this up once — safe because an "
             "App Password is a separate, revocable credential Google issues specifically for "
             "this kind of unattended use, never your real account password. On Linux without an "
-            "unlocked Secret Service session it just won't be remembered next session."
+            "unlocked Secret Service session (common over SSH), it falls back automatically to a "
+            "local encrypted file instead — still not plaintext, just a weaker guarantee than the "
+            "OS store since the key lives alongside it."
         )
         notify_note.setWordWrap(True)
         notify_note.setStyleSheet("color: #888; font-size: 10px;")
@@ -4045,11 +4047,12 @@ class ZFMicrogliaAIWidget(QWidget):
 
         If the OS credential store is unavailable (e.g. Linux with no
         unlocked Secret Service session -- confirmed to actually happen
-        on this project's own workstation, not just a hypothetical), the
-        password still works for *this* run -- it's already in the text
-        field -- it just won't be there next session; a warning is
-        printed rather than blocking the operation over a storage
-        failure that doesn't affect anything happening right now.
+        on this project's own workstation, not just a hypothetical),
+        _secrets.set_secret() falls back to a local Fernet-encrypted
+        file automatically (see _secrets.py) rather than losing the
+        value or writing it in plaintext -- this only prints a warning
+        (never returned as `err`, never blocks the operation) if *both*
+        the OS store and that fallback fail.
 
         Shared by every "Email me when done" checkbox in the plugin (Tab 1
         Run, Tab 2 Cellpose-SAM Segmentation, Tab 4's two training

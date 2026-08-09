@@ -46,10 +46,13 @@ dependencies:
     - psutil
 
     # ── Encrypted credential storage (SMTP app password, LLM API key) ───
-    # OS-native store (Windows Credential Manager / macOS Keychain /
-    # Linux Secret Service) instead of the plugin's own plaintext
-    # config.json. Falls back gracefully if unavailable -- see _secrets.py.
+    # keyring: OS-native store (Windows Credential Manager / macOS
+    # Keychain / Linux Secret Service). cryptography: local Fernet-
+    # encrypted-file fallback for when the OS store isn't reachable
+    # (e.g. an SSH-only Linux session with no unlocked Secret Service) --
+    # see _secrets.py.
     - keyring
+    - cryptography
 
     # ── Napari + plugins ─────────────────────────────────────────────────
     - "napari[all]>=0.5"
