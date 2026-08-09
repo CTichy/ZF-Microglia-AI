@@ -241,7 +241,8 @@ An **Email notification (optional)** panel — now in **Tab 5 — Sweeps & Utili
 1. Turn on [2-Step Verification](https://myaccount.google.com/security) on your Google account, if it isn't already.
 2. Generate a [Google App Password](https://myaccount.google.com/apppasswords) — name it anything (e.g. `napari-zf-microglia-ai`), copy the 16-character code shown. This is **not** your normal Gmail password.
 3. In the panel: **Notify email** = where you want the report sent; **SMTP server** = `smtp.gmail.com` (default); **port** = `465` (default); **SMTP username** = your Gmail address; **SMTP password** = the App Password from step 2.
-4. Tick **"Email me when done"** (or **"Email me when this training run stops"**) next to whichever tool(s) you want notified about.
+4. Click **Send Test Email** to confirm it works — instant, no GPU or waiting needed, reports success or the specific SMTP error right there.
+5. Tick **"Email me when done"** (or **"Email me when this training run stops"**) next to whichever tool(s) you want notified about.
 
 Any other SMTP-over-SSL (implicit TLS, not STARTTLS) provider on a fixed port works the same way, just with a different server/port — see **GUIDE.md Section 12a** for the full walkthrough, more provider examples, and a note on why STARTTLS-only providers (e.g. Office 365 on port 587) aren't currently supported.
 

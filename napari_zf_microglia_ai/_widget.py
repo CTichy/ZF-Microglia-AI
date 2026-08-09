@@ -1958,14 +1958,22 @@ class ZFMicrogliaAIWidget(QWidget):
             "elsewhere in the plugin. Free with any Gmail account: smtp.gmail.com, port 465, "
             "username = your Gmail address, password = a Google App Password "
             "(myaccount.google.com/apppasswords — requires 2-Step Verification), not your normal "
-            "Gmail password. All four fields, including the password, are saved to config so you "
-            "only need to set this up once — safe because an App Password is a separate, "
-            "revocable credential Google issues specifically for this kind of unattended use, "
-            "never your real account password."
+            "Gmail password. The password is saved encrypted in your OS's credential store "
+            "(Windows Credential Manager / macOS Keychain / Linux Secret Service), not the "
+            "plugin's own config file, so you only need to set this up once — safe because an "
+            "App Password is a separate, revocable credential Google issues specifically for "
+            "this kind of unattended use, never your real account password. On Linux without an "
+            "unlocked Secret Service session it just won't be remembered next session."
         )
         notify_note.setWordWrap(True)
         notify_note.setStyleSheet("color: #888; font-size: 10px;")
         nl.addWidget(notify_note)
+
+        self._notify_test_btn = QPushButton("Send Test Email")
+        nl.addWidget(self._notify_test_btn)
+        self._notify_test_status_lbl = QLabel("")
+        self._notify_test_status_lbl.setWordWrap(True)
+        nl.addWidget(self._notify_test_status_lbl)
 
         ng.setLayout(nl)
         ng = _make_collapsible(ng)
@@ -2912,6 +2920,7 @@ class ZFMicrogliaAIWidget(QWidget):
         self._gtp_guide_browse_btn.clicked.connect(self._on_gtp_browse_guide)
         self._gtp_out_browse_btn.clicked.connect(self._on_gtp_browse_out)
         self._gtp_run_btn.clicked.connect(self._on_gtp_run)
+        self._notify_test_btn.clicked.connect(self._on_send_test_email)
         self._resort_btn.clicked.connect(self._on_resort_labels)
         self._split_use_sel_btn.clicked.connect(self._on_use_selected_label)
         self._split_btn.clicked.connect(self._on_split_label)
@@ -4107,6 +4116,59 @@ class ZFMicrogliaAIWidget(QWidget):
         )
         if send_err:
             print(f"Email notification failed: {send_err}")
+
+    def _on_send_test_email(self):
+        """Verify SMTP credentials actually work without waiting on any
+        real 30+min operation -- sends one email immediately using
+        exactly the same _get_notify_creds()/send_notification_email()
+        path every "Email me when done" checkbox uses, just with a fixed
+        test subject/body instead of a real result. Runs in a background
+        thread since a misconfigured host/port can hang for the full
+        SMTP timeout (30s) rather than fail instantly, and that shouldn't
+        freeze napari."""
+        creds, err = self._get_notify_creds()
+        if err:
+            self._notify_test_status_lbl.setText(err)
+            return
+        if creds is None:
+            self._notify_test_status_lbl.setText(
+                "ERROR: Notify email is blank -- fill it in above first."
+            )
+            return
+
+        self._notify_test_btn.setEnabled(False)
+        self._notify_test_status_lbl.setText(f"Sending to {creds['to_addr']}...")
+
+        result = {}
+
+        def _worker():
+            result["error"] = _tj.send_notification_email(
+                creds["to_addr"], creds["smtp_host"], creds["smtp_port"],
+                creds["smtp_user"], creds["smtp_password"],
+                "[ZF-Microglia-AI] Test email",
+                "This is a test email from the ZF-Microglia-AI napari plugin's "
+                "Email notification panel (Tab 5, General category).\n\n"
+                "If you received this, your SMTP settings are correct and any "
+                "'Email me when done' checkbox in the plugin will work.",
+            )
+
+        thread = threading.Thread(target=_worker, daemon=True)
+        thread.start()
+
+        timer = QTimer(self)
+
+        def _poll():
+            if thread.is_alive():
+                return
+            timer.stop()
+            self._notify_test_btn.setEnabled(True)
+            if result["error"]:
+                self._notify_test_status_lbl.setText(f"ERROR: {result['error']}")
+            else:
+                self._notify_test_status_lbl.setText(f"Sent to {creds['to_addr']} -- check your inbox.")
+
+        timer.timeout.connect(_poll)
+        timer.start(200)
 
     def _save_cfg(self, **kwargs) -> None:
         """Merge kwargs into the config and persist."""
