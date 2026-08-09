@@ -39,7 +39,6 @@ from ._gpu_check import GPU_HAS_CUDA, GPU_VRAM_GB, GPU_MEETS_RECOMMENDED, GPU_NA
 from . import _gt_annotation as _gt
 from . import _ai_tools as _ait
 from . import _training_jobs as _tj
-from . import _crop_extraction as _crop
 from . import _xzyz_patches as _xzp
 from . import _crop_truncation as _ctr
 from . import _epoch_sweep as _esw
@@ -2222,80 +2221,6 @@ class ZFMicrogliaAIWidget(QWidget):
 
         cfg = self._state.get("config", {})
 
-        # ── Extract Training Crops (extract_cellpose_crops.py port) ── #
-        ecg = QGroupBox("Extract Training Crops")
-        ecl = QVBoxLayout()
-        ecl.setSpacing(6)
-
-        ec_note = QLabel(
-            "Extracts single/double/triple/quadruple bbox crops per\n"
-            "cell (plus nearest neighbours) from a _statistics.csv +\n"
-            "image + labels triple, for Cellpose-SAM fine-tuning.\n"
-            "Older extraction method — see \"Extract XZYZ Patches\" below\n"
-            "for the one actually used by every real training run since May 2026."
-        )
-        ec_note.setWordWrap(True)
-        ec_note.setStyleSheet("color: #aaa; font-size: 10px;")
-        ecl.addWidget(ec_note)
-
-        ec_csv_row = QHBoxLayout()
-        ec_csv_row.addWidget(QLabel("_statistics.csv:"))
-        self._ec_csv_edit = QLineEdit("")
-        ec_csv_row.addWidget(self._ec_csv_edit)
-        self._ec_csv_browse_btn = QPushButton("...")
-        self._ec_csv_browse_btn.setFixedWidth(32)
-        ec_csv_row.addWidget(self._ec_csv_browse_btn)
-        ecl.addLayout(ec_csv_row)
-
-        ec_img_row = QHBoxLayout()
-        ec_img_row.addWidget(QLabel("Image (brain_only):"))
-        self._ec_img_edit = QLineEdit("")
-        ec_img_row.addWidget(self._ec_img_edit)
-        self._ec_img_browse_btn = QPushButton("...")
-        self._ec_img_browse_btn.setFixedWidth(32)
-        ec_img_row.addWidget(self._ec_img_browse_btn)
-        ecl.addLayout(ec_img_row)
-
-        ec_lbl_row = QHBoxLayout()
-        ec_lbl_row.addWidget(QLabel("Labels:"))
-        self._ec_lbl_edit = QLineEdit("")
-        ec_lbl_row.addWidget(self._ec_lbl_edit)
-        self._ec_lbl_browse_btn = QPushButton("...")
-        self._ec_lbl_browse_btn.setFixedWidth(32)
-        ec_lbl_row.addWidget(self._ec_lbl_browse_btn)
-        ecl.addLayout(ec_lbl_row)
-
-        ec_opts_row = QHBoxLayout()
-        ec_opts_row.addWidget(QLabel("pad:"))
-        self._ec_pad_spin = QSpinBox()
-        self._ec_pad_spin.setRange(0, 200)
-        self._ec_pad_spin.setValue(15)
-        ec_opts_row.addWidget(self._ec_pad_spin)
-        ec_opts_row.addWidget(QLabel("out_subdir:"))
-        self._ec_outdir_edit = QLineEdit("train_cellpose")
-        ec_opts_row.addWidget(self._ec_outdir_edit)
-        ecl.addLayout(ec_opts_row)
-
-        ec_val_row = QHBoxLayout()
-        ec_val_row.addWidget(QLabel("val_cells:"))
-        self._ec_valcells_edit = QLineEdit("")
-        self._ec_valcells_edit.setPlaceholderText("optional, comma-separated cell IDs")
-        ec_val_row.addWidget(self._ec_valcells_edit)
-        ecl.addLayout(ec_val_row)
-
-        self._ec_run_btn = QPushButton("Extract Crops")
-        self._ec_run_btn.setStyleSheet("QPushButton { padding: 5px; }")
-        ecl.addWidget(self._ec_run_btn)
-
-        self._ec_status_lbl = QLabel("")
-        self._ec_status_lbl.setWordWrap(True)
-        ecl.addWidget(self._ec_status_lbl)
-
-        ecg.setLayout(ecl)
-        ecg = _make_collapsible(ecg)
-        self._ai_cellpose_group_layout.addWidget(ecg)
-        self._ai_cellpose_group_layout.addWidget(_sep())
-
         # ── Extract XZYZ Patches (generate_xzyz_patches.py) ─────────── #
         # The crop-generation method every real Cellpose-SAM training
         # run has actually used since May 2026 (train_cellpose_512,
@@ -2851,10 +2776,6 @@ class ZFMicrogliaAIWidget(QWidget):
         self._mt_resume_browse_btn.clicked.connect(self._on_mt_browse_resume)
         self._mt_launch_btn.clicked.connect(self._on_mt_launch_training)
         self._mt_stop_btn.clicked.connect(self._on_mt_stop_training)
-        self._ec_csv_browse_btn.clicked.connect(self._on_ec_browse_csv)
-        self._ec_img_browse_btn.clicked.connect(self._on_ec_browse_img)
-        self._ec_lbl_browse_btn.clicked.connect(self._on_ec_browse_lbl)
-        self._ec_run_btn.clicked.connect(self._on_extract_crops)
         self._xz_img_browse_btn.clicked.connect(self._on_xz_browse_img)
         self._xz_gt_browse_btn.clicked.connect(self._on_xz_browse_gt)
         self._xz_out_browse_btn.clicked.connect(self._on_xz_browse_out)
@@ -3211,85 +3132,6 @@ class ZFMicrogliaAIWidget(QWidget):
                 )
             else:
                 self._mt_status_lbl.setText(f"Training (PID {pid}) is no longer running.")
-
-    def _on_ec_browse_csv(self):
-        path_str, _ = QFileDialog.getOpenFileName(self, "Select _statistics.csv", "", "CSV files (*.csv)")
-        if path_str:
-            self._ec_csv_edit.setText(path_str)
-
-    def _on_ec_browse_img(self):
-        path_str, _ = QFileDialog.getOpenFileName(self, "Select brain_only image", "", "TIFF files (*.tif *.tiff)")
-        if path_str:
-            self._ec_img_edit.setText(path_str)
-
-    def _on_ec_browse_lbl(self):
-        path_str, _ = QFileDialog.getOpenFileName(self, "Select labels TIFF", "", "TIFF files (*.tif *.tiff)")
-        if path_str:
-            self._ec_lbl_edit.setText(path_str)
-
-    def _on_extract_crops(self):
-        csv_path = self._ec_csv_edit.text().strip()
-        img_path = self._ec_img_edit.text().strip()
-        lbl_path = self._ec_lbl_edit.text().strip()
-        if not (csv_path and img_path and lbl_path):
-            self._ec_status_lbl.setText("ERROR: CSV, image, and labels paths are all required.")
-            return
-        for p, label in [(csv_path, "CSV"), (img_path, "image"), (lbl_path, "labels")]:
-            if not Path(p).exists():
-                self._ec_status_lbl.setText(f"ERROR: {label} file not found: {p}")
-                return
-
-        pad = self._ec_pad_spin.value()
-        out_subdir = self._ec_outdir_edit.text().strip() or "train_cellpose"
-        val_cells_txt = self._ec_valcells_edit.text().strip()
-        val_cells = None
-        if val_cells_txt:
-            try:
-                val_cells = [int(v.strip()) for v in val_cells_txt.split(",") if v.strip()]
-            except ValueError:
-                self._ec_status_lbl.setText("ERROR: val_cells must be comma-separated integers.")
-                return
-
-        self._ec_run_btn.setEnabled(False)
-        self._ec_status_lbl.setText("Extracting crops...")
-
-        result = {}
-
-        def _worker():
-            try:
-                result["summary"] = _crop.extract_crops(
-                    csv_path, img_path, lbl_path, pad=pad,
-                    out_subdir=out_subdir, val_cells=val_cells,
-                )
-            except Exception as exc:
-                traceback.print_exc()
-                result["error"] = str(exc)
-
-        thread = threading.Thread(target=_worker, daemon=True)
-        thread.start()
-
-        timer = QTimer(self)
-
-        def _poll():
-            if thread.is_alive():
-                return
-            timer.stop()
-            self._ec_run_btn.setEnabled(True)
-            if "error" in result:
-                self._ec_status_lbl.setText(f"ERROR: {result['error']}")
-                return
-            s = result["summary"]
-            train_total = sum(s["train"].values())
-            val_total = sum(s["val"].values())
-            self._ec_status_lbl.setText(
-                f"Done — {train_total} train + {val_total} val patches "
-                f"({s['dropped']} dropped, {s['skipped']} duplicate) -> {s['train_dir']}"
-            )
-            self._ct_data_dir_edit.setText(str(s["train_dir"].parent))
-            self._save_cfg(cellpose_crops_data_dir=str(s["train_dir"].parent))
-
-        timer.timeout.connect(_poll)
-        timer.start(500)
 
     def _on_ct_browse_pretrained(self):
         path_str, _ = QFileDialog.getOpenFileName(self, "Select Cellpose-SAM checkpoint", "", "All files (*)")
