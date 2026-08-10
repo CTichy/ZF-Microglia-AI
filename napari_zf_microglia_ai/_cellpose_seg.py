@@ -105,7 +105,20 @@ def masks_from_flows(model, dP, cellprob, shape, cellprob_threshold, flow_thresh
     It's kept as a parameter (rather than silently dropped) so callers
     that still pass a Flow value don't get a confusing signature error --
     it just has no effect on the result, by Cellpose's own design.
+
+    niter=None is CellposeModel.eval()'s own public default, but eval()
+    only resolves it to a real integer (200, unless diameter-based
+    rescaling is active) inside its own top-level body before calling
+    _compute_masks() internally -- calling _compute_masks() directly, as
+    this function does, skips that resolution entirely and passes None
+    straight down to dynamics.follow_flows()'s `range(niter)`, crashing
+    with "TypeError: 'NoneType' object cannot be interpreted as an
+    integer". This project always calls predict_flows() with
+    diameter=None and no rescale, the exact case eval() itself resolves
+    to niter=200, so that same value is applied here explicitly.
     """
+    if niter is None:
+        niter = 200
     masks = model._compute_masks(
         shape, dP, cellprob, flow_threshold=flow_threshold,
         cellprob_threshold=cellprob_threshold, min_size=min_size,
