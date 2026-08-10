@@ -799,6 +799,39 @@ class ZFMicrogliaAIWidget(QWidget):
         self._area_recommended_lbl.setWordWrap(True)
         pcg.addWidget(self._area_recommended_lbl)
 
+        hole_row = QHBoxLayout()
+        hole_row.addWidget(QLabel("Min hole size (vox):"))
+        self._hole_slider = QLabeledSlider(Qt.Horizontal)
+        init_min_hole = _root_cfg.get("min_hole_size_vox", 0)
+        init_min_hole_recommended = _root_cfg.get("min_hole_size_recommended_vox")
+        hole_slider_max = max(500, init_min_hole, init_min_hole_recommended or 500)
+        self._hole_slider.setMinimum(0)
+        self._hole_slider.setMaximum(hole_slider_max)
+        self._hole_slider.setValue(init_min_hole)
+        hole_row.addWidget(self._hole_slider)
+        self._hole_spin = _add_reliable_spinbox(
+            hole_row, self._hole_slider, 0, hole_slider_max, 10
+        )
+        pcg.addLayout(hole_row)
+        hole_note = QLabel(
+            "  A background region fully enclosed by signal in a slice "
+            "survives as real background only if it's at or above this "
+            "size; smaller enclosed gaps are filled in as noise instead of "
+            "being left as a stray hole. 0 = fill every enclosed gap "
+            "regardless of size (the old, unconditional behavior)."
+        )
+        hole_note.setStyleSheet("color: #888; font-size: 10px;")
+        hole_note.setWordWrap(True)
+        pcg.addWidget(hole_note)
+        self._hole_recommended_lbl = QLabel(
+            f"  Recommended floor (from GT sweeps so far): {init_min_hole_recommended} vox"
+            if init_min_hole_recommended is not None else
+            "  Recommended floor: not yet measured — run Verify BG Threshold / Erosion (GT Sweep) below."
+        )
+        self._hole_recommended_lbl.setStyleSheet("color: #aaa; font-size: 10px;")
+        self._hole_recommended_lbl.setWordWrap(True)
+        pcg.addWidget(self._hole_recommended_lbl)
+
         self._labels_btn = QPushButton("Create Labels")
         self._labels_btn.setStyleSheet("QPushButton { font-weight: bold; padding: 6px; }")
         pcg.addWidget(self._labels_btn)
@@ -4910,9 +4943,10 @@ class ZFMicrogliaAIWidget(QWidget):
             )
             return
 
-        sigma_xy   = self._sxy_slider.value()
-        sigma_z    = self._sz_slider.value()
-        min_volume = self._area_slider.value()
+        sigma_xy      = self._sxy_slider.value()
+        sigma_z       = self._sz_slider.value()
+        min_volume    = self._area_slider.value()
+        min_hole_size = self._hole_slider.value()
         stem            = target.name
         scale           = tuple(float(v) for v in target.scale) if len(target.scale) == 3 else (1., 1., 1.)
 
@@ -4922,7 +4956,7 @@ class ZFMicrogliaAIWidget(QWidget):
 
         print(f"\n{'='*70}")
         print(f"CREATE LABELS — {stem}  shape={volume.shape}")
-        print(f"σ_xy={sigma_xy}  σ_z={sigma_z}  min_volume={min_volume} vox")
+        print(f"σ_xy={sigma_xy}  σ_z={sigma_z}  min_volume={min_volume} vox  min_hole_size={min_hole_size} vox")
         print(f"{'='*70}")
 
         result = {}
@@ -4941,6 +4975,7 @@ class ZFMicrogliaAIWidget(QWidget):
                         sigma_xy=sigma_xy,
                         sigma_z=sigma_z,
                         min_volume=min_volume,
+                        min_hole_size=min_hole_size,
                     )
                 result["labels"] = labels
             except Exception as exc:
@@ -5058,7 +5093,7 @@ class ZFMicrogliaAIWidget(QWidget):
             try:
                 sweep = _psw.run_pixel_sweep(
                     img_path, mask_path, lbl_path, bg_thresholds, erosions, scale_zyx,
-                    sigma_xy=sigma_xy, sigma_z=sigma_z, min_volume=None,
+                    sigma_xy=sigma_xy, sigma_z=sigma_z, min_volume=None, min_hole_size=None,
                     n_cells=n_cells, pad_z=pad_z, pad_xy=pad_xy,
                     progress_cb=_progress_cb, cancel_event=cancel_event,
                 )
@@ -5174,13 +5209,39 @@ class ZFMicrogliaAIWidget(QWidget):
                     self._area_slider.setMaximum(recommended)
                     self._area_spin.setMaximum(recommended)
                 self._area_slider.setValue(recommended)
-                self._save_cfg(bg_tolerance=best_bt, erosion_voxels=best_er, min_volume_vox=recommended)
+
+                # Same never-rises-floor treatment, applied to min_hole_size:
+                # once one fish's GT confirms a real hole of size M exists,
+                # no other fish's sweep should raise the recommendation back
+                # above M, so this too only ever decreases against the last
+                # *recommended* value, not the current slider.
+                measured_hole_this_fish = sweep["min_hole_size_used"]
+                prev_hole_recommended = self._state["config"].get("min_hole_size_recommended_vox")
+                recommended_hole = (
+                    min(measured_hole_this_fish, prev_hole_recommended)
+                    if prev_hole_recommended is not None else measured_hole_this_fish
+                )
+                self._save_cfg(min_hole_size_recommended_vox=recommended_hole)
+                self._hole_recommended_lbl.setText(
+                    f"  Recommended floor (from GT sweeps so far): {recommended_hole} vox"
+                )
+                if recommended_hole > self._hole_slider.maximum():
+                    self._hole_slider.setMaximum(recommended_hole)
+                    self._hole_spin.setMaximum(recommended_hole)
+                self._hole_slider.setValue(recommended_hole)
+
+                self._save_cfg(
+                    bg_tolerance=best_bt, erosion_voxels=best_er,
+                    min_volume_vox=recommended, min_hole_size_vox=recommended_hole,
+                )
                 self._ps_status_lbl.setText(
                     f"Best: BG Threshold={best_bt}, Erosion={best_er} "
                     f"(avg IoU={sweep['per_point_avg'][sweep['best_point']]['iou']:.1f}%). "
                     f"Recommended min volume={recommended} vox (this fish measured "
-                    f"{measured_this_fish}). Applied to Tab 1/2 and saved -- edit the "
-                    f"Min volume field freely if you want to test a different value."
+                    f"{measured_this_fish}), min hole size={recommended_hole} vox (this "
+                    f"fish measured {measured_hole_this_fish}). Applied to Tab 1/2 and "
+                    f"saved -- edit either field freely if you want to test a different "
+                    f"value."
                 )
             else:
                 self._ps_status_lbl.setText("Sweep finished but no grid points could be scored.")
@@ -5260,7 +5321,7 @@ class ZFMicrogliaAIWidget(QWidget):
             try:
                 sweep = _psw.run_sigma_sweep(
                     img_path, mask_path, lbl_path, sigma_xy_values, sigma_z_values, scale_zyx,
-                    bg_threshold, erosion, min_volume=None,
+                    bg_threshold, erosion, min_volume=None, min_hole_size=None,
                     n_cells=n_cells, pad_z=pad_z, pad_xy=pad_xy,
                     progress_cb=_progress_cb, cancel_event=cancel_event,
                 )
@@ -5350,13 +5411,34 @@ class ZFMicrogliaAIWidget(QWidget):
                     self._area_spin.setMaximum(recommended)
                 self._area_slider.setValue(recommended)
 
+                # Same never-rises-floor treatment applied to min_hole_size
+                # -- see the BG Threshold/Erosion sweep handler above.
+                measured_hole_this_fish = sweep["min_hole_size_used"]
+                prev_hole_recommended = self._state["config"].get("min_hole_size_recommended_vox")
+                recommended_hole = (
+                    min(measured_hole_this_fish, prev_hole_recommended)
+                    if prev_hole_recommended is not None else measured_hole_this_fish
+                )
+                self._save_cfg(min_hole_size_recommended_vox=recommended_hole)
+                self._hole_recommended_lbl.setText(
+                    f"  Recommended floor (from GT sweeps so far): {recommended_hole} vox"
+                )
+                if recommended_hole > self._hole_slider.maximum():
+                    self._hole_slider.setMaximum(recommended_hole)
+                    self._hole_spin.setMaximum(recommended_hole)
+                self._hole_slider.setValue(recommended_hole)
+
                 self._sxy_slider.setValue(best_sxy)
                 self._sz_slider.setValue(best_sz)
-                self._save_cfg(sigma_xy=best_sxy, sigma_z=best_sz, min_volume_vox=recommended)
+                self._save_cfg(
+                    sigma_xy=best_sxy, sigma_z=best_sz,
+                    min_volume_vox=recommended, min_hole_size_vox=recommended_hole,
+                )
                 self._sg_status_lbl.setText(
                     f"Best: Smooth sigma XY={best_sxy}, sigma Z={best_sz} "
                     f"(avg IoU={sweep['per_point_avg'][sweep['best_point']]['iou']:.1f}%). "
-                    f"Applied to Tab 2 and saved."
+                    f"Recommended min hole size={recommended_hole} vox (this fish "
+                    f"measured {measured_hole_this_fish}). Applied to Tab 2 and saved."
                 )
             else:
                 self._sg_status_lbl.setText("Sweep finished but no grid points could be scored.")

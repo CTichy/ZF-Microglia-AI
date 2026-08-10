@@ -416,6 +416,24 @@ After all 2D blobs are linked into 3D objects, any object smaller than this voxe
 
 ---
 
+### Min hole size (vox)
+
+**Range:** 0 upward — **Default: 0 (fill every enclosed gap, no minimum)**
+
+A background region fully enclosed by signal in a single Z-slice — a "hole" — survives as real background only if its area is **at or above** this value; anything smaller is filled in as noise. This is the same idea as Min volume, just applied to gaps instead of whole objects, and named the same way: both fields name the size something must clear to be trusted as real, not the size at which it gets discarded.
+
+The old behavior, unconditional hole-filling regardless of size, could silently erase real internal structure: a genuine gap inside a cell (debris exclusion, a real internal void) was treated identically to a single stray pixel of imaging noise, since the plugin had no way to tell the two apart. Setting this above 0 draws that line explicitly.
+
+| Value | When to use |
+|-------|-------------|
+| **0** | **Default — fills every enclosed gap regardless of size (old behavior)** |
+| Small (e.g. 20) | Only single-pixel noise gaps get filled; anything larger is preserved |
+| Measured from GT (Tab 5 sweep) | The smallest confirmed-real hole size seen in hand-corrected ground truth — see below |
+
+> Leave this at 0 unless you have actually seen real internal holes disappearing from your labels, or a Tab 5 sweep has measured a recommended value from ground truth. There is no universal correct number — real GT checked during development showed a sharp split between 1–2 voxel gaps (near-certainly annotation noise) and 400+ voxel gaps (clearly real structure), with nothing in between, so a value anywhere in that gap works for that fish; a different fish may look different.
+
+---
+
 ### Create Labels
 
 Click to run the 3D labelling algorithm. Processing runs in a background thread — the button is disabled until complete, and the small live-output box underneath shows the same per-stage messages the console gets (backend used, signal voxel count, blobs found/removed), instead of only landing in a terminal you may not have open.
@@ -424,7 +442,7 @@ When done, a `*_labels` layer appears in napari with each detected cell shown in
 
 ---
 
-**Verify BG Threshold / Erosion (GT Sweep)** — moved to [Section 9b](#9b-verify-bg-threshold--erosion-gt-sweep), Tab 5 — Sweeps & Utilities. Also measures the Min volume field above directly from GT (a running floor that only ever decreases) rather than leaving it a guessed constant.
+**Verify BG Threshold / Erosion (GT Sweep)** — moved to [Section 9b](#9b-verify-bg-threshold--erosion-gt-sweep), Tab 5 — Sweeps & Utilities. Also measures the Min volume and Min hole size fields above directly from GT (running floors that only ever decrease) rather than leaving them guessed constants.
 
 ---
 
@@ -795,15 +813,15 @@ Answers the same kind of question as 9d below, but for the Pixel Classifier path
 2. **brain_mask.tif** — the *raw* (un-eroded) mask Tab 1 saves. MONAI inference itself is **not** re-run by this sweep — it only varies what happens *after* inference (erosion, background thresholding, labelling), so it needs an already-computed mask from a normal Tab 1 run rather than the model checkpoint.
 3. **GT labels** — the corrected ground-truth microglia label volume for that fish.
 4. **BG Threshold min/max/step** and **Erosion min/max/step** — define the grid. Defaults (1.0–1.8 step 0.2, 0–4 step 1) span 5×5=25 points centered loosely on the recommended BG Threshold.
-5. Click **Run BG/Erosion Sweep**. For each grid point, it: finds the N most complex GT cells (same branch-count ranking as the Cellpose-SAM sweep, computed once), applies that erosion + BG Threshold to each cell's cropped region, runs Create Labels (using this section's own σ XY / σ Z above, plus a **Min volume** measured automatically from the GT itself — see below) on the crop, and best-IoU-matches the result against GT.
+5. Click **Run BG/Erosion Sweep**. For each grid point, it: finds the N most complex GT cells (same branch-count ranking as the Cellpose-SAM sweep, computed once), applies that erosion + BG Threshold to each cell's cropped region, runs Create Labels (using this section's own σ XY / σ Z above, plus **Min volume** and **Min hole size**, both measured automatically from the GT itself — see below) on the crop, and best-IoU-matches the result against GT.
 
-**Min volume is measured from the GT, not read from the slider.** The small-blob cleanup threshold used during the sweep is the true smallest labeled cell's own voxel volume in the GT labels you provided, not whatever the Min volume slider (Tab 2) happens to show. A fixed guessed number (this used to default to a flat 7500 regardless of fish) risks discarding a real small cell as noise if it's too high.
+**Min volume and Min hole size are both measured from the GT, not read from their sliders.** The small-blob cleanup threshold used during the sweep is the true smallest labeled cell's own voxel volume in the GT labels you provided, not whatever the Min volume slider (Tab 2) happens to show — a fixed guessed number (this used to default to a flat 7500 regardless of fish) risks discarding a real small cell as noise if it's too high. Min hole size works the same way in reverse: it's the smallest genuinely real internal gap found anywhere in that GT's own cells (scanning each cell's per-slice footprint for background regions a human annotator deliberately left unlabeled), so the sweep never fills in a gap the ground truth itself confirms is real. Single-pixel gaps are treated as annotation noise rather than evidence when measuring this, since real GT checked during development showed those are common and unrelated to genuine structure.
 
-A small text line below Tab 2's Min volume slider — **"Recommended minimum (from GT sweeps so far): N vox"** — tracks the running floor across every sweep you've run, independently of the slider itself. This tracking is deliberately *not* the same thing as "whatever the slider currently shows": the Min volume slider stays fully user-editable like every other field in this plugin (e.g. to test a different value by hand), but that manual experimentation should never corrupt the evidence-based recommendation. So the recommendation only ever **decreases** — once one fish's GT proves a cell of a given size is real, a *different* fish's sweep (which may simply lack any cell that small) can't raise it back above that. Each sweep still auto-applies its recommendation to the live Min volume slider as a convenient default — but feel free to change the slider afterward for your own testing; the recommended-minimum text line keeps the real number safe regardless.
+A small text line below Tab 2's Min volume slider, and another below Min hole size — **"Recommended minimum/floor (from GT sweeps so far): N vox"** — tracks the running floor across every sweep you've run, independently of the slider itself. This tracking is deliberately *not* the same thing as "whatever the slider currently shows": both sliders stay fully user-editable like every other field in this plugin (e.g. to test a different value by hand), but that manual experimentation should never corrupt the evidence-based recommendation. So each recommendation only ever **decreases** — once one fish's GT proves a cell (or a hole) of a given size is real, a *different* fish's sweep (which may simply lack any cell or hole that small) can't raise it back above that. Each sweep still auto-applies both recommendations to the live sliders as a convenient default — but feel free to change either slider afterward for your own testing; the recommended-value text lines keep the real numbers safe regardless.
 
 This sweep is considerably cheaper than the Cellpose-SAM one: MONAI inference only ever runs once (outside this tool, via a normal Tab 1 run), and neither Erosion nor BG Threshold require reloading a model. A full 25-point grid typically finishes in minutes, and works on CPU too (Create Labels already has a CPU fallback).
 
-The report is a 2D grid (rows = Erosion, columns = BG Threshold, cells = average IoU%), with your current Tab 1 slider values marked and compared against whatever the sweep found best. Once the sweep finishes, its best point is **applied directly to the Tab 1 BG Threshold/Erosion sliders, Tab 2's Min volume slider, and saved to config**.
+The report is a 2D grid (rows = Erosion, columns = BG Threshold, cells = average IoU%), with your current Tab 1 slider values marked and compared against whatever the sweep found best. Once the sweep finishes, its best point is **applied directly to the Tab 1 BG Threshold/Erosion sliders, Tab 2's Min volume and Min hole size sliders, and saved to config**.
 
 > This tool depends on Erosion and BG Threshold actually composing correctly in Tab 1's own pipeline. An earlier version of `_on_run` silently discarded Erosion whenever any Background mode was active (the final mask always used the raw, un-eroded mask in that code path) — fixed as of this version.
 
@@ -899,7 +917,7 @@ Checks a parameter every other GT-sweep tool in this plugin had already covered 
 
 Cheaper per grid point than the BG Threshold/Erosion sweep: since BG Threshold and Erosion don't change here, each cell's thresholded `brain_only` crop is computed once and reused across every sigma combination — only the `create_labels()` call itself (the smoothing + union-find step) varies per grid point.
 
-Same auto-apply and Min volume floor-recalibration behavior as [9b](#9b-verify-bg-threshold--erosion-gt-sweep): the best (sigma XY, sigma Z) point is applied directly to Tab 2's Smooth σ XY/Z sliders and saved, and Min volume is recalibrated as the same never-rising floor described there.
+Same auto-apply and Min volume floor-recalibration behavior as [9b](#9b-verify-bg-threshold--erosion-gt-sweep): the best (sigma XY, sigma Z) point is applied directly to Tab 2's Smooth σ XY/Z sliders and saved, and both Min volume and Min hole size are recalibrated as the same never-rising floors described there.
 
 ---
 
@@ -1309,6 +1327,7 @@ Set these values:
 | Smooth σ Z | **3.0** |
 | Min overlap | 10% (default) |
 | Min volume | 7500 (default) |
+| Min hole size | 0 (default — leave unless you have seen real holes disappearing) |
 
 Click **Create Labels**.
 
@@ -1602,6 +1621,7 @@ Shown automatically based on active layer suffix — `_ExtRm` → Cellpose-SAM, 
 | Smooth σ Z | 3.0 | Cross-slice blob connectivity |
 | Min overlap | 10% | Overlap needed to link blobs across slices |
 | Min volume | 7500 (until a Tab 5 sweep measures a real recommendation from GT) | Minimum voxels to keep a 3D object |
+| Min hole size | 0 (until a Tab 5 sweep measures a real recommendation from GT) | Minimum voxels for an enclosed gap to survive as real background instead of being filled |
 
 **Cellpose-SAM Segmentation**
 
@@ -1658,8 +1678,8 @@ Eight tools consolidated from Tabs 1-4, each individually collapsible — see [S
 | Control | Scope | What it does |
 |---------|-------|--------------|
 | Verify MONAI Threshold / Erosion (GT Sweep) | 5x5 grid | (Tab 1) Confirms current values against a hand-corrected GT brain mask — MONAI runs once, rest is cheap — **best point auto-applied to the sliders and saved** |
-| Verify BG Threshold / Erosion (GT Sweep) | 5x5 grid | (Tab 1/2) Confirms current BG Threshold/Erosion against real GT IoU, and measures Min volume as a never-rising floor from GT — CPU-OK, doesn't survive closing napari — **best point + Min volume auto-applied and saved** |
-| Verify Smooth σ XY / σ Z (GT Sweep) | grid | (Tab 2) Confirms current Smooth σ XY/Z against real GT IoU, BG Threshold/Erosion held fixed — CPU-OK, doesn't survive closing napari — **best point + Min volume auto-applied and saved** |
+| Verify BG Threshold / Erosion (GT Sweep) | 5x5 grid | (Tab 1/2) Confirms current BG Threshold/Erosion against real GT IoU, and measures Min volume + Min hole size as never-rising floors from GT — CPU-OK, doesn't survive closing napari — **best point + Min volume + Min hole size auto-applied and saved** |
+| Verify Smooth σ XY / σ Z (GT Sweep) | grid | (Tab 2) Confirms current Smooth σ XY/Z against real GT IoU, BG Threshold/Erosion held fixed — CPU-OK, doesn't survive closing napari — **best point + Min volume + Min hole size auto-applied and saved** |
 | Verify Cellprob / Large-contact (GT Sweep) | 5x5 grid, full fish, ~3h total | (Tab 2) Confirms against whole-fish GT — do_3D's network pass runs once for the whole grid (~3h on a full-size fish, GPU-preferred), Cellprob + Large-contact both re-thresholded cheaply on top — **best point + measured GT-min auto-applied to the sliders and saved**. Has an "Email me when done" checkbox (~3h is well past the 30-min mark) |
 | Verify Best Epoch (GT Sweep) | 5 cells, ±2 checkpoints | (Tab 4, Cellpose-SAM) confirms the recommendation against real GT IoU/Dice, not just test_loss — doesn't survive closing napari — **if the sweep disagrees, rewrites the pointer to the confirmed epoch and loads it as Tab 2's active model**. Has an "Email me when done" checkbox (can run 30 min to a couple hours) |
 | Score Against GT | any 2 Labels layers | Whole-fish Hungarian-matched TP/FP/FN/Score/MeanIoU/MeanDice between any two Labels layers — synchronous, no GPU needed |

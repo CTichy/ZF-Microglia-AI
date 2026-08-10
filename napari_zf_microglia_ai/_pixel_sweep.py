@@ -31,6 +31,69 @@ from ._epoch_sweep import find_complex_cells, bbox_crop, _best_gt_match
 from ._labeling import create_labels
 
 _DEFAULT_MIN_VOLUME = 7500  # fallback only -- see min_volume_from_gt()
+_DEFAULT_MIN_HOLE_SIZE = 20  # fallback only -- see min_hole_size_from_gt()
+
+
+def min_hole_size_from_gt(gt_labels, min_hole_size_to_trust=5):
+    """Recommended per-slice hole-fill cutoff (voxels) for create_labels()'s
+    min_hole_size parameter, measured directly from real GT rather than
+    guessed.
+
+    A hand-corrected GT cell that still has an internal, unlabeled gap in
+    some Z-slice is exactly the kind of real biological hole min_hole_size
+    is meant to protect -- a human looked at that gap and deliberately did
+    not label it as part of the cell. The smallest such real gap found
+    anywhere in this GT sets the floor directly: min_hole_size should be
+    no larger than it, so create_labels() never risks erasing a hole a
+    real annotator confirmed as genuine background. This mirrors
+    min_volume_from_gt()'s never-guess-when-you-can-measure logic exactly,
+    just applied to holes instead of whole objects -- and, like
+    min_volume, names the size a region must clear to survive as real,
+    not the size at which it gets discarded.
+
+    min_hole_size_to_trust discards any hole strictly below this size
+    before taking the minimum. This matters in practice: real GT checked
+    during development showed a sharp bimodal split, several 1-2 voxel
+    gaps (near-certainly single pixels missed while manually painting a
+    cell, not deliberate holes) alongside a cluster of 400+ voxel gaps
+    (clearly real structure) -- nothing in between. Trusting every hole
+    GT reports, including single-pixel annotation slips, collapsed the
+    recommended cutoff to 0 and made the feature useless. Treating
+    anything below min_hole_size_to_trust as annotation noise rather than
+    evidence fixes this without needing a per-fish judgment call.
+
+    Returns _DEFAULT_MIN_HOLE_SIZE if no GT cell has any internal hole at
+    or above min_hole_size_to_trust in any slice -- either because the
+    cells are genuinely solid, or because every hole found was itself
+    below the trust threshold -- in which case there is nothing to
+    measure and a small, conservative guess is used instead."""
+    from scipy.ndimage import binary_fill_holes, label as _cc_label
+
+    real_hole_sizes = []
+    objs = find_objects(gt_labels)
+    for lbl in np.unique(gt_labels[gt_labels > 0]):
+        sl = objs[int(lbl) - 1]
+        if sl is None:
+            continue
+        for z in range(sl[0].start, sl[0].stop):
+            cell_slice = gt_labels[z, sl[1], sl[2]] == lbl
+            if not cell_slice.any():
+                continue
+            filled = binary_fill_holes(cell_slice)
+            holes = filled & ~cell_slice
+            if not holes.any():
+                continue
+            hole_labels, n_holes = _cc_label(holes)
+            if n_holes == 0:
+                continue
+            counts = np.bincount(hole_labels.ravel())[1:]  # drop background bin
+            real_hole_sizes.extend(
+                int(c) for c in counts if c >= min_hole_size_to_trust
+            )
+
+    if not real_hole_sizes:
+        return _DEFAULT_MIN_HOLE_SIZE
+    return min(real_hole_sizes)
 
 
 def min_volume_from_gt(gt_labels):
@@ -59,6 +122,7 @@ def min_volume_from_gt(gt_labels):
 def run_pixel_sweep(image_path, brain_mask_path, gt_labels_path,
                      bg_thresholds, erosions, scale_zyx,
                      sigma_xy=1.5, sigma_z=3.0, min_volume=None,
+                     min_hole_size=None,
                      n_cells=5, pad_z=15, pad_xy=40,
                      progress_cb=None, cancel_event=None):
     """
@@ -83,6 +147,11 @@ def run_pixel_sweep(image_path, brain_mask_path, gt_labels_path,
                          from gt_labels itself via min_volume_from_gt()
                          instead of guessed -- see that function's
                          docstring. Pass an explicit value to override.
+    min_hole_size        : per-slice hole-fill floor passed to
+                         create_labels(). If None (default), measured
+                         from gt_labels itself via
+                         min_hole_size_from_gt() instead of guessed.
+                         Pass an explicit value to override.
 
     progress_cb(str), if given, is called with a one-line status message
     as work proceeds. cancel_event (threading.Event), if given, is
@@ -97,6 +166,7 @@ def run_pixel_sweep(image_path, brain_mask_path, gt_labels_path,
       'per_point_avg': {(bg_threshold, erosion): {'iou': x, 'dice': y}},
       'best_point': (bg_threshold, erosion) or None,  # highest average IoU
       'min_volume_used': int,                         # see min_volume above
+      'min_hole_size_used': int,                      # see min_hole_size above
       'cancelled': bool,
     }
     """
@@ -109,6 +179,11 @@ def run_pixel_sweep(image_path, brain_mask_path, gt_labels_path,
         min_volume = min_volume_from_gt(gt_labels)
         if progress_cb:
             progress_cb(f"min_volume: measured {min_volume} vox from this GT's smallest labeled cell.")
+
+    if min_hole_size is None:
+        min_hole_size = min_hole_size_from_gt(gt_labels)
+        if progress_cb:
+            progress_cb(f"min_hole_size: measured {min_hole_size} vox from this GT's own real holes.")
 
     objs = find_objects(gt_labels)
     cells = find_complex_cells(gt_labels, scale_zyx, n_cells=n_cells, objs=objs)
@@ -160,7 +235,8 @@ def run_pixel_sweep(image_path, brain_mask_path, gt_labels_path,
                 img_thresholded = np.where(c["img"] <= thresh, 0, c["img"])
                 brain_only_crop = (img_thresholded * c["eroded_mask"]).astype(c["img"].dtype)
                 pred_labels = create_labels(
-                    brain_only_crop, sigma_xy=sigma_xy, sigma_z=sigma_z, min_volume=min_volume
+                    brain_only_crop, sigma_xy=sigma_xy, sigma_z=sigma_z,
+                    min_volume=min_volume, min_hole_size=min_hole_size,
                 )
                 r = _best_gt_match(pred_labels, c["gt_mask"], c["gt_vox"])
                 results[(bg_threshold, erosion, label_id)] = r
@@ -187,12 +263,14 @@ def run_pixel_sweep(image_path, brain_mask_path, gt_labels_path,
 
     return dict(cells=cells, grid=scored_grid, results=results,
                 per_point_avg=per_point_avg, best_point=best_point,
-                min_volume_used=min_volume, cancelled=cancelled)
+                min_volume_used=min_volume, min_hole_size_used=min_hole_size,
+                cancelled=cancelled)
 
 
 def run_sigma_sweep(image_path, brain_mask_path, gt_labels_path,
                      sigma_xy_values, sigma_z_values, scale_zyx,
                      bg_threshold, erosion, min_volume=None,
+                     min_hole_size=None,
                      n_cells=5, pad_z=15, pad_xy=40,
                      progress_cb=None, cancel_event=None):
     """
@@ -216,6 +294,9 @@ def run_sigma_sweep(image_path, brain_mask_path, gt_labels_path,
     min_volume     : small-blob cleanup threshold. If None (default),
                      measured from gt_labels via min_volume_from_gt()
                      instead of guessed.
+    min_hole_size  : per-slice hole-fill floor. If None (default), measured
+                     from gt_labels via min_hole_size_from_gt() instead
+                     of guessed.
 
     progress_cb(str)/cancel_event : same contract as run_pixel_sweep.
 
@@ -226,6 +307,7 @@ def run_sigma_sweep(image_path, brain_mask_path, gt_labels_path,
       'per_point_avg': {(sigma_xy, sigma_z): {'iou': x, 'dice': y}},
       'best_point': (sigma_xy, sigma_z) or None,
       'min_volume_used': int,
+      'min_hole_size_used': int,
       'cancelled': bool,
     }
     """
@@ -238,6 +320,11 @@ def run_sigma_sweep(image_path, brain_mask_path, gt_labels_path,
         min_volume = min_volume_from_gt(gt_labels)
         if progress_cb:
             progress_cb(f"min_volume: measured {min_volume} vox from this GT's smallest labeled cell.")
+
+    if min_hole_size is None:
+        min_hole_size = min_hole_size_from_gt(gt_labels)
+        if progress_cb:
+            progress_cb(f"min_hole_size: measured {min_hole_size} vox from this GT's own real holes.")
 
     objs = find_objects(gt_labels)
     cells = find_complex_cells(gt_labels, scale_zyx, n_cells=n_cells, objs=objs)
@@ -279,7 +366,8 @@ def run_sigma_sweep(image_path, brain_mask_path, gt_labels_path,
             for label_id in cells:
                 c = crops[label_id]
                 pred_labels = create_labels(
-                    c["brain_only"], sigma_xy=sigma_xy, sigma_z=sigma_z, min_volume=min_volume
+                    c["brain_only"], sigma_xy=sigma_xy, sigma_z=sigma_z,
+                    min_volume=min_volume, min_hole_size=min_hole_size,
                 )
                 r = _best_gt_match(pred_labels, c["gt_mask"], c["gt_vox"])
                 results[(sigma_xy, sigma_z, label_id)] = r
@@ -306,7 +394,8 @@ def run_sigma_sweep(image_path, brain_mask_path, gt_labels_path,
 
     return dict(cells=cells, grid=scored_grid, results=results,
                 per_point_avg=per_point_avg, best_point=best_point,
-                min_volume_used=min_volume, cancelled=cancelled)
+                min_volume_used=min_volume, min_hole_size_used=min_hole_size,
+                cancelled=cancelled)
 
 
 def format_sigma_sweep_report(sweep, current_sigma_xy=None, current_sigma_z=None):

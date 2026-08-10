@@ -27,6 +27,7 @@ from scipy.ndimage import (
     label        as cpu_label,
     binary_fill_holes as cpu_fill_holes,
 )
+from skimage.morphology import remove_small_holes as _cpu_remove_small_holes
 
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -86,11 +87,32 @@ def _free_gpu_cache() -> None:
 # CUDA path
 # ─────────────────────────────────────────────────────────────────────────────
 
+def _fill_holes_capped_gpu(slice_gpu, min_hole_size, cp, cpnd):
+    """Per-slice hole fill: a hole survives as background only if its area
+    is >= min_hole_size voxels; anything smaller is filled as noise.
+    <=0 means no floor -- fills every enclosed background region,
+    matching the old unconditional binary_fill_holes behaviour exactly."""
+    if min_hole_size <= 0:
+        return cpnd.binary_fill_holes(slice_gpu)
+    filled = cpnd.binary_fill_holes(slice_gpu)
+    holes = filled & (~slice_gpu)
+    if not bool(holes.any()):
+        return slice_gpu
+    hole_labels, n_holes = cpnd.label(holes)
+    if n_holes == 0:
+        return slice_gpu
+    counts = cp.bincount(hole_labels.ravel().astype(cp.int64), minlength=n_holes + 1)
+    fillable = counts < min_hole_size
+    fillable[0] = False
+    return slice_gpu | fillable[hole_labels]
+
+
 def _create_labels_cuda(
     volume: np.ndarray,
     sigma_xy: float,
     sigma_z: float,
     min_volume: int,
+    min_hole_size: int = 0,
 ) -> np.ndarray:
     cp   = _CP
     cpnd = _CPND
@@ -106,9 +128,9 @@ def _create_labels_cuda(
     print(f"   σ_xy={sigma_xy:.1f}  σ_z={sigma_z:.1f}  "
           f"signal voxels: {int(smooth_gpu.sum()):,}")
 
-    # ── Step 3: fill holes per slice (GPU loop) ────────────────────────────
+    # ── Step 3: fill holes per slice (GPU loop), floored at min_hole_size ──
     for z in range(Z):
-        smooth_gpu[z] = cpnd.binary_fill_holes(smooth_gpu[z])
+        smooth_gpu[z] = _fill_holes_capped_gpu(smooth_gpu[z], min_hole_size, cp, cpnd)
 
     # ── Step 4: true 3D connected components (26-connectivity) ────────────
     structure  = cp.ones((3, 3, 3), dtype=cp.int32)
@@ -162,6 +184,7 @@ def _create_labels_threaded(
     sigma_xy: float,
     sigma_z: float,
     min_volume: int,
+    min_hole_size: int = 0,
 ) -> np.ndarray:
     Z, Y, X = volume.shape
 
@@ -174,10 +197,17 @@ def _create_labels_threaded(
     print(f"   σ_xy={sigma_xy:.1f}  σ_z={sigma_z:.1f}  "
           f"signal voxels: {int(smooth_mask.sum()):,}")
 
-    # ── Step 3: fill holes per slice in parallel ───────────────────────────
+    # ── Step 3: fill holes per slice in parallel, floored at min_hole_size ─
+    # min_hole_size<=0 keeps the old unconditional-fill behaviour exactly
+    # (cpu_fill_holes fills every enclosed background region regardless of
+    # size); a positive floor switches to skimage's area-limited fill,
+    # which leaves any hole at or above the floor as real background
+    # instead of erasing it.
     def _fill_slice(args: tuple) -> tuple:
         z, slc = args
-        return z, cpu_fill_holes(slc)
+        if min_hole_size <= 0:
+            return z, cpu_fill_holes(slc)
+        return z, _cpu_remove_small_holes(slc, area_threshold=min_hole_size)
 
     with ThreadPoolExecutor(max_workers=_N_THREADS) as pool:
         results = list(pool.map(_fill_slice, [(z, smooth_mask[z]) for z in range(Z)]))
@@ -480,6 +510,7 @@ def create_labels(
     sigma_xy: float = 1.0,
     sigma_z: float = 0.5,
     min_volume: int = 7500,
+    min_hole_size: int = 0,
 ) -> np.ndarray:
     """
     Create 3D labels from brain_only volume using true 3D connected components.
@@ -489,10 +520,22 @@ def create_labels(
 
     Parameters
     ----------
-    volume     : (Z, Y, X) ndarray — brain_only output
-    sigma_xy   : Gaussian smoothing sigma in XY (voxels)
-    sigma_z    : Gaussian smoothing sigma in Z (voxels)
-    min_volume : minimum 3D blob size in voxels
+    volume        : (Z, Y, X) ndarray — brain_only output
+    sigma_xy      : Gaussian smoothing sigma in XY (voxels)
+    sigma_z       : Gaussian smoothing sigma in Z (voxels)
+    min_volume    : minimum 3D blob size in voxels
+    min_hole_size : per-slice hole-fill floor, in voxels. A background
+                    region fully enclosed by signal in a 2D slice
+                    survives as real background only if its area is
+                    >= this value; anything smaller is filled in as
+                    noise instead of being left as a stray gap. Named
+                    to match min_volume: both name the size a region
+                    must clear to be trusted as real, not the size at
+                    which it gets discarded/filled. <=0 (default) fills
+                    every enclosed hole regardless of size -- the
+                    original, unconditional behaviour, kept as the
+                    default so existing callers are unaffected unless
+                    they opt in.
 
     Returns
     -------
@@ -508,7 +551,7 @@ def create_labels(
     if _BACKEND == "cuda":
         try:
             return _create_labels_cuda(
-                volume, sigma_xy, sigma_z, min_volume
+                volume, sigma_xy, sigma_z, min_volume, min_hole_size
             )
         except Exception as exc:
             # e.g. out-of-memory — fall back gracefully
@@ -516,5 +559,5 @@ def create_labels(
             _free_gpu_cache()
 
     return _create_labels_threaded(
-        volume, sigma_xy, sigma_z, min_volume
+        volume, sigma_xy, sigma_z, min_volume, min_hole_size
     )
