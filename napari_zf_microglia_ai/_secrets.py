@@ -141,6 +141,7 @@ def set_secret(key: str, value: str) -> "str | None":
     about"), or a short error string only when neither tier could store
     it, meaning the value truly won't survive to next session. Callers
     already print this to the console rather than blocking on it."""
+    tier1_exc = None
     try:
         import keyring
         import keyring.errors
@@ -159,21 +160,29 @@ def set_secret(key: str, value: str) -> "str | None":
         except Exception:
             pass
         return None
-    except Exception:
-        pass
+    except Exception as exc:
+        tier1_exc = exc
 
     try:
         _fallback_set(key, value)
         print(
-            f"{key}: OS credential store unavailable -- saved to a local "
-            f"encrypted file instead ({_FALLBACK_STORE_PATH}). Still "
+            f"{key}: OS credential store unavailable ({tier1_exc}) -- saved to "
+            f"a local encrypted file instead ({_FALLBACK_STORE_PATH}). Still "
             "encrypted, but the key protecting it lives on this same "
             "machine, so it's a weaker guarantee than the OS store."
         )
         return None
-    except Exception as exc:
+    except Exception as tier2_exc:
+        if isinstance(tier1_exc, ImportError) and isinstance(tier2_exc, ImportError):
+            return (
+                "could not save anywhere -- the `keyring` and/or `cryptography` "
+                f"packages aren't installed in this environment ({tier1_exc}; "
+                f"{tier2_exc}). Run `pip install keyring cryptography` (or "
+                "`conda env update --name zf-microglia-ai -f environment.yml "
+                "--prune` / `environment-mac.yml`) and restart napari."
+            )
         return (
-            f"could not save anywhere (OS credential store unavailable; local "
-            f"encrypted-file fallback also failed: {exc}) -- value will not "
+            f"could not save anywhere (OS credential store: {tier1_exc}; "
+            f"local encrypted-file fallback: {tier2_exc}) -- value will not "
             "be saved between sessions."
         )
