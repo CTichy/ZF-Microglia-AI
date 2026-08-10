@@ -446,9 +446,7 @@ Cellpose-SAM's own confidence cutoff for what counts as foreground (cell) vs. ba
 
 #### Flow threshold
 
-**Range:** 0.0 to 1.0 — **Default: 0.4 — has no effect in this pipeline**
-
-In Cellpose generally, this rejects predicted objects whose internal flow field doesn't self-consistently point back to a single centre. In this plugin specifically it does nothing: Cellpose only applies that flow-error QC filter in 2D/stitch mode — reading `cellpose/dynamics.py`'s `compute_masks()` shows the filter call sits inside `if not do_3D:`, and this plugin always runs `do_3D=True`. The field is kept visible only because `do_3D`'s own function signature still accepts a value; changing it will not change your results.
+There is no Flow threshold field anywhere in this plugin, deliberately. In Cellpose generally, this parameter rejects predicted objects whose internal flow field doesn't self-consistently point back to a single centre — but Cellpose only applies that flow-error QC filter in 2D/stitch mode. Reading `cellpose/dynamics.py`'s `compute_masks()` shows the filter call sits inside `if not do_3D:`, and this plugin always runs `do_3D=True`, so the parameter has zero effect on any result this plugin produces. It used to appear as a slider that quietly did nothing; that was a real trap for anyone trying to tune it, so it was removed rather than merely documented. Internally, do_3D's function signature still requires a value, fixed at 0.4 and never exposed to the user.
 
 #### Safe-merge max gap (vox)
 
@@ -819,11 +817,11 @@ Sweeps **Cellprob** × **Large-contact merge** (both Tab 2, Cellpose-SAM Segment
 2. **Voxel scale Z/XY** — drives the do_3D `anisotropy` parameter (Z/XY ratio); independent of whatever's open in the viewer.
 3. **Cellprob min/max/step** and **Large-contact min/max/step** — define the grid.
 4. Tick **"Email me when done"** if you want a notification (~3h is well past the point where that's worth it) — see [Section 9h](#9h-email-notification-optional).
-5. Click **Run Cellprob/LC Sweep**. Uses Tab 2's current **Flow**, **Safe-merge max gap**, and **Safe-merge min contact** values — only Cellprob and Large-contact vary.
+5. Click **Run Cellprob/LC Sweep**. Uses Tab 2's current **Safe-merge max gap** and **Safe-merge min contact** values — only Cellprob and Large-contact vary.
 
 **Cellprob is now cheap to sweep, not just Large-contact.** Cellpose's own `CellposeModel.eval()` internally splits into two independent steps: the network forward pass that predicts a flow field (the one genuinely expensive, GPU-bound part — completely unrelated to Cellprob or any other threshold) and a separate, cheap mask-formation step that Cellprob threshold feeds into. This sweep now runs the network pass **exactly once** for the whole grid, then re-thresholds cheaply for every Cellprob value, then runs GMM cleanup + Krendl safe-merge per Cellprob value, with **Large-contact** varying freely on top of that as before. Total sweep time is now roughly **one `do_3D` network pass, period** — not one per Cellprob value.
 
-**Flow is not swept**, and never was worth sweeping in this pipeline: reading `cellpose/dynamics.py` shows its flow-error QC filter only runs when `do_3D=False` (2D/stitch mode) — under `do_3D=True`, which this plugin always uses, changing Flow threshold changes nothing about the result. It's held fixed at Tab 2's current value purely because `do_3D`'s call signature still accepts it — see the note under [Flow threshold](#flow-threshold) in Section 6c.
+**Flow is not swept, and has no user control anywhere in this plugin**: reading `cellpose/dynamics.py` shows its flow-error QC filter only runs when `do_3D=False` (2D/stitch mode) — under `do_3D=True`, which this plugin always uses, changing Flow threshold changes nothing about the result. It's fixed internally purely because `do_3D`'s call signature still accepts it — see [Flow threshold](#flow-threshold) in Section 6c.
 
 **This used to be by far the slowest of the four GT-sweep tools, because it ran on the full fish rather than a handful of cropped cells — that's no longer true.** A single `do_3D` network pass on a full-size fish has historically taken around 3 hours in this project (e.g. D1F4: ~187 minutes), and that's now the sweep's entire cost, regardless of how many Cellprob or Large-contact values are in the grid. **Stop Sweep** only cancels between grid points, and since the network pass now happens once upfront it can't itself be interrupted mid-pass — but that pass is also the whole sweep's cost now, not a multiplier on it. This does **not** run detached — it won't survive closing napari. The report box streams Cellpose's internal `do_3D` progress live during that one pass rather than sitting on one static message — see the note under [Run Cellpose-SAM Segmentation](#run-cellpose-sam-segmentation-button) in Section 6c.
 
@@ -1610,7 +1608,6 @@ Shown automatically based on active layer suffix — `_ExtRm` → Cellpose-SAM, 
 | Control | Recommended | What it does |
 |---------|-------------|--------------|
 | Cellprob threshold | -2.5 | Confidence cutoff for foreground vs. background |
-| Flow threshold | 0.4 | Has no effect in this pipeline — do_3D skips Cellpose's flow-error QC filter entirely; kept only because do_3D's own signature still accepts it |
 | Safe-merge max gap | 2 vox | Max gap allowed when merging fragments |
 | Safe-merge min contact | 10 vox | Min touching surface required to merge |
 | Safe-merge GT-min volume | 10230 vox | Smallest volume trusted as already a whole cell — recalibrated from real GT by a Tab 5 sweep, not usually set by hand |

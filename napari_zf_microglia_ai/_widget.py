@@ -48,6 +48,14 @@ from . import _secrets
 
 _CONFIG_PATH = Path.home() / ".config" / "napari-zf-microglia-ai" / "config.json"
 
+# Cellpose's flow_threshold QC filter only runs in 2D/stitch mode -- under
+# do_3D=True, which every do_3D call in this plugin uses, it is provably a
+# no-op (confirmed by reading cellpose/dynamics.py and by a call-count spy
+# test showing zero calls regardless of value). Not exposed as a user
+# control anywhere in the UI; kept only because do_3D's own call signature
+# still accepts a flow_threshold argument.
+_FLOW_THRESHOLD_FIXED = 0.4
+
 # Suffix added to brain_only filename for each background mode
 _BG_SUFFIX = {
     0: "",          # Off — no processing
@@ -599,6 +607,14 @@ class ZFMicrogliaAIWidget(QWidget):
         self._bs_img_browse_btn.setFixedWidth(32)
         bs_img_row.addWidget(self._bs_img_browse_btn)
         bsl.addLayout(bs_img_row)
+        bs_img_note = QLabel(
+            "  Must be the RAW, pre-Tab 1 image — no _ExtRm / _NoBG / "
+            "_RndFill suffix. Feeding an already brain-masked image would "
+            "bias the very segmentation this tool is scoring."
+        )
+        bs_img_note.setStyleSheet("color: #aaa; font-size: 10px;")
+        bs_img_note.setWordWrap(True)
+        bsl.addWidget(bs_img_note)
 
         bs_gt_row = QHBoxLayout()
         bs_gt_row.addWidget(QLabel("GT brain mask:"))
@@ -829,6 +845,15 @@ class ZFMicrogliaAIWidget(QWidget):
         self._ps_img_browse_btn.setFixedWidth(32)
         ps_img_row.addWidget(self._ps_img_browse_btn)
         psl.addLayout(ps_img_row)
+        ps_img_note = QLabel(
+            "  Raw image or _ExtRm — both give identical results here, "
+            "since this tool only ever reads pixels inside the brain mask. "
+            "Do not use _NoBG/_RndFill — those already had a different "
+            "background step applied."
+        )
+        ps_img_note.setStyleSheet("color: #aaa; font-size: 10px;")
+        ps_img_note.setWordWrap(True)
+        psl.addWidget(ps_img_note)
 
         ps_mask_row = QHBoxLayout()
         ps_mask_row.addWidget(QLabel("brain_mask.tif:"))
@@ -849,7 +874,10 @@ class ZFMicrogliaAIWidget(QWidget):
         psl.addLayout(ps_lbl_row)
         ps_gt_note = QLabel(
             "  brain_mask.tif = the RAW (un-eroded) mask Tab 1 saves — same "
-            "fish as GT image/labels."
+            "fish as GT image/labels. GT labels = a hand-corrected "
+            "microglia instance-label volume, typically named "
+            "_GROUND_TRUTH.tif, one integer ID per cell — not the brain "
+            "mask."
         )
         ps_gt_note.setStyleSheet("color: #aaa; font-size: 10px;")
         ps_gt_note.setWordWrap(True)
@@ -985,6 +1013,15 @@ class ZFMicrogliaAIWidget(QWidget):
         self._sg_img_browse_btn.setFixedWidth(32)
         sg_img_row.addWidget(self._sg_img_browse_btn)
         sgl.addLayout(sg_img_row)
+        sg_img_note = QLabel(
+            "  Raw image or _ExtRm — both give identical results here, "
+            "since this tool only ever reads pixels inside the brain mask. "
+            "Do not use _NoBG/_RndFill — those already had a different "
+            "background step applied."
+        )
+        sg_img_note.setStyleSheet("color: #aaa; font-size: 10px;")
+        sg_img_note.setWordWrap(True)
+        sgl.addWidget(sg_img_note)
 
         sg_mask_row = QHBoxLayout()
         sg_mask_row.addWidget(QLabel("brain_mask.tif:"))
@@ -1005,8 +1042,11 @@ class ZFMicrogliaAIWidget(QWidget):
         sgl.addLayout(sg_lbl_row)
         sg_gt_note = QLabel(
             "  brain_mask.tif = the RAW (un-eroded) mask Tab 1 saves — "
-            "same fish as GT image/labels. BG Threshold/Erosion are read "
-            "from Tab 1's current sliders when you click below, not swept."
+            "same fish as GT image/labels. GT labels = a hand-corrected "
+            "microglia instance-label volume, typically named "
+            "_GROUND_TRUTH.tif, one integer ID per cell — not the brain "
+            "mask. BG Threshold/Erosion are read from Tab 1's current "
+            "sliders when you click below, not swept."
         )
         sg_gt_note.setStyleSheet("color: #aaa; font-size: 10px;")
         sg_gt_note.setWordWrap(True)
@@ -1164,28 +1204,11 @@ class ZFMicrogliaAIWidget(QWidget):
         )
         cpg.addLayout(cp_cellprob_row)
 
-        cp_flow_row = QHBoxLayout()
-        cp_flow_row.addWidget(QLabel("Flow threshold:"))
-        self._cp_flow_slider = QLabeledDoubleSlider(Qt.Horizontal)
-        self._cp_flow_slider.setDecimals(2)
-        self._cp_flow_slider.setMinimum(0.0)
-        self._cp_flow_slider.setMaximum(1.0)
-        self._cp_flow_slider.setSingleStep(0.05)
-        self._cp_flow_slider.setValue(0.4)
-        cp_flow_row.addWidget(self._cp_flow_slider)
-        self._cp_flow_spin = _add_reliable_spinbox(
-            cp_flow_row, self._cp_flow_slider, 0.0, 1.0, 0.05, decimals=2
-        )
-        cpg.addLayout(cp_flow_row)
-        cp_flow_note = QLabel(
-            "  Has no effect in this pipeline — Cellpose only applies Flow "
-            "threshold's QC filter in 2D/stitch mode, never under do_3D "
-            "(confirmed by reading cellpose's own dynamics.py). Kept "
-            "visible only because do_3D's call signature still accepts it."
-        )
-        cp_flow_note.setWordWrap(True)
-        cp_flow_note.setStyleSheet("color: #888; font-size: 10px;")
-        cpg.addWidget(cp_flow_note)
+        # Flow threshold deliberately has no UI control: Cellpose only
+        # applies its QC filter in 2D/stitch mode, never under do_3D (this
+        # pipeline's only mode) -- see _FLOW_THRESHOLD_FIXED above. A live,
+        # editable slider that silently did nothing was a real user-facing
+        # trap and was removed rather than merely documented.
 
         cp_maxgap_row = QHBoxLayout()
         cp_maxgap_row.addWidget(QLabel("Safe-merge max gap (vox):"))
@@ -1288,11 +1311,12 @@ class ZFMicrogliaAIWidget(QWidget):
             "fish), not once per Cellprob value — Cellprob only feeds a "
             "cheap re-thresholding step on the same predicted flow field, "
             "so the grid costs roughly one do_3D call total regardless of "
-            "size. Flow threshold is not swept: it has no effect under "
-            "do_3D (Cellpose only applies it in 2D/stitch mode), so it's "
-            "held at this section's value purely to match do_3D's own call "
-            "signature. Safe-merge GT-min volume is also recalibrated "
-            "automatically from this GT's own smallest labeled cell."
+            "size. Flow threshold is not swept and has no user control "
+            "anywhere in this plugin: it has no effect under do_3D "
+            "(Cellpose only applies it in 2D/stitch mode), so it's fixed "
+            "internally purely to match do_3D's own call signature. "
+            "Safe-merge GT-min volume is also recalibrated automatically "
+            "from this GT's own smallest labeled cell."
         )
         kr_note.setWordWrap(True)
         kr_note.setStyleSheet("color: #888; font-size: 10px;")
@@ -1315,6 +1339,16 @@ class ZFMicrogliaAIWidget(QWidget):
         self._kr_gt_browse_btn.setFixedWidth(32)
         kr_gt_row.addWidget(self._kr_gt_browse_btn)
         krl.addLayout(kr_gt_row)
+        kr_gt_note = QLabel(
+            "  Image = a full-fish _ExtRm brain_only volume (the Cellpose-"
+            "SAM route's input — not _NoBG/_RndFill, and not the raw "
+            "pre-Tab-1 image). GT labels = the corresponding hand-"
+            "corrected microglia instance-label volume, typically named "
+            "_GROUND_TRUTH.tif, one integer ID per cell — not a brain mask."
+        )
+        kr_gt_note.setStyleSheet("color: #aaa; font-size: 10px;")
+        kr_gt_note.setWordWrap(True)
+        krl.addWidget(kr_gt_note)
 
         kr_scale_row = QHBoxLayout()
         kr_scale_row.addWidget(QLabel("Z (µm):"))
@@ -2704,8 +2738,12 @@ class ZFMicrogliaAIWidget(QWidget):
         es_lbl_row.addWidget(self._es_lbl_browse_btn)
         esl.addLayout(es_lbl_row)
         es_gt_note = QLabel(
-            "  A full-fish raw/brain_only image + its corrected ground-truth "
-            "label volume — the same pair used to create training crops."
+            "  GT image = a full-fish _ExtRm brain_only volume (same input "
+            "do_3D inference uses in production — not _NoBG/_RndFill, and "
+            "not the raw pre-Tab-1 image). GT labels = the corresponding "
+            "hand-corrected microglia instance-label volume, typically "
+            "named _GROUND_TRUTH.tif, one integer ID per cell — the same "
+            "pair used to create training crops."
         )
         es_gt_note.setStyleSheet("color: #aaa; font-size: 10px;")
         es_gt_note.setWordWrap(True)
@@ -2797,13 +2835,6 @@ class ZFMicrogliaAIWidget(QWidget):
         self._es_cellprob_spin.setSingleStep(0.1)
         self._es_cellprob_spin.setValue(self._cp_cellprob_spin.value())
         es_inf_row.addWidget(self._es_cellprob_spin)
-        es_inf_row.addWidget(QLabel("Flow threshold:"))
-        self._es_flow_spin = QDoubleSpinBox()
-        self._es_flow_spin.setDecimals(2)
-        self._es_flow_spin.setRange(0.0, 1.0)
-        self._es_flow_spin.setSingleStep(0.05)
-        self._es_flow_spin.setValue(self._cp_flow_spin.value())
-        es_inf_row.addWidget(self._es_flow_spin)
         esl.addLayout(es_inf_row)
 
         self._es_notify_cb = _make_notify_checkbox()
@@ -3646,7 +3677,7 @@ class ZFMicrogliaAIWidget(QWidget):
 
         scale_zyx = (self._es_scalez_spin.value(), self._es_scalexy_spin.value(), self._es_scalexy_spin.value())
         cellprob = self._es_cellprob_spin.value()
-        flow = self._es_flow_spin.value()
+        flow = _FLOW_THRESHOLD_FIXED
         n_cells = self._es_ncells_spin.value()
         pad_z = self._es_padz_spin.value()
         pad_xy = self._es_padxy_spin.value()
@@ -5349,7 +5380,7 @@ class ZFMicrogliaAIWidget(QWidget):
             return
 
         cellprob      = self._cp_cellprob_slider.value()
-        flow          = self._cp_flow_slider.value()
+        flow          = _FLOW_THRESHOLD_FIXED
         max_gap       = self._cp_maxgap_slider.value()
         min_contact   = self._cp_mincontact_slider.value()
         gt_min        = self._cp_gtmin_slider.value()
@@ -5509,7 +5540,7 @@ class ZFMicrogliaAIWidget(QWidget):
         large_contacts = list(range(lc_min, lc_max + 1, lc_step))
 
         anisotropy = self._kr_scalez_spin.value() / self._kr_scalexy_spin.value()
-        flow = self._cp_flow_slider.value()
+        flow = _FLOW_THRESHOLD_FIXED
         max_gap = self._cp_maxgap_slider.value()
         min_contact = self._cp_mincontact_slider.value()
         gpu = torch.cuda.is_available()
