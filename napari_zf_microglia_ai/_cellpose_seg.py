@@ -49,14 +49,21 @@ def _joint_bbox(b1, b2):
                  for (lo1, hi1), (lo2, hi2) in zip(b1, b2))
 
 
-def run_do3d_inference(volume, model_path, cellprob, flow, anisotropy, gpu=True):
+def run_do3d_inference(volume, model_path, cellprob, flow, anisotropy, gpu=True,
+                        min_hole_size=0, min_size=15):
     """Raw Cellpose-SAM do_3D inference. Returns an int32 label array.
 
     Convenience wrapper around predict_flows()+masks_from_flows() for a
     single (cellprob, flow) point -- see those two for the split used when
-    sweeping multiple cellprob values against the same volume."""
+    sweeping multiple cellprob values against the same volume.
+
+    min_size : deliberately tiny early noise filter, not this project's
+    Min volume floor -- see the "Common Settings" note in _widget.py for
+    why the two are kept separate. Default 15 matches Cellpose's own
+    default and this project's prior, unexposed hardcoded value."""
     model, dP, cellprob_map, shape = predict_flows(volume, model_path, anisotropy, gpu=gpu)
-    return masks_from_flows(model, dP, cellprob_map, shape, cellprob, flow)
+    return masks_from_flows(model, dP, cellprob_map, shape, cellprob, flow,
+                             min_size=min_size, min_hole_size=min_hole_size)
 
 
 def predict_flows(volume, model_path, anisotropy, gpu=True):
@@ -90,8 +97,68 @@ def predict_flows(volume, model_path, anisotropy, gpu=True):
     return model, dP, cellprob, volume.shape
 
 
+def _make_capped_fill_holes(min_hole_size):
+    """Builds a drop-in replacement for cellpose.utils's own
+    fill_holes_and_remove_small_masks(masks, min_size=15), monkey-patched
+    in for the duration of a single _compute_masks() call (see
+    masks_from_flows() below).
+
+    Cellpose's own version fills every enclosed void in each predicted
+    mask's full 3D crop completely unconditionally, via
+    `fill_voids.fill(msk)` -- no size threshold anywhere in that call.
+    This is the exact same category of bug create_labels() had before
+    min_hole_size was added there (see _labeling.py): a single-voxel
+    prediction artifact and a genuine internal structural void are
+    treated identically, since there is no way to tell them apart. The
+    installed package can't be edited directly (breaks on every
+    reinstall), so this follows the same monkey-patching convention
+    train_xzyz.py already uses for the branch-weighted loss: swap in a
+    size-aware replacement, restore the original afterward.
+
+    min_hole_size<=0 keeps the exact original behaviour (unconditional
+    fill_voids.fill()); a positive value switches to skimage's
+    area-limited remove_small_holes, which works natively in 3D so no
+    per-slice loop is needed here the way _labeling.py's 2D case needed
+    one. The min_size small-mask-removal logic is otherwise reproduced
+    unchanged from cellpose/utils.py."""
+    import fastremap
+    from scipy.ndimage import find_objects as _find_objects
+    from skimage.morphology import remove_small_holes
+
+    def _capped(masks, min_size=15):
+        if masks.ndim > 3 or masks.ndim < 2:
+            raise ValueError(f"masks_to_outlines takes 2D or 3D array, not {masks.ndim}D array")
+        if min_size > 0:
+            uniq, counts = fastremap.unique(masks, return_counts=True)
+            small = uniq[1:][np.nonzero(counts[1:] < min_size)[0]]
+            masks = fastremap.mask(masks, small)
+            fastremap.renumber(masks, in_place=True)
+
+        slices = _find_objects(masks)
+        j = 0
+        for i, slc in enumerate(slices):
+            if slc is not None:
+                msk = masks[slc] == (i + 1)
+                if min_hole_size <= 0:
+                    import fill_voids
+                    msk = fill_voids.fill(msk)
+                else:
+                    msk = remove_small_holes(msk, area_threshold=min_hole_size)
+                masks[slc][msk] = (j + 1)
+                j += 1
+
+        if min_size > 0:
+            uniq, counts = fastremap.unique(masks, return_counts=True)
+            small = uniq[1:][np.nonzero(counts[1:] < min_size)[0]]
+            masks = fastremap.mask(masks, small)
+            fastremap.renumber(masks, in_place=True)
+        return masks
+
+    return _capped
+
+
 def masks_from_flows(model, dP, cellprob, shape, cellprob_threshold, flow_threshold=0.4,
-                      min_size=15, max_size_fraction=0.4, niter=None):
+                      min_size=15, max_size_fraction=0.4, niter=None, min_hole_size=0):
     """Cheap step: form instance masks from an already-computed flow field
     (see predict_flows()). do_3D=True is baked in -- this project's
     pipeline never uses 2D/stitch mode.
@@ -116,14 +183,24 @@ def masks_from_flows(model, dP, cellprob, shape, cellprob_threshold, flow_thresh
     integer". This project always calls predict_flows() with
     diameter=None and no rescale, the exact case eval() itself resolves
     to niter=200, so that same value is applied here explicitly.
+
+    min_hole_size : passed through to _make_capped_fill_holes() -- see
+    that function's docstring. 0 (default) matches cellpose's own
+    unconditional hole-filling exactly.
     """
     if niter is None:
         niter = 200
-    masks = model._compute_masks(
-        shape, dP, cellprob, flow_threshold=flow_threshold,
-        cellprob_threshold=cellprob_threshold, min_size=min_size,
-        max_size_fraction=max_size_fraction, niter=niter, do_3D=True,
-    )
+    from cellpose import utils as _cp_utils
+    _original_fill_holes = _cp_utils.fill_holes_and_remove_small_masks
+    _cp_utils.fill_holes_and_remove_small_masks = _make_capped_fill_holes(min_hole_size)
+    try:
+        masks = model._compute_masks(
+            shape, dP, cellprob, flow_threshold=flow_threshold,
+            cellprob_threshold=cellprob_threshold, min_size=min_size,
+            max_size_fraction=max_size_fraction, niter=niter, do_3D=True,
+        )
+    finally:
+        _cp_utils.fill_holes_and_remove_small_masks = _original_fill_holes
     return np.asarray(masks, dtype=np.int32)
 
 
@@ -322,7 +399,8 @@ def relabel_sequential(masks):
 
 def run_full_pipeline(volume, model_path, cellprob=-2.5, flow=0.4, anisotropy=5.747,
                        max_gap=2, min_contact=10, large_contact=20, gt_min=GT_MIN,
-                       gpu=True, progress_cb=None, precomputed_flows=None):
+                       gpu=True, progress_cb=None, precomputed_flows=None,
+                       min_hole_size=0, min_size=15):
     """
     Full do_3D + 3-GMM + Krendl safe merge + large-contact merge pipeline —
     identical math to krendl_do3d.py, minus the GT-based relabeling/scoring
@@ -336,6 +414,15 @@ def run_full_pipeline(volume, model_path, cellprob=-2.5, flow=0.4, anisotropy=5.
     expensive network pass entirely and goes straight to mask formation.
     Used by the Cellprob/Large-contact sweep to call this once per Cellprob
     value without re-running do_3D's network forward pass each time.
+
+    min_hole_size : passed through to masks_from_flows() -- see
+    _make_capped_fill_holes()'s docstring. 0 (default) matches Cellpose's
+    own unconditional hole-filling exactly.
+
+    min_size : deliberately tiny early noise filter, not this project's
+    Min volume floor -- kept as a separate parameter on purpose (see the
+    "Common Settings" note in _widget.py). Default 15 matches Cellpose's
+    own default.
     """
     def _report(msg):
         if progress_cb:
@@ -344,10 +431,12 @@ def run_full_pipeline(volume, model_path, cellprob=-2.5, flow=0.4, anisotropy=5.
     if precomputed_flows is not None:
         model, dP, cellprob_map, shape = precomputed_flows
         _report(f"cellprob={cellprob}: forming masks from precomputed flows...")
-        masks = masks_from_flows(model, dP, cellprob_map, shape, cellprob, flow)
+        masks = masks_from_flows(model, dP, cellprob_map, shape, cellprob, flow,
+                                  min_size=min_size, min_hole_size=min_hole_size)
     else:
         _report("Running do_3D inference...")
-        masks = run_do3d_inference(volume, model_path, cellprob, flow, anisotropy, gpu=gpu)
+        masks = run_do3d_inference(volume, model_path, cellprob, flow, anisotropy, gpu=gpu,
+                                    min_hole_size=min_hole_size, min_size=min_size)
     n0 = len(np.unique(masks[masks > 0]))
 
     _report(f"{n0} raw cells — 3-component GMM cleanup...")

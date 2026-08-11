@@ -336,6 +336,53 @@ The **Sort by / Resort Labels**, **Split Label**, and **Save Labels** tools (Sec
 
 ---
 
+### Common Settings — shared by both routes
+
+Sits in its own box, above the Pixel Classifier/Cellpose-SAM sections and **always visible regardless of which one is currently active** — unlike everything documented under 6b/6c below, which only shows up when its own route is the one selected. These three fields were deliberately pulled out of the route-specific sections: a value that's actually shared, or that looks shared but genuinely is not, is easy to lose track of if it only appears half the time.
+
+#### Min volume (vox) — Pixel Classifier + Cellpose-SAM's Safe-merge floor
+
+**Range:** 5000 to 10000 — **Default: 7500**
+
+After all 2D blobs are linked into 3D objects in the Pixel Classifier's own union-find pipeline, any object smaller than this voxel count is deleted as noise. This is the *final* debris cutoff for that route — nothing runs after it to reconsider a discarded object.
+
+| Value | When to use |
+|-------|-------------|
+| 5000 | Keep smaller objects — may include noise |
+| **7500** | **Default — validated for adult zebrafish microglia** |
+| 10000 | Keep only large objects — use if many small debris remain |
+
+> Zebrafish microglia at 4dpf typically occupy 15,000–50,000 voxels at standard resolution.
+
+#### Min size (vox) — Cellpose-SAM
+
+**Range:** 1 to 5000 — **Default: 15**
+
+Cellpose-SAM's own early noise filter, applied right when raw instance masks are formed from the predicted flow field — previously hardcoded at 15 with no control anywhere in the plugin, now exposed here.
+
+**This is deliberately a different field from Min volume above, not the same value reused.** Min volume is the Pixel Classifier's *final* cutoff; nothing reconsiders an object it discards. Cellpose-SAM's pipeline is structured differently: raw instance masks go through this small early filter, then **3-component GMM cleanup** and **Krendl safe-merge** — those two stages, not this field, make the real "is this debris, or a real fragment that should be reattached to a neighboring cell" decision, using the full size distribution and gap/contact geometry rather than one blunt cutoff. If Min size were raised anywhere near Min volume's range, real small fragments would be discarded here, before GMM cleanup or safe-merge ever got a chance to evaluate them for reattachment — quietly breaking the mechanism those two stages exist for. Leave this small; it only exists to catch prediction artifacts too small to be a fragment of anything.
+
+#### Min hole size (vox) — shared
+
+**Range:** 0 upward — **Default: 0 (fill every enclosed gap, no minimum)**
+
+Unlike the two fields above, this one genuinely is **one shared value** used by both routes. A background region fully enclosed by signal — a "hole" — survives as real background only if its area is **at or above** this value; anything smaller is filled in as noise. Same idea as Min volume, just applied to gaps instead of whole objects, and named the same way on purpose: both name the size something must clear to be trusted as real, not the size at which it gets discarded.
+
+The old behavior, unconditional hole-filling regardless of size, could silently erase real internal structure: a genuine gap inside a cell (debris exclusion, a real internal void) was treated identically to a single stray pixel of imaging noise, since neither route had any way to tell the two apart. Setting this above 0 draws that line explicitly, in both places it was missing:
+
+- **Pixel Classifier** (Create Labels' own union-find pipeline): holes are filled **per 2D Z-slice**, since that pipeline builds labels slice by slice before stacking them into 3D objects.
+- **Cellpose-SAM Segmentation**: Cellpose's own installed library fills holes in each predicted mask's full **3D** volume in one step (`cellpose/utils.py`'s `fill_holes_and_remove_small_masks()`, via `fill_voids.fill()`), also completely unconditionally. Since that code lives in the installed package, not this plugin, the fix is a monkey-patch applied only for the duration of each Cellpose-SAM inference call — see `_make_capped_fill_holes()` in `_cellpose_seg.py` — rather than an edit to the installed library, which would be lost on every reinstall.
+
+| Value | When to use |
+|-------|-------------|
+| **0** | **Default — fills every enclosed gap regardless of size (old behavior)** |
+| Small (e.g. 20) | Only single-pixel noise gaps get filled; anything larger is preserved |
+| Measured from GT (Tab 5 sweep) | The smallest confirmed-real hole size seen in hand-corrected ground truth — see below |
+
+> Leave this at 0 unless you have actually seen real internal holes disappearing from your labels, or a Tab 5 sweep has measured a recommended value from ground truth. There is no universal correct number — real GT checked during development showed a sharp split between 1–2 voxel gaps (near-certainly annotation noise) and 400+ voxel gaps (clearly real structure), with nothing in between, so a value anywhere in that gap works for that fish; a different fish may look different.
+
+---
+
 ### 6b. Pixel Classifier — Union-Find Labels
 
 Fully self-contained: Gaussian smooth → threshold → per-slice 2D connected components → overlap-based union-find into 3D objects → volume filter → sequential renumber. Shown when the active layer ends in `_NoBG` (background removed everywhere, not just outside the brain) — needs no additional model file.
@@ -400,40 +447,6 @@ if overlap_ratio ≥ min_overlap% → same object (linked)
 
 ---
 
-### Min volume (vox)
-
-**Range:** 5000 to 10000 — **Default: 7500**
-
-After all 2D blobs are linked into 3D objects, any object smaller than this voxel count is deleted as noise.
-
-| Value | When to use |
-|-------|-------------|
-| 5000 | Keep smaller objects — may include noise |
-| **7500** | **Default — validated for adult zebrafish microglia** |
-| 10000 | Keep only large objects — use if many small debris remain |
-
-> Zebrafish microglia at 4dpf typically occupy 15,000–50,000 voxels at standard resolution.
-
----
-
-### Min hole size (vox)
-
-**Range:** 0 upward — **Default: 0 (fill every enclosed gap, no minimum)**
-
-A background region fully enclosed by signal in a single Z-slice — a "hole" — survives as real background only if its area is **at or above** this value; anything smaller is filled in as noise. This is the same idea as Min volume, just applied to gaps instead of whole objects, and named the same way: both fields name the size something must clear to be trusted as real, not the size at which it gets discarded.
-
-The old behavior, unconditional hole-filling regardless of size, could silently erase real internal structure: a genuine gap inside a cell (debris exclusion, a real internal void) was treated identically to a single stray pixel of imaging noise, since the plugin had no way to tell the two apart. Setting this above 0 draws that line explicitly.
-
-| Value | When to use |
-|-------|-------------|
-| **0** | **Default — fills every enclosed gap regardless of size (old behavior)** |
-| Small (e.g. 20) | Only single-pixel noise gaps get filled; anything larger is preserved |
-| Measured from GT (Tab 5 sweep) | The smallest confirmed-real hole size seen in hand-corrected ground truth — see below |
-
-> Leave this at 0 unless you have actually seen real internal holes disappearing from your labels, or a Tab 5 sweep has measured a recommended value from ground truth. There is no universal correct number — real GT checked during development showed a sharp split between 1–2 voxel gaps (near-certainly annotation noise) and 400+ voxel gaps (clearly real structure), with nothing in between, so a value anywhere in that gap works for that fish; a different fish may look different.
-
----
-
 ### Create Labels
 
 Click to run the 3D labelling algorithm. Processing runs in a background thread — the button is disabled until complete, and the small live-output box underneath shows the same per-stage messages the console gets (backend used, signal voxel count, blobs found/removed), instead of only landing in a terminal you may not have open.
@@ -449,6 +462,8 @@ When done, a `*_labels` layer appears in napari with each detected cell shown in
 ### 6c. Cellpose-SAM Segmentation
 
 Shown when the active layer ends in `_ExtRm` (background removed only outside the brain — the interior is left intact for Cellpose-SAM to see). Runs `do_3D` Cellpose-SAM inference, then a 3-component-GMM cleanup pass, a Krendl safe-merge pass (rejoins sub-threshold fragments based on gap size and contact area), and a large-contact merge pass (catches cells accidentally split through a thick junction).
+
+**Min size** and **Min hole size**, both used by this route, live in the always-visible **Common Settings** box above (see 6a) rather than in this section — they stay visible there even while this section is hidden.
 
 **Requires a Cellpose-SAM checkpoint** — see [Section 3](#3-getting-the-model-files). This is a project-specific fine-tuned model, not shipped with the plugin.
 
@@ -480,9 +495,9 @@ Minimum shared-boundary voxel count required between two fragments before the sa
 
 #### Safe-merge GT-min volume (vox)
 
-**Range:** 0 to 50000 — **Default: 10230** (the historical "smallest real microglia volume seen in validated GT data")
+**Range:** 0 to 50000 — **Default: measured from GT (historically 10230)**
 
-The volume, in voxels, below which the safe-merge pass treats a fragment as *not yet* a whole cell and a candidate to merge into something else. Rather than trust a single frozen historical number forever, the **Verify Cellprob / Large-contact (GT Sweep)** tool below measures this directly from whatever GT labels volume you sweep against (the true minimum labeled-cell volume in that GT) and recalibrates it automatically — you shouldn't normally need to set this by hand.
+The smallest volume Safe-merge trusts as already a whole cell — a fragment below this size is a candidate to merge into a neighboring cell rather than stand on its own. Recalibrated automatically from real GT statistics by the **Verify Cellprob / Large-contact** sweep (Tab 5) — no need to set by hand.
 
 #### Large-contact merge (vox)
 
@@ -1620,6 +1635,15 @@ The active layer's name must end in `_ExtRm` (Cellpose-SAM) or `_NoBG` (Pixel Cl
 
 Shown automatically based on active layer suffix — `_ExtRm` → Cellpose-SAM, `_NoBG` → Pixel Classifier (see [6a](#6a-which-tool-is-active--pixel-classifier-or-cellpose-sam)).
 
+**Common Settings (always visible, above both routes)**
+
+| Control | Recommended | What it does |
+|---------|-------------|--------------|
+| Min volume | 7500 (until a Tab 5 sweep measures a real recommendation) | Pixel Classifier's cutoff — nothing reconsiders an object it discards |
+| Min size (Cellpose-SAM) | 15 | Cellpose-SAM only — tiny early noise filter, deliberately not the same value as Min volume (see [6a](#6a-which-tool-is-active--pixel-classifier-or-cellpose-sam)) |
+| Min hole size | 0 (until a Tab 5 sweep measures a real recommendation from GT) | Shared by both routes — minimum voxels for an enclosed gap to survive as real background instead of being filled |
+| Safe-merge GT-min volume | measured from GT (historically 10230) | Cellpose-SAM only — smallest volume Safe-merge trusts as already a whole cell, recalibrated by the Cellprob/Large-contact sweep |
+
 **Pixel Classifier**
 
 | Control | Recommended | What it does |
@@ -1627,8 +1651,6 @@ Shown automatically based on active layer suffix — `_ExtRm` → Cellpose-SAM, 
 | Smooth σ XY | 1.5 | Contour softness within each slice |
 | Smooth σ Z | 3.0 | Cross-slice blob connectivity |
 | Min overlap | 10% | Overlap needed to link blobs across slices |
-| Min volume | 7500 (until a Tab 5 sweep measures a real recommendation from GT) | Minimum voxels to keep a 3D object |
-| Min hole size | 0 (until a Tab 5 sweep measures a real recommendation from GT) | Minimum voxels for an enclosed gap to survive as real background instead of being filled |
 
 **Cellpose-SAM Segmentation**
 
@@ -1637,7 +1659,6 @@ Shown automatically based on active layer suffix — `_ExtRm` → Cellpose-SAM, 
 | Cellprob threshold | -2.5 | Confidence cutoff for foreground vs. background |
 | Safe-merge max gap | 2 vox | Max gap allowed when merging fragments |
 | Safe-merge min contact | 10 vox | Min touching surface required to merge |
-| Safe-merge GT-min volume | 10230 vox | Smallest volume trusted as already a whole cell — recalibrated from real GT by a Tab 5 sweep, not usually set by hand |
 | Large-contact merge | 20 vox | Second merge pass for thick-junction splits |
 | Email me when done | Unchecked | Uses Tab 5's shared Email notification credentials (Section 9h) — do_3D can run hours on a full-size fish |
 

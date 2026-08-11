@@ -729,6 +729,109 @@ class ZFMicrogliaAIWidget(QWidget):
         self._labels_mode_hint.setStyleSheet("color: #8ab; font-size: 10px; font-style: italic;")
         t2.addWidget(self._labels_mode_hint)
 
+        # ── Common Settings — shared, always visible regardless of which ───
+        # route (Pixel Classifier or Cellpose-SAM) is currently shown below.
+        # Min hole size is a genuinely single shared value/history, used
+        # identically in spirit by both routes (Pixel Classifier per-slice,
+        # Cellpose-SAM in full 3D via a monkey-patch -- see
+        # _make_capped_fill_holes() in _cellpose_seg.py). Min volume and
+        # Cellpose-SAM min_size look like the same idea ("smallest real
+        # cell size") but are NOT unified into one value: Min volume is the
+        # Pixel Classifier's *final* debris cutoff (nothing runs after
+        # create_labels() in that route), while Cellpose-SAM min_size is a
+        # deliberately tiny early noise filter -- real fragments below Min
+        # volume's threshold still need to survive to reach the GMM
+        # cleanup and Krendl safe-merge stages, which decide reattach-vs-
+        # discard far more precisely than a single blunt cutoff could.
+        # Sharing one number between them would silently break that
+        # reattachment path. Both are kept here, side by side and always
+        # visible, specifically so that distinction stays visible too,
+        # rather than hiding one of them inside a route-specific group.
+        common_group = QGroupBox("Common Settings (both Pixel Classifier + Cellpose-SAM)")
+        common_layout = QVBoxLayout()
+
+        area_row = QHBoxLayout()
+        area_row.addWidget(QLabel("Min volume (vox) — Pixel Classifier:"))
+        self._area_slider = QLabeledSlider(Qt.Horizontal)
+        init_min_volume = _root_cfg.get("min_volume_vox", 7500)
+        init_min_volume_recommended = _root_cfg.get("min_volume_recommended_vox")
+        area_slider_min = min(5000, init_min_volume, init_min_volume_recommended or 5000)
+        area_slider_max = max(10000, init_min_volume)
+        self._area_slider.setMinimum(area_slider_min)
+        self._area_slider.setMaximum(area_slider_max)
+        self._area_slider.setValue(init_min_volume)
+        area_row.addWidget(self._area_slider)
+        self._area_spin = _add_reliable_spinbox(
+            area_row, self._area_slider, area_slider_min, area_slider_max, 100
+        )
+        common_layout.addLayout(area_row)
+        self._area_recommended_lbl = QLabel(
+            f"  Recommended minimum (from GT sweeps so far): {init_min_volume_recommended} vox"
+            if init_min_volume_recommended is not None else
+            "  Recommended minimum: not yet measured — run Verify BG Threshold / Erosion (GT Sweep) below."
+        )
+        self._area_recommended_lbl.setStyleSheet("color: #aaa; font-size: 10px;")
+        self._area_recommended_lbl.setWordWrap(True)
+        common_layout.addWidget(self._area_recommended_lbl)
+
+        cpminsize_row = QHBoxLayout()
+        cpminsize_row.addWidget(QLabel("Min size (vox) — Cellpose-SAM:"))
+        self._cp_minsize_spin = QSpinBox()
+        self._cp_minsize_spin.setRange(1, 5000)
+        self._cp_minsize_spin.setValue(_root_cfg.get("cellpose_min_size", 15))
+        cpminsize_row.addWidget(self._cp_minsize_spin)
+        common_layout.addLayout(cpminsize_row)
+        cpminsize_note = QLabel(
+            "  Deliberately much smaller than Min volume above, and not "
+            "the same value on purpose: this only discards genuine "
+            "prediction noise before GMM cleanup and Krendl safe-merge "
+            "run — those stages, not this field, decide whether a small "
+            "real fragment gets reattached or discarded as debris. "
+            "Raising this toward Min volume's range would discard "
+            "fragments before they ever reach that decision."
+        )
+        cpminsize_note.setStyleSheet("color: #888; font-size: 10px;")
+        cpminsize_note.setWordWrap(True)
+        common_layout.addWidget(cpminsize_note)
+
+        hole_row = QHBoxLayout()
+        hole_row.addWidget(QLabel("Min hole size (vox) — shared:"))
+        self._hole_slider = QLabeledSlider(Qt.Horizontal)
+        init_min_hole = _root_cfg.get("min_hole_size_vox", 0)
+        init_min_hole_recommended = _root_cfg.get("min_hole_size_recommended_vox")
+        hole_slider_max = max(500, init_min_hole, init_min_hole_recommended or 500)
+        self._hole_slider.setMinimum(0)
+        self._hole_slider.setMaximum(hole_slider_max)
+        self._hole_slider.setValue(init_min_hole)
+        hole_row.addWidget(self._hole_slider)
+        self._hole_spin = _add_reliable_spinbox(
+            hole_row, self._hole_slider, 0, hole_slider_max, 10
+        )
+        common_layout.addLayout(hole_row)
+        hole_note = QLabel(
+            "  A background region fully enclosed by signal survives as "
+            "real background only if it's at or above this size; smaller "
+            "enclosed gaps are filled in as noise. 0 = fill every enclosed "
+            "gap regardless of size (the old, unconditional behavior). "
+            "Applies to whichever labelling route is active below — per "
+            "2D slice for Pixel Classifier, per full 3D mask for "
+            "Cellpose-SAM."
+        )
+        hole_note.setStyleSheet("color: #888; font-size: 10px;")
+        hole_note.setWordWrap(True)
+        common_layout.addWidget(hole_note)
+        self._hole_recommended_lbl = QLabel(
+            f"  Recommended floor (from GT sweeps so far): {init_min_hole_recommended} vox"
+            if init_min_hole_recommended is not None else
+            "  Recommended floor: not yet measured — run Verify BG Threshold / Erosion (GT Sweep) below."
+        )
+        self._hole_recommended_lbl.setStyleSheet("color: #aaa; font-size: 10px;")
+        self._hole_recommended_lbl.setWordWrap(True)
+        common_layout.addWidget(self._hole_recommended_lbl)
+
+        common_group.setLayout(common_layout)
+        t2.addWidget(common_group)
+
         # ── Pixel Classifier (union-find labels) — shown for _NoBG layers ── #
         self._pixel_classifier_group = QGroupBox("Pixel Classifier — Union-Find Labels")
         pcg = QVBoxLayout()
@@ -774,63 +877,6 @@ class ZFMicrogliaAIWidget(QWidget):
             sz_row, self._sz_slider, 0.0, 5.0, 0.1, decimals=1
         )
         pcg.addLayout(sz_row)
-
-        area_row = QHBoxLayout()
-        area_row.addWidget(QLabel("Min volume (vox):"))
-        self._area_slider = QLabeledSlider(Qt.Horizontal)
-        init_min_volume = _root_cfg.get("min_volume_vox", 7500)
-        init_min_volume_recommended = _root_cfg.get("min_volume_recommended_vox")
-        area_slider_min = min(5000, init_min_volume, init_min_volume_recommended or 5000)
-        area_slider_max = max(10000, init_min_volume)
-        self._area_slider.setMinimum(area_slider_min)
-        self._area_slider.setMaximum(area_slider_max)
-        self._area_slider.setValue(init_min_volume)
-        area_row.addWidget(self._area_slider)
-        self._area_spin = _add_reliable_spinbox(
-            area_row, self._area_slider, area_slider_min, area_slider_max, 100
-        )
-        pcg.addLayout(area_row)
-        self._area_recommended_lbl = QLabel(
-            f"  Recommended minimum (from GT sweeps so far): {init_min_volume_recommended} vox"
-            if init_min_volume_recommended is not None else
-            "  Recommended minimum: not yet measured — run Verify BG Threshold / Erosion (GT Sweep) below."
-        )
-        self._area_recommended_lbl.setStyleSheet("color: #aaa; font-size: 10px;")
-        self._area_recommended_lbl.setWordWrap(True)
-        pcg.addWidget(self._area_recommended_lbl)
-
-        hole_row = QHBoxLayout()
-        hole_row.addWidget(QLabel("Min hole size (vox):"))
-        self._hole_slider = QLabeledSlider(Qt.Horizontal)
-        init_min_hole = _root_cfg.get("min_hole_size_vox", 0)
-        init_min_hole_recommended = _root_cfg.get("min_hole_size_recommended_vox")
-        hole_slider_max = max(500, init_min_hole, init_min_hole_recommended or 500)
-        self._hole_slider.setMinimum(0)
-        self._hole_slider.setMaximum(hole_slider_max)
-        self._hole_slider.setValue(init_min_hole)
-        hole_row.addWidget(self._hole_slider)
-        self._hole_spin = _add_reliable_spinbox(
-            hole_row, self._hole_slider, 0, hole_slider_max, 10
-        )
-        pcg.addLayout(hole_row)
-        hole_note = QLabel(
-            "  A background region fully enclosed by signal in a slice "
-            "survives as real background only if it's at or above this "
-            "size; smaller enclosed gaps are filled in as noise instead of "
-            "being left as a stray hole. 0 = fill every enclosed gap "
-            "regardless of size (the old, unconditional behavior)."
-        )
-        hole_note.setStyleSheet("color: #888; font-size: 10px;")
-        hole_note.setWordWrap(True)
-        pcg.addWidget(hole_note)
-        self._hole_recommended_lbl = QLabel(
-            f"  Recommended floor (from GT sweeps so far): {init_min_hole_recommended} vox"
-            if init_min_hole_recommended is not None else
-            "  Recommended floor: not yet measured — run Verify BG Threshold / Erosion (GT Sweep) below."
-        )
-        self._hole_recommended_lbl.setStyleSheet("color: #aaa; font-size: 10px;")
-        self._hole_recommended_lbl.setWordWrap(True)
-        pcg.addWidget(self._hole_recommended_lbl)
 
         self._labels_btn = QPushButton("Create Labels")
         self._labels_btn.setStyleSheet("QPushButton { font-weight: bold; padding: 6px; }")
@@ -5521,6 +5567,14 @@ class ZFMicrogliaAIWidget(QWidget):
         min_contact   = self._cp_mincontact_slider.value()
         gt_min        = self._cp_gtmin_slider.value()
         large_contact = self._cp_largecontact_slider.value()
+        # Shared with the Pixel Classifier route -- same underlying idea
+        # (real vs. noise-sized enclosed gaps) applies to Cellpose-SAM's
+        # own predicted masks too, see _make_capped_fill_holes() in
+        # _cellpose_seg.py.
+        min_hole_size = self._hole_slider.value()
+        # Deliberately NOT the same value as Min volume -- see the
+        # "Common Settings" note above self._hole_slider's construction.
+        min_size = self._cp_minsize_spin.value()
 
         stem  = target.name
         scale = tuple(float(v) for v in target.scale) if len(target.scale) == 3 else (1.0, 1.0, 1.0)
@@ -5559,7 +5613,7 @@ class ZFMicrogliaAIWidget(QWidget):
                         volume, model_path,
                         cellprob=cellprob, flow=flow, anisotropy=anisotropy,
                         max_gap=max_gap, min_contact=min_contact, gt_min=gt_min,
-                        large_contact=large_contact,
+                        large_contact=large_contact, min_hole_size=min_hole_size, min_size=min_size,
                         gpu=gpu, progress_cb=_progress,
                     )
                 result["labels"] = labels
@@ -5679,6 +5733,8 @@ class ZFMicrogliaAIWidget(QWidget):
         flow = _FLOW_THRESHOLD_FIXED
         max_gap = self._cp_maxgap_slider.value()
         min_contact = self._cp_mincontact_slider.value()
+        min_hole_size = self._hole_slider.value()
+        min_size = self._cp_minsize_spin.value()
         gpu = torch.cuda.is_available()
         current_cellprob = self._cp_cellprob_slider.value()
         current_large_contact = self._cp_largecontact_slider.value()
@@ -5702,6 +5758,7 @@ class ZFMicrogliaAIWidget(QWidget):
                     sweep = _ksw.run_krendl_sweep(
                         volume, gt_labels, model_path, cellprobs, large_contacts,
                         flow=flow, anisotropy=anisotropy, max_gap=max_gap, min_contact=min_contact,
+                        min_hole_size=min_hole_size, min_size=min_size,
                         gpu=gpu, progress_cb=_progress_cb, cancel_event=cancel_event,
                     )
                 result["sweep"] = sweep

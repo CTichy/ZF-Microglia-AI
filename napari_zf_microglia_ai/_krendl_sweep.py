@@ -74,8 +74,8 @@ def gt_min_from_labels(gt_labels):
 
 def run_krendl_sweep(volume, gt_labels, model_path, cellprobs, large_contacts,
                       flow=0.4, anisotropy=5.747, max_gap=2, min_contact=10,
-                      gt_min=None, iou_threshold=0.5, gpu=True,
-                      progress_cb=None, cancel_event=None):
+                      gt_min=None, iou_threshold=0.5, gpu=True, min_hole_size=0,
+                      min_size=15, progress_cb=None, cancel_event=None):
     """
     Sweep every (cellprob, large_contact) combination, scoring the
     resulting Krendl-pipeline labels against gt_labels with
@@ -85,6 +85,12 @@ def run_krendl_sweep(volume, gt_labels, model_path, cellprobs, large_contacts,
     gt_min_from_labels() -- the sweep recalibrates this parameter from
     the real GT statistics every time it runs. Pass an explicit value
     to override.
+
+    min_hole_size: passed through to masks_from_flows() -- see
+    _cellpose_seg._make_capped_fill_holes()'s docstring. Shared with the
+    Pixel Classifier route's Min hole size value, so this sweep is
+    validated against the same hole-fill behavior production actually
+    uses. 0 (default) matches Cellpose's own unconditional hole-filling.
 
     progress_cb(str) / cancel_event: same contract as the other sweep
     tools -- cancel_event is checked between cellprob values (not
@@ -119,7 +125,8 @@ def run_krendl_sweep(volume, gt_labels, model_path, cellprobs, large_contacts,
             break
 
         model, dP, cellprob_map, shape = precomputed
-        masks = masks_from_flows(model, dP, cellprob_map, shape, cellprob, flow)
+        masks = masks_from_flows(model, dP, cellprob_map, shape, cellprob, flow,
+                                  min_size=min_size, min_hole_size=min_hole_size)
         n0 = len(set(masks[masks > 0].tolist()))
         if progress_cb:
             progress_cb(f"cellprob={cellprob}: {n0} raw cells — GMM + Krendl safe-merge...")
