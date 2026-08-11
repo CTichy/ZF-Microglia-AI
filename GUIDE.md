@@ -197,6 +197,8 @@ The AI model outputs a probability map (0 = definitely not brain, 1 = definitely
 
 > Post-processing (largest connected component + hole filling) cleans up most artefacts regardless of threshold. Keep it at 0.25 unless results look obviously wrong.
 
+A read-only **Recommended MONAI Threshold** line sits underneath the slider — distinct from the slider's own live value, which stays freely editable. It only updates when **Verify MONAI Threshold / Erosion (GT Sweep)** (Tab 5, [9a](#9a-verify-monai-threshold--erosion-gt-sweep)) runs with its **"This is verified ground truth"** box ticked; moving the slider afterward to try something else never touches this line, so the sweep's own finding is never silently lost.
+
 ---
 
 ### Erosion (vox)
@@ -209,6 +211,8 @@ After the brain mask is computed, this many voxels are stripped inward from the 
 - **2–3:** Typical for zebrafish — removes a ~0.3–0.5 µm rim in XY or 2–3 µm in Z.
 
 > The `brain_mask.tif` saved to disk is **always the un-eroded mask**. Erosion only affects `brain_only.tif`.
+
+A read-only **Recommended Erosion** line sits underneath, same idea as MONAI Threshold's above — updated by either GT-verified sweep that tunes Erosion (Verify MONAI Threshold / Erosion, [9a](#9a-verify-monai-threshold--erosion-gt-sweep), and Verify BG Threshold / Erosion, [9b](#9b-verify-bg-threshold--erosion-gt-sweep), since both share this one Tab 1 slider).
 
 ---
 
@@ -272,6 +276,8 @@ pixels  > threshold → kept (treated as signal)
 | 2.00 (max) | Aggressive — may remove dim signal from thin cell protrusions |
 
 > For microglia labelling, **1.40** typically produces the cleanest isolated blobs with good gaps between cells. If microglia are losing thin protrusions, lower the value.
+
+A read-only **Recommended BG Threshold** line sits underneath — updated only by a GT-verified **Verify BG Threshold / Erosion (GT Sweep)** run (Tab 5, [9b](#9b-verify-bg-threshold--erosion-gt-sweep)).
 
 ---
 
@@ -410,6 +416,8 @@ Gaussian smoothing is applied before thresholding each slice. This rounds jagged
 
 > Do not confuse with Smooth σ Z. They serve completely different purposes.
 
+A read-only **Recommended Smooth σ XY** line sits underneath — updated only by a GT-verified **Verify Smooth σ XY / σ Z (GT Sweep)** run (Tab 5, [9g](#9g-verify-smooth-sigma-xy-sigma-z-gt-sweep)).
+
 ---
 
 ### Smooth σ Z
@@ -432,6 +440,8 @@ A microglia that disappears for 1–2 slices (due to low signal or a thin neck) 
 | 0.5 | Minimal — only adjacent slices with strong overlap connected |
 | **3.0** | **Recommended for zebrafish — bridges 1–3 slice gaps** |
 | 5.0+ | Very aggressive — may link cells at different Z depths |
+
+A read-only **Recommended Smooth σ Z** line sits underneath, same as σ XY above.
 
 ---
 
@@ -490,6 +500,8 @@ Cellpose-SAM's own early noise filter, applied right when raw instance masks are
 
 Cellpose-SAM's own confidence cutoff for what counts as foreground (cell) vs. background. Lower (more negative) values are more permissive — they recover more of a cell's thin, dim protrusions but can also let in more noise.
 
+A read-only **Recommended Cellprob threshold** line sits underneath — updated only by a GT-verified **Verify Cellprob / Large-contact (GT Sweep)** run (Tab 5, [9c](#9c-verify-cellprob--large-contact-gt-sweep)).
+
 #### Flow threshold
 
 There is no Flow threshold field anywhere in this plugin, deliberately. In Cellpose generally, this parameter rejects predicted objects whose internal flow field doesn't self-consistently point back to a single centre — but Cellpose only applies that flow-error QC filter in 2D/stitch mode. Reading `cellpose/dynamics.py`'s `compute_masks()` shows the filter call sits inside `if not do_3D:`, and this plugin always runs `do_3D=True`, so the parameter has zero effect on any result this plugin produces. It used to appear as a slider that quietly did nothing; that was a real trap for anyone trying to tune it, so it was removed rather than merely documented. Internally, do_3D's function signature still requires a value, fixed at 0.4 and never exposed to the user.
@@ -515,6 +527,8 @@ No longer its own field here. The volume below which the safe-merge pass treats 
 **Range:** 1 to 2000 — **Default: 20**
 
 A second, separate merge pass for large blobs that got split apart through a thick junction (more contact area than the safe-merge pass alone would normally join). Raise this if large cells are still coming out fragmented; lower it if separate cells are being wrongly joined.
+
+A read-only **Recommended Large-contact merge** line sits underneath, same as Cellprob threshold above.
 
 #### Final min-size safety net
 
@@ -813,7 +827,7 @@ Extracts fine-tuning crops and launches Cellpose-SAM training — the model Tab 
 
 **Train Cellpose-SAM** launches fine-tuning — configure `n_epochs`/`batch_size`/`save_every`/`log_every`/`lr`, then click **Launch Training**. The `pretrained` field defaults to whatever checkpoint is already loaded in Tab 2's Cellpose-SAM Segmentation section — i.e. by default this **continues training from where Tab 2 left off**, though you can browse to a different starting checkpoint (or type a builtin name like `cpsam`) if you want to start fresh. `branch_weight`/`branch_radius` control the project's branch-weighted loss (weights thin/branch-tip pixels more heavily during training so the model doesn't under-segment fine processes) — set `branch_weight` to `0` to disable it and use the standard Cellpose loss instead.
 
-**Calibrate branch_radius (from GT)** measures the real branch thickness of actual GT-labeled cells instead of guessing `branch_radius` by hand. Browse to a GT labels volume, set **scale Z**/**scale XY** to match its voxel scale, and click **Calibrate branch_radius**. The tool 3D-skeletonizes every labeled cell, decomposes each skeleton into branch segments, measures each segment's mean diameter via an anisotropic distance transform, and takes the **thinnest quartile** (the distal branch tips — the fine processes `branch_weight` exists to protect, as opposed to thick soma-adjacent segments) as the basis for the recommendation, converting that radius from microns to pixels at the given scale. The result feeds a never-falling ceiling tracked across every fish calibrated so far (a thicker "thin branch" measured in any fish sets a higher bar the field must still meet, the opposite direction from Min volume's never-rising floor) — that ceiling, not just this run's own measurement, is applied to the `branch_radius` field above and saved to config, no manual copy-over. This can take anywhere from several seconds to a couple of minutes depending on how many cells are in the GT volume; it runs in a background thread so napari stays responsive.
+**Calibrate branch_radius (from GT)** measures the real branch thickness of actual GT-labeled cells instead of guessing `branch_radius` by hand. Browse to a GT labels volume, set **scale Z**/**scale XY** to match its voxel scale, tick **"This is verified ground truth"** (off by default, same one-shot rule as every other sweep tool — see Section 9's intro), and click **Calibrate branch_radius**. The tool 3D-skeletonizes every labeled cell, decomposes each skeleton into branch segments, measures each segment's mean diameter via an anisotropic distance transform, and takes the **thinnest quartile** (the distal branch tips — the fine processes `branch_weight` exists to protect, as opposed to thick soma-adjacent segments) as the basis for the recommendation, converting that radius from microns to pixels at the given scale. If GT-verified, the result feeds a never-falling ceiling tracked across every fish calibrated so far (a thicker "thin branch" measured in any fish sets a higher bar the field must still meet, the opposite direction from Min volume's never-rising floor) — that ceiling, not just this run's own measurement, is applied to the `branch_radius` field above (and shown in a read-only **Recommended branch_radius** line underneath it) and saved to config, no manual copy-over. Left unticked, the run still reports what it measured but changes nothing. This can take anywhere from several seconds to a couple of minutes depending on how many cells are in the GT volume; it runs in a background thread so napari stays responsive.
 
 **Verify Best Epoch (GT Sweep)** — moved to [Section 9d](#9d-verify-best-epoch-gt-sweep), Tab 5 — Sweeps & Utilities. Confirms or corrects the recommended-checkpoint pointer above against real GT.
 
@@ -851,10 +865,14 @@ All four are checked by default (nothing is hidden until you actually uncheck so
 
 **Every sweep here keeps a running history across every fish you've ever swept, not just the one you swept last.** A single sweep run only ever proves something about the one fish it ran against; treating that one result as the final answer, and overwriting whatever an earlier sweep on a different fish had found, throws away real evidence for no reason. Each tunable value therefore falls into one of two categories, and the tool remembers a per-fish history for whichever one applies:
 
-- **Floors and ceilings** (Min volume, Min hole size, Safe-merge GT-min volume, branch_radius) protect against a specific failure — discarding a real cell, erasing a real hole, or under-protecting a real thin branch. These track the single most demanding piece of evidence seen across every fish: Min volume/Min hole size/GT-min only ever get *stricter* (lower) as a new fish proves an even smaller real example exists; branch_radius only ever gets *more generous* (higher) as a new fish proves an even thicker "thin" structure needs covering. A value already proven safe by one fish is never silently relaxed by a later sweep that simply didn't happen to test anything as extreme.
+- **Floors and ceilings** (Min volume, Min hole size, branch_radius) protect against a specific failure — discarding a real cell, erasing a real hole, or under-protecting a real thin branch. These track the single most demanding piece of evidence seen across every fish: Min volume/Min hole size only ever get *stricter* (lower) as a new fish proves an even smaller real example exists; branch_radius only ever gets *more generous* (higher) as a new fish proves an even thicker "thin" structure needs covering. A value already proven safe by one fish is never silently relaxed by a later sweep that simply didn't happen to test anything as extreme.
 - **Everything else** (BG Threshold, Erosion, Smooth σ XY/Z, Cellprob, Large-contact, MONAI Threshold) has no safety direction — each fish's sweep just finds that one fish's own local optimum, and there's no reason to trust the most recent fish over any earlier one. These are **averaged** across every fish swept so far instead.
 
 Re-running a sweep against a fish you've already swept before, for example after correcting that fish's ground truth, updates that fish's own entry in place rather than adding a duplicate — the history is keyed by GT filename, so it stays accurate rather than growing stale entries forever. Every sweep's status message reports both numbers now: what this specific fish's sweep found, and what the aggregated recommendation is once that fish's result is folded in.
+
+**"This is verified ground truth" — every sweep tool below now has one, exactly like Tab 3 Statistics.** Off by default. A sweep still runs and reports its own result (best point, score) regardless of whether it's ticked — what it *doesn't* do without it is move any of the shared values above, apply anything to a live slider, or (for Verify Best Epoch) rewrite the active checkpoint. The GT labels path each sweep takes could be anything — a raw, uncorrected prediction just as easily as a hand-verified fish — so only tick it once you're sure that path really is verified ground truth. **The checkbox always un-ticks itself once the sweep finishes**, GT-verified or not — a one-shot arm per run, not a sticky mode, so a later sweep right after a GT-verified one still needs deliberately re-ticking it.
+
+**Sliders/fields that a sweep can auto-apply a value to now show a separate, read-only "Recommended: X" line underneath them**, in whichever tab that control actually lives (Tab 1 for MONAI Threshold/Erosion/BG Threshold, Tab 2 for Smooth σ XY/σ Z/Cellprob threshold/Large-contact merge, Tab 4 for branch_radius) — distinct from the slider itself, which stays freely editable at all times. A GT-confirmed sweep both applies its recommendation to the live slider *and* updates this read-only line; moving the slider afterward to test something else never touches the recommended line, so what the evidence actually supports is never silently lost. Min volume/Max volume (Common Settings, 6a) already work this way by design — informative value only, no slider at all — since nothing should ever hand-tune them in the first place.
 
 ### 9a. Verify MONAI Threshold / Erosion (GT Sweep)
 
@@ -901,7 +919,8 @@ Sweeps **Cellprob** × **Large-contact merge** (both Tab 2, Cellpose-SAM Segment
 2. **Voxel scale Z/XY** — drives the do_3D `anisotropy` parameter (Z/XY ratio); independent of whatever's open in the viewer.
 3. **Cellprob min/max/step** and **Large-contact min/max/step** — define the grid.
 4. Tick **"Email me when done"** if you want a notification (~3h is well past the point where that's worth it) — see [Section 9h](#9h-email-notification-optional).
-5. Click **Run Cellprob/LC Sweep**. Uses Tab 2's current **Safe-merge max gap** and **Safe-merge min contact** values — only Cellprob and Large-contact vary.
+5. Tick **"This is verified ground truth"** if the GT labels above are genuinely hand-verified (off by default — see Section 9's intro for the one-shot rule shared by every sweep tool here). Only then will this run's findings move Cellprob threshold, Large-contact merge, the Min volume floor, or the Min hole size floor.
+6. Click **Run Cellprob/LC Sweep**. Uses Tab 2's current **Safe-merge max gap** and **Safe-merge min contact** values — only Cellprob and Large-contact vary.
 
 **Cellprob is now cheap to sweep, not just Large-contact.** Cellpose's own `CellposeModel.eval()` internally splits into two independent steps: the network forward pass that predicts a flow field (the one genuinely expensive, GPU-bound part — completely unrelated to Cellprob or any other threshold) and a separate, cheap mask-formation step that Cellprob threshold feeds into. This sweep now runs the network pass **exactly once** for the whole grid, then re-thresholds cheaply for every Cellprob value, then runs GMM cleanup + Krendl safe-merge per Cellprob value, with **Large-contact** varying freely on top of that as before. Total sweep time is now roughly **one `do_3D` network pass, period** — not one per Cellprob value.
 
@@ -929,7 +948,7 @@ Answers a specific question the recommended Cellpose-SAM checkpoint alone can't:
 
 This can take a while — each `do_3D` call is a few minutes, so a default 5×5 sweep is roughly 30 minutes to a couple of hours. **Stop Sweep** cancels between checkpoints (not mid-inference). Unlike Launch Training, this does **not** run as a detached process and does **not** survive closing napari. Tick **"Email me when done"** if you'd rather not watch — see [Section 9h](#9h-email-notification-optional).
 
-If the sweep disagrees with the recommendation, it's applied automatically: the recommended-checkpoint pointer is rewritten to the sweep-confirmed epoch, and that checkpoint is loaded as Tab 2's active Cellpose-SAM model.
+If the sweep disagrees with the recommendation, applying it — rewriting the recommended-checkpoint pointer to the sweep-confirmed epoch and loading that checkpoint as Tab 2's active Cellpose-SAM model — now requires **"This is verified ground truth"** (off by default, same one-shot rule as every other sweep tool here) to be ticked for that run. Left unticked, a disagreement is still reported in full, it just doesn't swap the active model out from under you on the strength of GT labels you haven't actually confirmed are correct.
 
 ---
 

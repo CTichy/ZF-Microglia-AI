@@ -178,6 +178,57 @@ def _add_reliable_spinbox(row_layout, slider, minimum, maximum, step,
     return spin
 
 
+def _add_gt_checkbox(layout, hint):
+    """Shared "This is verified ground truth" opt-in, one per sweep tool
+    -- same one-shot pattern as Tab 3 Statistics: off by default, only
+    ticking it lets that specific run move any never-rising/never-
+    falling recommended value the sweep tracks. A sweep with a bad or
+    unverified GT input can still be run and read for its own report
+    (best point / score), it just can't corrupt a shared floor/ceiling
+    unless this box is explicitly ticked for that run. Callers must
+    un-tick it again after each run completes (see _finish_gt_sweep
+    below) -- this helper only builds the widget.
+
+    Returns the checkbox."""
+    cb = QCheckBox("This is verified ground truth")
+    cb.setChecked(False)
+    layout.addWidget(cb)
+    note = QLabel(
+        f"  Off by default. Only tick when the GT labels used for {hint} "
+        "have actually been manually corrected/verified as real ground "
+        "truth -- an unverified/uncorrected prediction can never move a "
+        "recommended value this way. Un-ticks itself automatically once "
+        "the run finishes, so it must be re-ticked deliberately every "
+        "time you want this specific run to count."
+    )
+    note.setWordWrap(True)
+    note.setStyleSheet("color: #888; font-size: 10px;")
+    layout.addWidget(note)
+    return cb
+
+
+def _add_recommended_label(layout, initial=None, unit="", noun="value"):
+    """Read-only "Recommended: X" display shown next to a slider that a
+    GT sweep can auto-apply a value to -- distinct from the slider
+    itself, which stays freely editable afterward. Shows what the last
+    GT-confirmed sweep found even after the user has since moved the
+    slider away from it, so that history isn't silently lost the moment
+    someone nudges the control.
+
+    Returns the label; call .setText() on it from the sweep's own
+    result handler once a GT-confirmed recommendation is available."""
+    text = (
+        f"  Recommended {noun}: {initial}{unit}"
+        if initial is not None else
+        f"  Recommended {noun}: not yet measured — run a GT-verified sweep below."
+    )
+    lbl = QLabel(text)
+    lbl.setStyleSheet("color: #aaa; font-size: 10px;")
+    lbl.setWordWrap(True)
+    layout.addWidget(lbl)
+    return lbl
+
+
 def _set_layout_widgets_visible(layout, visible):
     """Recursively show/hide every widget reachable from `layout` -- rows in
     this file are a mix of addWidget(...) and addLayout(...) (nested
@@ -487,6 +538,9 @@ class ZFMicrogliaAIWidget(QWidget):
             thresh_row, self._thresh_slider, 0.01, 0.99, 0.01, decimals=2
         )
         t1.addLayout(thresh_row)
+        self._thresh_recommended_lbl = _add_recommended_label(
+            t1, _root_cfg.get("monai_threshold_recommended"), noun="MONAI Threshold"
+        )
 
         erosion_row = QHBoxLayout()
         erosion_row.addWidget(QLabel("Erosion (vox):"))
@@ -505,6 +559,9 @@ class ZFMicrogliaAIWidget(QWidget):
         )
         erosion_note.setStyleSheet("color: #aaa; font-size: 10px;")
         t1.addWidget(erosion_note)
+        self._erosion_recommended_lbl = _add_recommended_label(
+            t1, _root_cfg.get("erosion_voxels_recommended"), unit=" vox", noun="Erosion"
+        )
 
         t1.addWidget(_sep())
 
@@ -538,6 +595,9 @@ class ZFMicrogliaAIWidget(QWidget):
             tol_row, self._tol_slider, 0.00, 2.00, 0.01, decimals=2
         )
         t1.addLayout(tol_row)
+        self._tol_recommended_lbl = _add_recommended_label(
+            t1, _root_cfg.get("bg_tolerance_recommended"), noun="BG Threshold"
+        )
 
         bg_note = QLabel(
             "  Probe: inside-brain mode (post-inference)\n"
@@ -674,6 +734,8 @@ class ZFMicrogliaAIWidget(QWidget):
         self._bs_erstep_spin.setValue(1)
         bs_er_row2.addWidget(self._bs_erstep_spin)
         bsl.addLayout(bs_er_row2)
+
+        self._bs_is_gt_cb = _add_gt_checkbox(bsl, "this sweep")
 
         bs_btn_row = QHBoxLayout()
         self._bs_run_btn = QPushButton("Run Threshold/Erosion Sweep")
@@ -895,6 +957,9 @@ class ZFMicrogliaAIWidget(QWidget):
             sxy_row, self._sxy_slider, 0.0, 5.0, 0.1, decimals=1
         )
         pcg.addLayout(sxy_row)
+        self._sxy_recommended_lbl = _add_recommended_label(
+            pcg, _root_cfg.get("sigma_xy_recommended"), noun="Smooth σ XY"
+        )
 
         sz_row = QHBoxLayout()
         sz_row.addWidget(QLabel("Smooth σ Z:"))
@@ -909,6 +974,9 @@ class ZFMicrogliaAIWidget(QWidget):
             sz_row, self._sz_slider, 0.0, 5.0, 0.1, decimals=1
         )
         pcg.addLayout(sz_row)
+        self._sz_recommended_lbl = _add_recommended_label(
+            pcg, _root_cfg.get("sigma_z_recommended"), noun="Smooth σ Z"
+        )
 
         self._labels_btn = QPushButton("Create Labels")
         self._labels_btn.setStyleSheet("QPushButton { font-weight: bold; padding: 6px; }")
@@ -1071,6 +1139,8 @@ class ZFMicrogliaAIWidget(QWidget):
         self._ps_scalexy_spin.setValue(0.174)
         ps_scale_row.addWidget(self._ps_scalexy_spin)
         psl.addLayout(ps_scale_row)
+
+        self._ps_is_gt_cb = _add_gt_checkbox(psl, "this sweep")
 
         ps_btn_row = QHBoxLayout()
         self._ps_run_btn = QPushButton("Run BG/Erosion Sweep")
@@ -1244,6 +1314,8 @@ class ZFMicrogliaAIWidget(QWidget):
         sg_cells_row2.addWidget(self._sg_padxy_spin)
         sgl.addLayout(sg_cells_row2)
 
+        self._sg_is_gt_cb = _add_gt_checkbox(sgl, "this sweep")
+
         sg_btn_row = QHBoxLayout()
         self._sg_run_btn = QPushButton("Run Sigma Sweep")
         self._sg_run_btn.setStyleSheet("QPushButton { font-weight: bold; padding: 5px; }")
@@ -1334,6 +1406,9 @@ class ZFMicrogliaAIWidget(QWidget):
             cp_cellprob_row, self._cp_cellprob_slider, -6.0, 6.0, 0.1, decimals=2
         )
         cpg.addLayout(cp_cellprob_row)
+        self._cp_cellprob_recommended_lbl = _add_recommended_label(
+            cpg, _root_cfg.get("cellpose_cellprob_recommended"), noun="Cellprob threshold"
+        )
 
         # Flow threshold deliberately has no UI control: Cellpose only
         # applies its QC filter in 2D/stitch mode, never under do_3D (this
@@ -1389,6 +1464,9 @@ class ZFMicrogliaAIWidget(QWidget):
             cp_largecontact_row, self._cp_largecontact_slider, 1, 2000, 10
         )
         cpg.addLayout(cp_largecontact_row)
+        self._cp_largecontact_recommended_lbl = _add_recommended_label(
+            cpg, _root_cfg.get("cellpose_large_contact_recommended"), unit=" vox", noun="Large-contact merge"
+        )
 
         self._cp_run_notify_cb = _make_notify_checkbox()
         cpg.addWidget(self._cp_run_notify_cb)
@@ -1534,6 +1612,8 @@ class ZFMicrogliaAIWidget(QWidget):
 
         self._kr_notify_cb = _make_notify_checkbox()
         krl.addWidget(self._kr_notify_cb)
+
+        self._kr_is_gt_cb = _add_gt_checkbox(krl, "this sweep")
 
         kr_btn_row = QHBoxLayout()
         self._kr_run_btn = QPushButton("Run Cellprob/LC Sweep")
@@ -2798,6 +2878,9 @@ class ZFMicrogliaAIWidget(QWidget):
         ct_bw_note.setStyleSheet("color: #aaa; font-size: 10px;")
         ct_bw_note.setWordWrap(True)
         ctl.addWidget(ct_bw_note)
+        self._ct_branchradius_recommended_lbl = _add_recommended_label(
+            ctl, _root_cfg.get("cellpose_branch_radius_recommended"), unit=" px", noun="branch_radius"
+        )
 
         ct_calib_row = QHBoxLayout()
         ct_calib_row.addWidget(QLabel("Calibrate from GT:"))
@@ -2822,6 +2905,7 @@ class ZFMicrogliaAIWidget(QWidget):
         self._ct_calib_scalexy_spin.setValue(0.174)
         ct_calib_scale_row.addWidget(self._ct_calib_scalexy_spin)
         ctl.addLayout(ct_calib_scale_row)
+        self._ct_calib_is_gt_cb = _add_gt_checkbox(ctl, "this calibration")
         self._ct_calib_run_btn = QPushButton("Calibrate branch_radius")
         ctl.addWidget(self._ct_calib_run_btn)
         ct_calib_note = QLabel(
@@ -3017,6 +3101,10 @@ class ZFMicrogliaAIWidget(QWidget):
 
         self._es_notify_cb = _make_notify_checkbox()
         esl.addWidget(self._es_notify_cb)
+
+        self._es_is_gt_cb = _add_gt_checkbox(
+            esl, "this sweep -- overriding the active checkpoint is a consequential change"
+        )
 
         es_btn_row = QHBoxLayout()
         self._es_run_btn = QPushButton("Run Epoch Sweep")
@@ -3568,6 +3656,10 @@ class ZFMicrogliaAIWidget(QWidget):
             timer.stop()
             self._ct_calib_run_btn.setEnabled(True)
 
+            # One-shot, same as Tab 3 Statistics.
+            is_gt = self._ct_calib_is_gt_cb.isChecked()
+            self._ct_calib_is_gt_cb.setChecked(False)
+
             if "error" in result:
                 self._ct_calib_status_lbl.setText(f"ERROR: {result['error'].splitlines()[0]}")
                 return
@@ -3575,22 +3667,34 @@ class ZFMicrogliaAIWidget(QWidget):
             stats = result["stats"]
             report = _bcal.format_branch_calibration_report(stats, self._branch_calib_job["current_radius"])
             measured_this_fish = stats["recommended_branch_radius_px"]
-            # Never-falling ceiling, opposite direction from min_volume/
-            # min_hole_size/gt_min -- see _update_gt_history's mode="max"
-            # docstring. Previously this just overwrote branch_radius
-            # with whatever this one run measured, with no cross-fish
-            # memory at all -- a real bug, fixed here alongside adding
-            # the aggregation.
-            recommended = self._update_gt_history(
-                "cellpose_branch_radius", self._branch_calib_job["fish_key"],
-                measured_this_fish, mode="max",
-            )
-            self._ct_branchradius_spin.setValue(recommended)
-            self._save_cfg(cellpose_branch_radius=recommended)
+
+            if is_gt:
+                # Never-falling ceiling, opposite direction from min_volume/
+                # min_hole_size/gt_min -- see _update_gt_history's mode="max"
+                # docstring. Previously this just overwrote branch_radius
+                # with whatever this one run measured, with no cross-fish
+                # memory at all -- a real bug, fixed here alongside adding
+                # the aggregation.
+                recommended = self._update_gt_history(
+                    "cellpose_branch_radius", self._branch_calib_job["fish_key"],
+                    measured_this_fish, mode="max",
+                )
+                self._ct_branchradius_spin.setValue(recommended)
+                self._save_cfg(cellpose_branch_radius=recommended,
+                                cellpose_branch_radius_recommended=recommended)
+                self._ct_branchradius_recommended_lbl.setText(f"  Recommended branch_radius: {recommended} px")
+                applied_note = (
+                    f" Applied ceiling across all fish calibrated so far: "
+                    f"branch_radius={recommended}. Saved."
+                )
+            else:
+                applied_note = (
+                    " Not GT-verified — recommended value NOT updated "
+                    "(tick \"This is verified ground truth\" before running to apply)."
+                )
             self._ct_calib_status_lbl.setText(
                 f"{report.splitlines()[-1] if report else ''} This fish measured "
-                f"branch_radius={measured_this_fish}. Applied ceiling across all fish "
-                f"calibrated so far: branch_radius={recommended}. Saved."
+                f"branch_radius={measured_this_fish}.{applied_note}"
             )
 
         timer.timeout.connect(_poll)
@@ -3945,6 +4049,7 @@ class ZFMicrogliaAIWidget(QWidget):
 
             result = job["result"]
             if "error" in result:
+                self._es_is_gt_cb.setChecked(False)
                 self._es_status_lbl.setText(f"ERROR during sweep: {result['error'].splitlines()[0]}")
                 self._es_report_view.append("\n" + result["error"])
                 self._maybe_send_notify(
@@ -3957,12 +4062,26 @@ class ZFMicrogliaAIWidget(QWidget):
             sweep = result["sweep"]
             report = _esw.format_sweep_report(sweep, job["recommended"])
             self._es_report_view.setPlainText(report)
+            # One-shot, same as Tab 3 Statistics: only a GT-confirmed run
+            # may rewrite the checkpoint pointer / swap Tab 2's active
+            # model, and the box never stays armed for the next run.
+            is_gt = self._es_is_gt_cb.isChecked()
+            self._es_is_gt_cb.setChecked(False)
             if sweep.get("cancelled"):
                 self._es_status_lbl.setText("Sweep cancelled — partial results above.")
             elif sweep["best_epoch"] == job["recommended"]:
                 self._es_status_lbl.setText(
                     f"Confirmed: epoch {job['recommended']} is the sweep's best "
                     f"(avg IoU={sweep['per_epoch_avg'][sweep['best_epoch']]['iou']:.1f}%)."
+                )
+            elif not is_gt:
+                best_epoch = sweep["best_epoch"]
+                self._es_status_lbl.setText(
+                    f"Sweep's best is epoch {best_epoch} "
+                    f"(avg IoU={sweep['per_epoch_avg'][best_epoch]['iou']:.1f}%), "
+                    f"not the recommended {job['recommended']}. Not GT-verified — checkpoint "
+                    f"pointer / active model NOT changed (tick \"This is verified ground "
+                    f"truth\" before running to apply)."
                 )
             else:
                 best_epoch = sweep["best_epoch"]
@@ -4798,6 +4917,7 @@ class ZFMicrogliaAIWidget(QWidget):
 
             result = job["result"]
             if "error" in result:
+                self._bs_is_gt_cb.setChecked(False)
                 self._bs_status_lbl.setText(f"ERROR during sweep: {result['error'].splitlines()[0]}")
                 self._bs_report_view.append("\n" + result["error"])
                 return
@@ -4806,22 +4926,43 @@ class ZFMicrogliaAIWidget(QWidget):
             report = _bsw.format_brain_sweep_report(sweep, job["current_threshold"], job["current_erosion"])
             self._bs_report_view.setPlainText(report)
             if sweep.get("cancelled"):
+                self._bs_is_gt_cb.setChecked(False)
                 self._bs_status_lbl.setText("Sweep cancelled — partial results above.")
             elif sweep["best_point"] is not None:
                 best_th, best_er = sweep["best_point"]
                 fish_key = job["fish_key"]
-                avg_th = self._update_gt_history("monai_threshold", fish_key, best_th, mode="mean")
-                avg_er = self._update_gt_history("erosion_voxels", fish_key, best_er, mode="mean")
-                self._thresh_slider.setValue(avg_th)
-                self._erosion_slider.setValue(round(avg_er))
-                self._save_cfg(monai_threshold=avg_th, erosion_voxels=round(avg_er))
+                # One-shot, same as Tab 3 Statistics: only a GT-confirmed
+                # run may move the shared recommended values, and the box
+                # never stays armed for the next run.
+                is_gt = self._bs_is_gt_cb.isChecked()
+                self._bs_is_gt_cb.setChecked(False)
+                if is_gt:
+                    avg_th = self._update_gt_history("monai_threshold", fish_key, best_th, mode="mean")
+                    avg_er = self._update_gt_history("erosion_voxels", fish_key, best_er, mode="mean")
+                    self._thresh_slider.setValue(avg_th)
+                    self._erosion_slider.setValue(round(avg_er))
+                    self._save_cfg(
+                        monai_threshold=avg_th, monai_threshold_recommended=avg_th,
+                        erosion_voxels=round(avg_er), erosion_voxels_recommended=round(avg_er),
+                    )
+                    self._thresh_recommended_lbl.setText(f"  Recommended MONAI Threshold: {avg_th:.3f}")
+                    self._erosion_recommended_lbl.setText(f"  Recommended Erosion: {round(avg_er)} vox")
+                    applied_note = (
+                        f" Applied average across all fish swept so far: "
+                        f"Threshold={avg_th:.3f}, Erosion={avg_er:.1f}. Saved."
+                    )
+                else:
+                    applied_note = (
+                        " Not GT-verified — recommended values NOT updated "
+                        "(tick \"This is verified ground truth\" before running to apply)."
+                    )
                 self._bs_status_lbl.setText(
                     f"This fish's best: MONAI Threshold={best_th}, Erosion={best_er} "
-                    f"(Dice={sweep['results'][sweep['best_point']]['dice']:.1f}%). "
-                    f"Applied average across all fish swept so far: "
-                    f"Threshold={avg_th:.3f}, Erosion={avg_er:.1f}. Saved."
+                    f"(Dice={sweep['results'][sweep['best_point']]['dice']:.1f}%)."
+                    f"{applied_note}"
                 )
             else:
+                self._bs_is_gt_cb.setChecked(False)
                 self._bs_status_lbl.setText("Sweep finished but no grid points could be scored.")
 
         timer.timeout.connect(_poll)
@@ -5516,6 +5657,7 @@ class ZFMicrogliaAIWidget(QWidget):
 
             result = job["result"]
             if "error" in result:
+                self._ps_is_gt_cb.setChecked(False)
                 self._ps_status_lbl.setText(f"ERROR during sweep: {result['error'].splitlines()[0]}")
                 self._ps_report_view.append("\n" + result["error"])
                 return
@@ -5524,72 +5666,91 @@ class ZFMicrogliaAIWidget(QWidget):
             report = _psw.format_pixel_sweep_report(sweep, job["current_bg"], job["current_erosion"])
             self._ps_report_view.setPlainText(report)
             if sweep.get("cancelled"):
+                self._ps_is_gt_cb.setChecked(False)
                 self._ps_status_lbl.setText("Sweep cancelled — partial results above.")
             elif sweep["best_point"] is not None:
                 best_bt, best_er = sweep["best_point"]
                 fish_key = job["fish_key"]
+                # One-shot, same as Tab 3 Statistics: only a GT-confirmed
+                # run may move any recommended value below, and the box
+                # never stays armed for the next run.
+                is_gt = self._ps_is_gt_cb.isChecked()
+                self._ps_is_gt_cb.setChecked(False)
 
-                # min_volume/min_hole_size are never-rising floors: once
-                # one fish's GT proves a cell (or hole) of size N is real,
-                # no other fish's sweep (which may simply lack any
-                # cell/hole that small) should raise the recommendation
-                # back above N. Tracked per-fish so re-sweeping the same
-                # fish after a GT correction properly updates its own
-                # entry rather than being stuck with a stale value
-                # forever -- see _update_gt_history.
-                recommended = self._update_gt_history(
-                    "min_volume_vox", fish_key, sweep["min_volume_used"], mode="min"
-                )
-                recommended_hole = self._update_gt_history(
-                    "min_hole_size_vox", fish_key, sweep["min_hole_size_used"], mode="min"
-                )
-                self._save_cfg(min_volume_recommended_vox=recommended,
-                                min_hole_size_recommended_vox=recommended_hole)
-                self._area_value_lbl.setText(str(recommended))
-                self._hole_recommended_lbl.setText(
-                    f"  Recommended floor (from GT sweeps so far): {recommended_hole} vox"
-                )
+                if is_gt:
+                    # min_volume/min_hole_size are never-rising floors:
+                    # once one fish's GT proves a cell (or hole) of size N
+                    # is real, no other fish's sweep (which may simply
+                    # lack any cell/hole that small) should raise the
+                    # recommendation back above N. Tracked per-fish so
+                    # re-sweeping the same fish after a GT correction
+                    # properly updates its own entry rather than being
+                    # stuck with a stale value forever -- see
+                    # _update_gt_history.
+                    recommended = self._update_gt_history(
+                        "min_volume_vox", fish_key, sweep["min_volume_used"], mode="min"
+                    )
+                    recommended_hole = self._update_gt_history(
+                        "min_hole_size_vox", fish_key, sweep["min_hole_size_used"], mode="min"
+                    )
+                    self._save_cfg(min_volume_recommended_vox=recommended,
+                                    min_hole_size_recommended_vox=recommended_hole)
+                    self._area_value_lbl.setText(str(recommended))
+                    self._hole_recommended_lbl.setText(
+                        f"  Recommended floor (from GT sweeps so far): {recommended_hole} vox"
+                    )
 
-                # BG Threshold and Erosion aren't safety floors -- each
-                # fish's sweep just finds that fish's own local optimum,
-                # with no safe direction to bias toward -- so these are
-                # averaged across every fish swept so far instead of
-                # floored. Erosion's history is shared with the MONAI
-                # Threshold/Erosion sweep, since both tune the same
-                # underlying Tab 1 slider.
-                avg_bt = self._update_gt_history("bg_tolerance", fish_key, best_bt, mode="mean")
-                avg_er = self._update_gt_history("erosion_voxels", fish_key, best_er, mode="mean")
+                    # BG Threshold and Erosion aren't safety floors -- each
+                    # fish's sweep just finds that fish's own local optimum,
+                    # with no safe direction to bias toward -- so these are
+                    # averaged across every fish swept so far instead of
+                    # floored. Erosion's history is shared with the MONAI
+                    # Threshold/Erosion sweep, since both tune the same
+                    # underlying Tab 1 slider.
+                    avg_bt = self._update_gt_history("bg_tolerance", fish_key, best_bt, mode="mean")
+                    avg_er = self._update_gt_history("erosion_voxels", fish_key, best_er, mode="mean")
 
-                # Widen the Min hole size slider's (and its paired
-                # spinbox's -- kept in sync only via signals, see
-                # _add_reliable_spinbox) range first if a recommendation
-                # falls outside its fixed default, tuned around the old
-                # guessed constant. Without widening both, setValue() on
-                # the slider would trigger the synced spinbox to clamp
-                # back to its own stale bounds, which then forces the
-                # slider back too -- silently wrong instead of the real
-                # recommendation. Min volume needs no such treatment
-                # anymore -- it's an informative label now, not a slider.
-                if recommended_hole > self._hole_slider.maximum():
-                    self._hole_slider.setMaximum(recommended_hole)
-                    self._hole_spin.setMaximum(recommended_hole)
-                self._hole_slider.setValue(recommended_hole)
-                self._tol_slider.setValue(avg_bt)
-                self._erosion_slider.setValue(round(avg_er))
+                    # Widen the Min hole size slider's (and its paired
+                    # spinbox's -- kept in sync only via signals, see
+                    # _add_reliable_spinbox) range first if a recommendation
+                    # falls outside its fixed default, tuned around the old
+                    # guessed constant. Without widening both, setValue() on
+                    # the slider would trigger the synced spinbox to clamp
+                    # back to its own stale bounds, which then forces the
+                    # slider back too -- silently wrong instead of the real
+                    # recommendation. Min volume needs no such treatment
+                    # anymore -- it's an informative label now, not a slider.
+                    if recommended_hole > self._hole_slider.maximum():
+                        self._hole_slider.setMaximum(recommended_hole)
+                        self._hole_spin.setMaximum(recommended_hole)
+                    self._hole_slider.setValue(recommended_hole)
+                    self._tol_slider.setValue(avg_bt)
+                    self._erosion_slider.setValue(round(avg_er))
+                    self._tol_recommended_lbl.setText(f"  Recommended BG Threshold: {avg_bt:.3f}")
+                    self._erosion_recommended_lbl.setText(f"  Recommended Erosion: {round(avg_er)} vox")
 
-                self._save_cfg(
-                    bg_tolerance=avg_bt, erosion_voxels=round(avg_er),
-                    min_volume_vox=recommended, min_hole_size_vox=recommended_hole,
-                )
+                    self._save_cfg(
+                        bg_tolerance=avg_bt, bg_tolerance_recommended=avg_bt,
+                        erosion_voxels=round(avg_er), erosion_voxels_recommended=round(avg_er),
+                        min_volume_vox=recommended, min_hole_size_vox=recommended_hole,
+                    )
+                    applied_note = (
+                        f" Applied average across all fish swept so far: BG Threshold="
+                        f"{avg_bt:.3f}, Erosion={avg_er:.1f}. Min volume floor={recommended} "
+                        f"vox, min hole size floor={recommended_hole} vox. All saved."
+                    )
+                else:
+                    applied_note = (
+                        " Not GT-verified — recommended values NOT updated "
+                        "(tick \"This is verified ground truth\" before running to apply)."
+                    )
                 self._ps_status_lbl.setText(
                     f"This fish's best: BG Threshold={best_bt}, Erosion={best_er} "
-                    f"(avg IoU={sweep['per_point_avg'][sweep['best_point']]['iou']:.1f}%). "
-                    f"Applied average across all fish swept so far: BG Threshold="
-                    f"{avg_bt:.3f}, Erosion={avg_er:.1f}. Min volume floor={recommended} "
-                    f"vox, min hole size floor={recommended_hole} vox. All saved -- edit "
-                    f"any field freely if you want to test a different value."
+                    f"(avg IoU={sweep['per_point_avg'][sweep['best_point']]['iou']:.1f}%)."
+                    f"{applied_note}"
                 )
             else:
+                self._ps_is_gt_cb.setChecked(False)
                 self._ps_status_lbl.setText("Sweep finished but no grid points could be scored.")
 
         timer.timeout.connect(_poll)
@@ -5728,6 +5889,7 @@ class ZFMicrogliaAIWidget(QWidget):
 
             result = job["result"]
             if "error" in result:
+                self._sg_is_gt_cb.setChecked(False)
                 self._sg_status_lbl.setText(f"ERROR during sweep: {result['error'].splitlines()[0]}")
                 self._sg_report_view.append("\n" + result["error"])
                 return
@@ -5736,49 +5898,66 @@ class ZFMicrogliaAIWidget(QWidget):
             report = _psw.format_sigma_sweep_report(sweep, job["current_sxy"], job["current_sz"])
             self._sg_report_view.setPlainText(report)
             if sweep.get("cancelled"):
+                self._sg_is_gt_cb.setChecked(False)
                 self._sg_status_lbl.setText("Sweep cancelled — partial results above.")
             elif sweep["best_point"] is not None:
                 best_sxy, best_sz = sweep["best_point"]
                 fish_key = job["fish_key"]
+                # One-shot, same as Tab 3 Statistics.
+                is_gt = self._sg_is_gt_cb.isChecked()
+                self._sg_is_gt_cb.setChecked(False)
 
-                # Same never-rises-floor treatment as the BG Threshold/
-                # Erosion sweep -- see that handler for the full reasoning.
-                recommended = self._update_gt_history(
-                    "min_volume_vox", fish_key, sweep["min_volume_used"], mode="min"
-                )
-                recommended_hole = self._update_gt_history(
-                    "min_hole_size_vox", fish_key, sweep["min_hole_size_used"], mode="min"
-                )
-                self._save_cfg(min_volume_recommended_vox=recommended,
-                                min_hole_size_recommended_vox=recommended_hole)
-                self._area_value_lbl.setText(str(recommended))
-                self._hole_recommended_lbl.setText(
-                    f"  Recommended floor (from GT sweeps so far): {recommended_hole} vox"
-                )
-                if recommended_hole > self._hole_slider.maximum():
-                    self._hole_slider.setMaximum(recommended_hole)
-                    self._hole_spin.setMaximum(recommended_hole)
-                self._hole_slider.setValue(recommended_hole)
+                if is_gt:
+                    # Same never-rises-floor treatment as the BG Threshold/
+                    # Erosion sweep -- see that handler for the full reasoning.
+                    recommended = self._update_gt_history(
+                        "min_volume_vox", fish_key, sweep["min_volume_used"], mode="min"
+                    )
+                    recommended_hole = self._update_gt_history(
+                        "min_hole_size_vox", fish_key, sweep["min_hole_size_used"], mode="min"
+                    )
+                    self._save_cfg(min_volume_recommended_vox=recommended,
+                                    min_hole_size_recommended_vox=recommended_hole)
+                    self._area_value_lbl.setText(str(recommended))
+                    self._hole_recommended_lbl.setText(
+                        f"  Recommended floor (from GT sweeps so far): {recommended_hole} vox"
+                    )
+                    if recommended_hole > self._hole_slider.maximum():
+                        self._hole_slider.setMaximum(recommended_hole)
+                        self._hole_spin.setMaximum(recommended_hole)
+                    self._hole_slider.setValue(recommended_hole)
 
-                # Sigma XY/Z aren't safety floors either -- averaged across
-                # every fish swept so far, same reasoning as BG Threshold/
-                # Erosion above.
-                avg_sxy = self._update_gt_history("sigma_xy", fish_key, best_sxy, mode="mean")
-                avg_sz = self._update_gt_history("sigma_z", fish_key, best_sz, mode="mean")
-                self._sxy_slider.setValue(avg_sxy)
-                self._sz_slider.setValue(avg_sz)
-                self._save_cfg(
-                    sigma_xy=avg_sxy, sigma_z=avg_sz,
-                    min_volume_vox=recommended, min_hole_size_vox=recommended_hole,
-                )
+                    # Sigma XY/Z aren't safety floors either -- averaged across
+                    # every fish swept so far, same reasoning as BG Threshold/
+                    # Erosion above.
+                    avg_sxy = self._update_gt_history("sigma_xy", fish_key, best_sxy, mode="mean")
+                    avg_sz = self._update_gt_history("sigma_z", fish_key, best_sz, mode="mean")
+                    self._sxy_slider.setValue(avg_sxy)
+                    self._sz_slider.setValue(avg_sz)
+                    self._sxy_recommended_lbl.setText(f"  Recommended Smooth σ XY: {avg_sxy:.2f}")
+                    self._sz_recommended_lbl.setText(f"  Recommended Smooth σ Z: {avg_sz:.2f}")
+                    self._save_cfg(
+                        sigma_xy=avg_sxy, sigma_xy_recommended=avg_sxy,
+                        sigma_z=avg_sz, sigma_z_recommended=avg_sz,
+                        min_volume_vox=recommended, min_hole_size_vox=recommended_hole,
+                    )
+                    applied_note = (
+                        f" Applied average across all fish swept so far: sigma XY={avg_sxy:.2f}, "
+                        f"sigma Z={avg_sz:.2f}. Min volume floor={recommended} vox, min hole "
+                        f"size floor={recommended_hole} vox. All saved."
+                    )
+                else:
+                    applied_note = (
+                        " Not GT-verified — recommended values NOT updated "
+                        "(tick \"This is verified ground truth\" before running to apply)."
+                    )
                 self._sg_status_lbl.setText(
                     f"This fish's best: Smooth sigma XY={best_sxy}, sigma Z={best_sz} "
-                    f"(avg IoU={sweep['per_point_avg'][sweep['best_point']]['iou']:.1f}%). "
-                    f"Applied average across all fish swept so far: sigma XY={avg_sxy:.2f}, "
-                    f"sigma Z={avg_sz:.2f}. Min volume floor={recommended} vox, min hole "
-                    f"size floor={recommended_hole} vox. All saved."
+                    f"(avg IoU={sweep['per_point_avg'][sweep['best_point']]['iou']:.1f}%)."
+                    f"{applied_note}"
                 )
             else:
+                self._sg_is_gt_cb.setChecked(False)
                 self._sg_status_lbl.setText("Sweep finished but no grid points could be scored.")
 
         timer.timeout.connect(_poll)
@@ -6058,6 +6237,7 @@ class ZFMicrogliaAIWidget(QWidget):
 
             result = job["result"]
             if "error" in result:
+                self._kr_is_gt_cb.setChecked(False)
                 self._kr_status_lbl.setText(f"ERROR during sweep: {result['error'].splitlines()[0]}")
                 self._kr_report_view.append("\n" + result["error"])
                 self._maybe_send_notify(
@@ -6071,71 +6251,93 @@ class ZFMicrogliaAIWidget(QWidget):
             report = _ksw.format_krendl_sweep_report(sweep, job["current_cellprob"], job["current_large_contact"])
             self._kr_report_view.setPlainText(report)
             if sweep.get("cancelled"):
+                self._kr_is_gt_cb.setChecked(False)
                 self._kr_status_lbl.setText("Sweep cancelled — partial results above.")
             elif sweep["best_point"] is not None:
                 best_cp, best_lc = sweep["best_point"]
                 gt_min_used = sweep.get("gt_min_used")
                 min_hole_size_used = sweep.get("min_hole_size_used")
                 fish_key = job["fish_key"]
+                # One-shot, same as Tab 3 Statistics.
+                is_gt = self._kr_is_gt_cb.isChecked()
+                self._kr_is_gt_cb.setChecked(False)
 
-                # Cellprob/Large-contact aren't safety floors -- each
-                # fish's sweep just finds that fish's own local optimum,
-                # so these are averaged across every fish swept so far,
-                # same reasoning as BG Threshold/Erosion and Sigma XY/Z.
-                avg_cp = self._update_gt_history("cellpose_cellprob", fish_key, best_cp, mode="mean")
-                avg_lc = self._update_gt_history("cellpose_large_contact", fish_key, best_lc, mode="mean")
-                self._cp_cellprob_slider.setValue(avg_cp)
-                self._cp_largecontact_slider.setValue(round(avg_lc))
-                cfg_kwargs = dict(cellpose_cellprob=avg_cp, cellpose_large_contact=round(avg_lc))
-                gt_min_note = ""
-                if gt_min_used is not None:
-                    # gt_min IS a safety floor ("smallest volume trusted
-                    # as already a whole cell") -- and, since it's the
-                    # exact same measurement as the Pixel Classifier's
-                    # Min volume, it now shares that field's history
-                    # entirely rather than keeping its own separate one
-                    # (previously missing this never-rises treatment
-                    # altogether -- this sweep used to just overwrite it
-                    # with whatever this one run measured).
-                    recommended_gt_min = self._update_gt_history(
-                        "min_volume_vox", fish_key, gt_min_used, mode="min"
+                if is_gt:
+                    # Cellprob/Large-contact aren't safety floors -- each
+                    # fish's sweep just finds that fish's own local optimum,
+                    # so these are averaged across every fish swept so far,
+                    # same reasoning as BG Threshold/Erosion and Sigma XY/Z.
+                    avg_cp = self._update_gt_history("cellpose_cellprob", fish_key, best_cp, mode="mean")
+                    avg_lc = self._update_gt_history("cellpose_large_contact", fish_key, best_lc, mode="mean")
+                    self._cp_cellprob_slider.setValue(avg_cp)
+                    self._cp_largecontact_slider.setValue(round(avg_lc))
+                    self._cp_cellprob_recommended_lbl.setText(f"  Recommended Cellprob threshold: {avg_cp:.3f}")
+                    self._cp_largecontact_recommended_lbl.setText(
+                        f"  Recommended Large-contact merge: {round(avg_lc)} vox"
                     )
-                    self._save_cfg(min_volume_recommended_vox=recommended_gt_min)
-                    self._area_value_lbl.setText(str(recommended_gt_min))
-                    cfg_kwargs["min_volume_vox"] = recommended_gt_min
-                    gt_min_note = (
-                        f", Min volume floor={recommended_gt_min} (this fish measured {gt_min_used})"
+                    cfg_kwargs = dict(
+                        cellpose_cellprob=avg_cp, cellpose_cellprob_recommended=avg_cp,
+                        cellpose_large_contact=round(avg_lc),
+                        cellpose_large_contact_recommended=round(avg_lc),
                     )
-                if min_hole_size_used is not None:
-                    # Same never-rising floor as the Pixel Classifier's
-                    # two GT sweeps already maintain for this exact
-                    # config key -- this route just hadn't measured its
-                    # own gt_labels for real holes before, always passing
-                    # through whatever the Min hole size slider already
-                    # held instead.
-                    recommended_hole = self._update_gt_history(
-                        "min_hole_size_vox", fish_key, min_hole_size_used, mode="min"
+                    gt_min_note = ""
+                    if gt_min_used is not None:
+                        # gt_min IS a safety floor ("smallest volume trusted
+                        # as already a whole cell") -- and, since it's the
+                        # exact same measurement as the Pixel Classifier's
+                        # Min volume, it now shares that field's history
+                        # entirely rather than keeping its own separate one
+                        # (previously missing this never-rises treatment
+                        # altogether -- this sweep used to just overwrite it
+                        # with whatever this one run measured).
+                        recommended_gt_min = self._update_gt_history(
+                            "min_volume_vox", fish_key, gt_min_used, mode="min"
+                        )
+                        self._save_cfg(min_volume_recommended_vox=recommended_gt_min)
+                        self._area_value_lbl.setText(str(recommended_gt_min))
+                        cfg_kwargs["min_volume_vox"] = recommended_gt_min
+                        gt_min_note = (
+                            f", Min volume floor={recommended_gt_min} (this fish measured {gt_min_used})"
+                        )
+                    if min_hole_size_used is not None:
+                        # Same never-rising floor as the Pixel Classifier's
+                        # two GT sweeps already maintain for this exact
+                        # config key -- this route just hadn't measured its
+                        # own gt_labels for real holes before, always passing
+                        # through whatever the Min hole size slider already
+                        # held instead.
+                        recommended_hole = self._update_gt_history(
+                            "min_hole_size_vox", fish_key, min_hole_size_used, mode="min"
+                        )
+                        self._save_cfg(min_hole_size_recommended_vox=recommended_hole)
+                        if recommended_hole > self._hole_slider.maximum():
+                            self._hole_slider.setMaximum(recommended_hole)
+                            self._hole_spin.setMaximum(recommended_hole)
+                        self._hole_slider.setValue(recommended_hole)
+                        self._hole_recommended_lbl.setText(
+                            f"  Recommended floor (from GT sweeps so far): {recommended_hole} vox"
+                        )
+                        cfg_kwargs["min_hole_size_vox"] = recommended_hole
+                        gt_min_note += (
+                            f", Min hole size floor={recommended_hole} (this fish measured {min_hole_size_used})"
+                        )
+                    self._save_cfg(**cfg_kwargs)
+                    applied_note = (
+                        f" Applied average across all fish swept so far: cellprob={avg_cp:.3f}, "
+                        f"large_contact={avg_lc:.1f}{gt_min_note}. Saved."
                     )
-                    self._save_cfg(min_hole_size_recommended_vox=recommended_hole)
-                    if recommended_hole > self._hole_slider.maximum():
-                        self._hole_slider.setMaximum(recommended_hole)
-                        self._hole_spin.setMaximum(recommended_hole)
-                    self._hole_slider.setValue(recommended_hole)
-                    self._hole_recommended_lbl.setText(
-                        f"  Recommended floor (from GT sweeps so far): {recommended_hole} vox"
+                else:
+                    applied_note = (
+                        " Not GT-verified — recommended values NOT updated "
+                        "(tick \"This is verified ground truth\" before running to apply)."
                     )
-                    cfg_kwargs["min_hole_size_vox"] = recommended_hole
-                    gt_min_note += (
-                        f", Min hole size floor={recommended_hole} (this fish measured {min_hole_size_used})"
-                    )
-                self._save_cfg(**cfg_kwargs)
                 self._kr_status_lbl.setText(
-                    f"This fish's best: cellprob={best_cp}, large_contact={best_lc}. "
-                    f"Applied average across all fish swept so far: cellprob={avg_cp:.3f}, "
-                    f"large_contact={avg_lc:.1f}{gt_min_note} "
-                    f"(Score={sweep['results'][sweep['best_point']]['score']:+.1f}). Saved."
+                    f"This fish's best: cellprob={best_cp}, large_contact={best_lc} "
+                    f"(Score={sweep['results'][sweep['best_point']]['score']:+.1f})."
+                    f"{applied_note}"
                 )
             else:
+                self._kr_is_gt_cb.setChecked(False)
                 self._kr_status_lbl.setText("Sweep finished but no grid points could be scored.")
 
             self._maybe_send_notify(
