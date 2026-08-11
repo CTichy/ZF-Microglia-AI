@@ -346,6 +346,8 @@ Sits in its own box, above the Pixel Classifier/Cellpose-SAM sections and **alwa
 
 After all 2D blobs are linked into 3D objects in the Pixel Classifier's own union-find pipeline, any object smaller than this voxel count is deleted as noise. This is the *final* debris cutoff for that route — nothing runs after it to reconsider a discarded object.
 
+This same field also drives Cellpose-SAM's Safe-merge "already a whole cell" floor (6c) and the Final min-size safety net below — `gt_min_from_labels()` (Krendl's own name for this quantity) and `min_volume_from_gt()` are literally the same computation, so both routes now read one shared, GT-calibrated number instead of two separately-tracked copies of it.
+
 | Value | When to use |
 |-------|-------------|
 | 5000 | Keep smaller objects — may include noise |
@@ -380,6 +382,14 @@ The old behavior, unconditional hole-filling regardless of size, could silently 
 | Measured from GT (Tab 5 sweep) | The smallest confirmed-real hole size seen in hand-corrected ground truth — see below |
 
 > Leave this at 0 unless you have actually seen real internal holes disappearing from your labels, or a Tab 5 sweep has measured a recommended value from ground truth. There is no universal correct number — real GT checked during development showed a sharp split between 1–2 voxel gaps (near-certainly annotation noise) and 400+ voxel gaps (clearly real structure), with nothing in between, so a value anywhere in that gap works for that fish; a different fish may look different.
+
+#### Final min-size fraction — Cellpose-SAM
+
+**Range:** 0.0 to 1.0 — **Default: 0.618 (the golden ratio, 1/φ)**
+
+The very last stage of the Cellpose-SAM pipeline (6c), run after large-contact merge: any surviving cell smaller than `this fraction × Min volume` is removed as a final safety net, regardless of how it survived every earlier stage. Nothing upstream is guaranteed to catch every debris object — GMM cleanup separates populations by the raw size distribution and can still leave a gray-zone object standing, and safe-merge/large-contact only act when a nearby neighbor exists to merge into.
+
+The golden ratio is the default for a specific reason, not decoration: it needs to be strict enough that a fragment genuinely that much smaller than the smallest real GT cell ever measured is a defensible "almost certainly not a real cell" cutoff, while staying lenient enough not to reject a legitimately smaller-than-average real cell the way using Min volume itself (fraction = 1.0) would. Set to `0.0` to disable this stage entirely (nothing gets removed by it).
 
 ---
 
@@ -493,17 +503,19 @@ During the Krendl safe-merge pass, two fragments separated by a gap up to this m
 
 Minimum shared-boundary voxel count required between two fragments before the safe-merge pass will join them. Higher values require a more substantial touching surface before merging.
 
-#### Safe-merge GT-min volume (vox)
+#### Safe-merge "already a whole cell" floor
 
-**Range:** 0 to 50000 — **Default: measured from GT (historically 10230)**
-
-The smallest volume Safe-merge trusts as already a whole cell — a fragment below this size is a candidate to merge into a neighboring cell rather than stand on its own. Recalibrated automatically from real GT statistics by the **Verify Cellprob / Large-contact** sweep (Tab 5) — no need to set by hand.
+No longer its own field here. The volume below which the safe-merge pass treats a fragment as *not yet* a whole cell and a candidate to merge into something else is exactly the same measurement as **Min volume** in Common Settings (6a) — the smallest true voxel volume ever confirmed in real GT — so this route now reads that shared field directly rather than keeping a second, separately-tracked copy of the identical number. Recalibrated by the **Verify BG Threshold / Erosion**, **Verify Smooth σ XY/σZ**, and **Verify Cellprob / Large-contact** sweeps (Tab 5), and by Tab 3 Statistics whenever its "This is verified ground truth" checkbox is ticked — you shouldn't normally need to set this by hand.
 
 #### Large-contact merge (vox)
 
 **Range:** 1 to 2000 — **Default: 20**
 
 A second, separate merge pass for large blobs that got split apart through a thick junction (more contact area than the safe-merge pass alone would normally join). Raise this if large cells are still coming out fragmented; lower it if separate cells are being wrongly joined.
+
+#### Final min-size safety net
+
+The last stage of this pipeline, run automatically after large-contact merge — see **Final min-size fraction** in Common Settings (6a) for the field itself and the golden-ratio reasoning behind its default. Nothing above it is guaranteed to remove every possible debris object: GMM cleanup separates populations by the raw size distribution and can still leave a gray-zone object standing, and safe-merge/large-contact only act when a nearby neighbor exists to merge into. This stage is the backstop underneath all of them, not a replacement for any one of them.
 
 #### Run Cellpose-SAM Segmentation (button)
 
@@ -513,7 +525,7 @@ Click to start. `do_3D` inference is slow — it can take **hours** for a full-s
 
 ---
 
-**Verify Cellprob / Large-contact (GT Sweep)** — moved to [Section 9c](#9c-verify-cellprob--large-contact-gt-sweep), Tab 5 — Sweeps & Utilities. Also recalibrates Safe-merge GT-min volume above from GT.
+**Verify Cellprob / Large-contact (GT Sweep)** — moved to [Section 9c](#9c-verify-cellprob--large-contact-gt-sweep), Tab 5 — Sweeps & Utilities. Also recalibrates the shared Min volume field (Common Settings, 6a) from GT — Safe-merge's floor and Min volume are the same number now, not two separately-tracked copies of it.
 
 **Build GT-Correction Package** — moved to [Section 9f](#9f-build-gt-correction-package), Tab 5 — Sweeps & Utilities.
 
@@ -697,12 +709,20 @@ Two additional columns are added to the CSV:
 
 ---
 
+### This is verified ground truth (checkbox)
+
+**Off by default.** The Labels layer being measured could be anything — a raw, uncorrected prediction just as easily as a hand-verified fish — and this tab computes statistics on whatever layer is active regardless. Only tick this when the layer about to be measured has actually been manually corrected/verified as real ground truth.
+
+When ticked, clicking **Generate Statistics** does one thing in addition to its normal job: this run's smallest measured cell (`volume_vox`) is folded into the same never-rising **Min volume** floor the Tab 5 GT sweeps maintain (Common Settings, 6a) — exactly as if you had run one of those sweeps against this fish instead. This gives a second, lighter-weight path to contributing GT evidence to that floor beyond running a dedicated sweep, without ever risking an unverified prediction accidentally lowering it to something wrong. Leave it unticked for any exploratory or unverified run.
+
+---
+
 ### Generate Statistics (button)
 
 Click to compute. Runs in a background thread. When complete:
 
 - A CSV file is saved to the output folder (see Section 10), named `{source_file_stem}_statistics.csv`.
-- The status line shows how many labels were processed.
+- The status line shows how many labels were processed, and, if the ground-truth checkbox above was ticked, what this fish's smallest measured cell was and what the updated Min volume floor is.
 
 The CSV contains one row per label with up to 45 columns depending on which optional features are enabled. See Section 11 for a full description of every column.
 
@@ -865,7 +885,7 @@ Sweeps **Cellprob** × **Large-contact merge** (both Tab 2, Cellpose-SAM Segment
 
 **This used to be by far the slowest of the four GT-sweep tools, because it ran on the full fish rather than a handful of cropped cells — that's no longer true.** A single `do_3D` network pass on a full-size fish has historically taken around 3 hours in this project (e.g. D1F4: ~187 minutes), and that's now the sweep's entire cost, regardless of how many Cellprob or Large-contact values are in the grid. **Stop Sweep** only cancels between grid points, and since the network pass now happens once upfront it can't itself be interrupted mid-pass — but that pass is also the whole sweep's cost now, not a multiplier on it. This does **not** run detached — it won't survive closing napari. The report box streams Cellpose's internal `do_3D` progress live during that one pass rather than sitting on one static message — see the note under [Run Cellpose-SAM Segmentation](#run-cellpose-sam-segmentation-button) in Section 6c.
 
-**Safe-merge GT-min volume is also recalibrated every time you run this sweep** — measured directly from the GT labels volume's own smallest labeled cell, rather than a frozen historical constant, and tracked as the same kind of never-rising floor as Min volume/Min hole size (a bug in an earlier version of this tool skipped that tracking and just overwrote GT-min with whatever the latest sweep measured — fixed). Cellprob and Large-contact, which have no safe direction to bias toward, are instead averaged across every fish swept so far. This fish's own best point, the updated cross-fish averages, **and** the GT-min floor are all applied to the Tab 2 sliders and saved to config.
+**The shared Min volume field is also recalibrated every time you run this sweep** — measured directly from the GT labels volume's own smallest labeled cell, rather than a frozen historical constant. This used to be tracked as a separate "GT-min" value with no never-rising-floor protection at all (a bug in an earlier version of this tool: it just overwrote GT-min with whatever the latest sweep measured, fixed alongside unifying it with Min volume). Cellprob and Large-contact, which have no safe direction to bias toward, are instead averaged across every fish swept so far. This fish's own best point, the updated cross-fish averages, **and** the Min volume floor are all applied to the Tab 2 sliders and saved to config.
 
 ---
 
@@ -1639,10 +1659,10 @@ Shown automatically based on active layer suffix — `_ExtRm` → Cellpose-SAM, 
 
 | Control | Recommended | What it does |
 |---------|-------------|--------------|
-| Min volume | 7500 (until a Tab 5 sweep measures a real recommendation) | Pixel Classifier's cutoff — nothing reconsiders an object it discards |
+| Min volume | 7500 (until a Tab 5 sweep or GT-checked Statistics run measures a real recommendation) | Pixel Classifier's cutoff **and** Cellpose-SAM's Safe-merge "already a whole cell" floor — one shared value, not two |
 | Min size (Cellpose-SAM) | 15 | Cellpose-SAM only — tiny early noise filter, deliberately not the same value as Min volume (see [6a](#6a-which-tool-is-active--pixel-classifier-or-cellpose-sam)) |
 | Min hole size | 0 (until a Tab 5 sweep measures a real recommendation from GT) | Shared by both routes — minimum voxels for an enclosed gap to survive as real background instead of being filled |
-| Safe-merge GT-min volume | measured from GT (historically 10230) | Cellpose-SAM only — smallest volume Safe-merge trusts as already a whole cell, recalibrated by the Cellprob/Large-contact sweep |
+| Final min-size fraction | 0.618 (golden ratio) | Cellpose-SAM only — last-stage safety net removing anything below this fraction of Min volume |
 
 **Pixel Classifier**
 

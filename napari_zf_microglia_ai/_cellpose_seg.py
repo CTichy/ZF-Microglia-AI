@@ -386,6 +386,39 @@ def large_contact_merge(masks, large_contact=20):
     return masks, lc_merges
 
 
+def final_min_size_cleanup(masks, gt_min, fraction=0.618):
+    """Last-resort safety net, run after every other correction stage
+    (GMM cleanup, Krendl safe-merge, large-contact merge): removes any
+    surviving object smaller than fraction * gt_min.
+
+    gt_min is the smallest true voxel volume ever confirmed in real GT
+    (the same unified floor Safe-merge's own gt_min parameter uses --
+    see _widget.py's "Common Settings" note and _krendl_sweep.py's
+    gt_min_from_labels alias). Nothing upstream is guaranteed to remove
+    every possible debris object: GMM cleanup separates populations by
+    the raw size distribution, which can still leave a gray-zone object
+    standing, and safe-merge/large-contact only act when a nearby
+    neighbor exists to merge into. This stage is the final backstop --
+    not a replacement for those, but a floor under all of them.
+
+    fraction defaults to the golden ratio, 1/phi ~= 0.618: a fragment
+    genuinely that much smaller than the smallest real GT cell ever
+    measured is a defensible cutoff for "almost certainly not a real
+    cell" without being as aggressive as gt_min itself, which would
+    reject legitimately smaller-than-average real cells too.
+
+    Returns (masks, n_removed)."""
+    threshold = max(1, round(gt_min * fraction))
+    info = _get_info(masks)
+    below = [pid for pid, v in info.items() if v["vol"] < threshold]
+    if not below:
+        return masks, 0
+    masks = masks.copy()
+    for pid in below:
+        masks[masks == pid] = 0
+    return masks, len(below)
+
+
 def relabel_sequential(masks):
     """Renumber labels 1..N with no gaps. Returns (masks, n_labels)."""
     ids = np.unique(masks[masks > 0])
@@ -400,10 +433,11 @@ def relabel_sequential(masks):
 def run_full_pipeline(volume, model_path, cellprob=-2.5, flow=0.4, anisotropy=5.747,
                        max_gap=2, min_contact=10, large_contact=20, gt_min=GT_MIN,
                        gpu=True, progress_cb=None, precomputed_flows=None,
-                       min_hole_size=0, min_size=15):
+                       min_hole_size=0, min_size=15, final_min_fraction=0.618):
     """
-    Full do_3D + 3-GMM + Krendl safe merge + large-contact merge pipeline —
-    identical math to krendl_do3d.py, minus the GT-based relabeling/scoring
+    Full do_3D + 3-GMM + Krendl safe merge + large-contact merge + final
+    min-size safety net pipeline — identical math to krendl_do3d.py plus
+    one additional final stage, minus the GT-based relabeling/scoring
     (that stays a CLI/research workflow). Returns (labels, stats).
 
     progress_cb, if given, is called with a short status string before each
@@ -423,6 +457,10 @@ def run_full_pipeline(volume, model_path, cellprob=-2.5, flow=0.4, anisotropy=5.
     Min volume floor -- kept as a separate parameter on purpose (see the
     "Common Settings" note in _widget.py). Default 15 matches Cellpose's
     own default.
+
+    final_min_fraction : passed through to final_min_size_cleanup(), run
+    as the very last stage after large-contact merge -- see that
+    function's docstring for why 0.618 (golden ratio) is the default.
     """
     def _report(msg):
         if progress_cb:
@@ -451,7 +489,12 @@ def run_full_pipeline(volume, model_path, cellprob=-2.5, flow=0.4, anisotropy=5.
     masks, lc_merges = large_contact_merge(masks, large_contact)
     n3 = len(np.unique(masks[masks > 0]))
 
-    _report(f"{n3} cells — relabeling...")
+    final_min_threshold = max(1, round(gt_min * final_min_fraction))
+    _report(f"{n3} cells — final min-size safety net (< {final_min_threshold} vox)...")
+    masks, final_removed = final_min_size_cleanup(masks, gt_min, final_min_fraction)
+    n4 = len(np.unique(masks[masks > 0]))
+
+    _report(f"{n4} cells — relabeling...")
     masks, n_final = relabel_sequential(masks)
 
     stats = {
@@ -459,10 +502,13 @@ def run_full_pipeline(volume, model_path, cellprob=-2.5, flow=0.4, anisotropy=5.
         "n_after_gmm":         n1,
         "n_after_safe_merge":  n2,
         "n_after_large_contact": n3,
+        "n_after_final_min_size": n4,
         "n_final":             n_final,
         "gmm_cutoff_vox":      gmm_cutoff,
         "gmm_removed":         gmm_removed,
         "safe_merges":         safe_merges,
         "large_contact_merges": lc_merges,
+        "final_min_threshold_vox": final_min_threshold,
+        "final_min_removed":   final_removed,
     }
     return masks, stats

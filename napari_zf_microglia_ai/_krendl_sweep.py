@@ -57,25 +57,28 @@ every time it runs, instead of trusting a frozen number.
 
 from ._cellpose_seg import (
     predict_flows, masks_from_flows, gmm_cleanup,
-    krendl_safe_merge, large_contact_merge, relabel_sequential, _get_info, GT_MIN,
+    krendl_safe_merge, large_contact_merge, final_min_size_cleanup, relabel_sequential,
 )
 from ._gt_score import score_against_gt
-
-
-def gt_min_from_labels(gt_labels):
-    """Smallest true voxel volume among the labeled cells in gt_labels.
-    Falls back to the historical GT_MIN constant if gt_labels has no
-    labeled cells at all (degenerate input, shouldn't happen in practice)."""
-    info = _get_info(gt_labels)
-    if not info:
-        return GT_MIN
-    return min(v["vol"] for v in info.values())
+from ._pixel_sweep import min_volume_from_gt as gt_min_from_labels
+# gt_min_from_labels is kept as a name here for readability at this
+# module's call sites (Krendl safe-merge's "already a whole cell"
+# floor), but it is no longer its own implementation: gt_min and the
+# Pixel Classifier's min_volume are literally the same measurement --
+# the smallest true voxel volume among GT-labeled cells -- and were
+# only ever tracked as two separate config histories by historical
+# accident. Both now read and update the single shared
+# min_volume_vox/min_volume_recommended_vox floor (see
+# _widget.py's _update_gt_history calls), so a fish checked through
+# either the Pixel Classifier sweeps, this sweep, or Tab 3 Statistics
+# (when marked as verified GT) all contribute to the same number.
 
 
 def run_krendl_sweep(volume, gt_labels, model_path, cellprobs, large_contacts,
                       flow=0.4, anisotropy=5.747, max_gap=2, min_contact=10,
                       gt_min=None, iou_threshold=0.5, gpu=True, min_hole_size=0,
-                      min_size=15, progress_cb=None, cancel_event=None):
+                      min_size=15, final_min_fraction=0.618,
+                      progress_cb=None, cancel_event=None):
     """
     Sweep every (cellprob, large_contact) combination, scoring the
     resulting Krendl-pipeline labels against gt_labels with
@@ -91,6 +94,13 @@ def run_krendl_sweep(volume, gt_labels, model_path, cellprobs, large_contacts,
     Pixel Classifier route's Min hole size value, so this sweep is
     validated against the same hole-fill behavior production actually
     uses. 0 (default) matches Cellpose's own unconditional hole-filling.
+
+    final_min_fraction: passed through to final_min_size_cleanup(), run
+    after large_contact_merge on every grid point exactly like
+    run_full_pipeline() does in production -- see that function's
+    docstring for why 0.618 (golden ratio) is the default. Keeping this
+    sweep's pipeline shape identical to production is the whole point of
+    testing here rather than trusting the proxy metrics alone.
 
     progress_cb(str) / cancel_event: same contract as the other sweep
     tools -- cancel_event is checked between cellprob values (not
@@ -135,6 +145,7 @@ def run_krendl_sweep(volume, gt_labels, model_path, cellprobs, large_contacts,
 
         for large_contact in large_contacts:
             merged, _ = large_contact_merge(masks, large_contact)
+            merged, _ = final_min_size_cleanup(merged, gt_min, final_min_fraction)
             labels, n_labels = relabel_sequential(merged)
             r = score_against_gt(labels, gt_labels, iou_threshold=iou_threshold)
             results[(cellprob, large_contact)] = r

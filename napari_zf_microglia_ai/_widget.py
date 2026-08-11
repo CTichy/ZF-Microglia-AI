@@ -29,7 +29,6 @@ from ._background import remove_outside_brain, remove_global, fill_outside_brain
 from ._labeling import create_labels, resort_labels, split_label
 from ._statistics import compute_stats
 from ._cellpose_seg import run_full_pipeline as _run_cellpose_pipeline
-from ._cellpose_seg import GT_MIN as _CELLPOSE_GT_MIN
 from . import _pixel_sweep as _psw
 from . import _brain_sweep as _bsw
 from . import _gt_score as _gts
@@ -829,6 +828,28 @@ class ZFMicrogliaAIWidget(QWidget):
         self._hole_recommended_lbl.setWordWrap(True)
         common_layout.addWidget(self._hole_recommended_lbl)
 
+        finalfrac_row = QHBoxLayout()
+        finalfrac_row.addWidget(QLabel("Final min-size fraction — Cellpose-SAM:"))
+        self._finalfrac_spin = QDoubleSpinBox()
+        self._finalfrac_spin.setDecimals(3)
+        self._finalfrac_spin.setRange(0.0, 1.0)
+        self._finalfrac_spin.setSingleStep(0.01)
+        self._finalfrac_spin.setValue(_root_cfg.get("cellpose_final_min_fraction", 0.618))
+        finalfrac_row.addWidget(self._finalfrac_spin)
+        common_layout.addLayout(finalfrac_row)
+        finalfrac_note = QLabel(
+            "  Last stage of the Cellpose-SAM pipeline, after large-contact "
+            "merge: any surviving cell smaller than this fraction of the "
+            "Min volume floor above (the smallest real cell ever confirmed "
+            "in GT) is removed as a final safety net. Default is the "
+            "golden ratio, ~0.618 -- strict enough to catch debris that "
+            "slipped past GMM cleanup and safe-merge, lenient enough not "
+            "to reject a legitimately smaller-than-average real cell."
+        )
+        finalfrac_note.setStyleSheet("color: #888; font-size: 10px;")
+        finalfrac_note.setWordWrap(True)
+        common_layout.addWidget(finalfrac_note)
+
         common_group.setLayout(common_layout)
         t2.addWidget(common_group)
 
@@ -1313,21 +1334,14 @@ class ZFMicrogliaAIWidget(QWidget):
         )
         cpg.addLayout(cp_mincontact_row)
 
-        cp_gtmin_row = QHBoxLayout()
-        cp_gtmin_row.addWidget(QLabel("Safe-merge GT-min volume (vox):"))
-        self._cp_gtmin_slider = QLabeledSlider(Qt.Horizontal)
-        self._cp_gtmin_slider.setMinimum(0)
-        self._cp_gtmin_slider.setMaximum(50000)
-        self._cp_gtmin_slider.setValue(_root_cfg.get("cellpose_gt_min", _CELLPOSE_GT_MIN))
-        cp_gtmin_row.addWidget(self._cp_gtmin_slider)
-        self._cp_gtmin_spin = _add_reliable_spinbox(
-            cp_gtmin_row, self._cp_gtmin_slider, 0, 50000, 500
-        )
-        cpg.addLayout(cp_gtmin_row)
         cp_gtmin_note = QLabel(
-            "Smallest volume Safe-merge trusts as already a whole cell. "
-            "Recalibrated automatically from real GT statistics by the "
-            "Cellprob/Large-contact sweep below — no need to set by hand."
+            "Safe-merge's \"already a whole cell\" floor is no longer a "
+            "separate field here -- it now reads the shared Min volume "
+            "field in Common Settings above, since both are the exact "
+            "same measurement (smallest true GT cell volume). Recalibrated "
+            "automatically from real GT statistics by the BG Threshold/"
+            "Erosion sweep, the Sigma sweep, the Cellprob/Large-contact "
+            "sweep below, or Tab 3 Statistics when marked as verified GT."
         )
         cp_gtmin_note.setWordWrap(True)
         cp_gtmin_note.setStyleSheet("color: #888; font-size: 10px;")
@@ -1939,6 +1953,24 @@ class ZFMicrogliaAIWidget(QWidget):
         _col_reset_btn.clicked.connect(_reset_cols)
 
         t3.addWidget(_sep())
+
+        self._stats_is_gt_cb = QCheckBox("This is verified ground truth")
+        self._stats_is_gt_cb.setChecked(False)
+        t3.addWidget(self._stats_is_gt_cb)
+        stats_is_gt_note = QLabel(
+            "  Off by default. The Labels layer being measured could be "
+            "anything -- a raw, uncorrected prediction as easily as a "
+            "hand-verified fish -- and only real GT should ever be allowed "
+            "to move the recommended-values floors the Tab 5 sweeps also "
+            "maintain (Min volume / Safe-merge \"already a whole cell\"). "
+            "Tick this only when the layer you're about to measure has "
+            "actually been manually corrected/verified; when ticked, this "
+            "run's smallest measured cell volume feeds that same "
+            "never-rising floor, exactly like running a Tab 5 sweep would."
+        )
+        stats_is_gt_note.setWordWrap(True)
+        stats_is_gt_note.setStyleSheet("color: #888; font-size: 10px;")
+        t3.addWidget(stats_is_gt_note)
 
         self._stats_btn = QPushButton("Generate Statistics")
         self._stats_btn.setStyleSheet("QPushButton { font-weight: bold; padding: 6px; }")
@@ -4956,6 +4988,7 @@ class ZFMicrogliaAIWidget(QWidget):
         out_dir   = self._output_dir()
         stem      = self._state["last_file_path"].stem if self._state.get("last_file_path") else lyr.name
         out_csv   = out_dir / f"{stem}_statistics.csv"
+        is_gt     = self._stats_is_gt_cb.isChecked()
 
         self._stats_btn.setEnabled(False)
         self._stats_status_lbl.setText("Computing statistics…")
@@ -4990,6 +5023,35 @@ class ZFMicrogliaAIWidget(QWidget):
                 self._stats_btn.setEnabled(True)
                 return
             df = result["df"]
+
+            gt_floor_note = ""
+            if is_gt and "volume_vox" in df.columns and len(df) > 0:
+                # Same never-rising floor as the Tab 5 sweeps and Krendl
+                # safe-merge -- Generate Statistics is just another way
+                # of measuring a fish's smallest real cell, gated behind
+                # the "This is verified ground truth" checkbox so an
+                # unverified/uncorrected prediction can never corrupt it.
+                measured_min = int(df["volume_vox"].min())
+                recommended_min = self._update_gt_history(
+                    "min_volume_vox", stem, measured_min, mode="min"
+                )
+                self._save_cfg(min_volume_recommended_vox=recommended_min)
+                self._area_recommended_lbl.setText(
+                    f"  Recommended minimum (from GT sweeps so far): {recommended_min} vox"
+                )
+                if recommended_min < self._area_slider.minimum():
+                    self._area_slider.setMinimum(recommended_min)
+                    self._area_spin.setMinimum(recommended_min)
+                if recommended_min > self._area_slider.maximum():
+                    self._area_slider.setMaximum(recommended_min)
+                    self._area_spin.setMaximum(recommended_min)
+                self._area_slider.setValue(recommended_min)
+                self._save_cfg(min_volume_vox=recommended_min)
+                gt_floor_note = (
+                    f" GT-verified: this fish's smallest cell measured "
+                    f"{measured_min} vox; Min volume floor now {recommended_min} vox."
+                )
+
             # Filter to selected columns; label is always kept.
             # Group keys (bbox_vox, bbox_um) expand to their constituent columns.
             selected = {"label"}
@@ -4999,7 +5061,7 @@ class ZFMicrogliaAIWidget(QWidget):
             df = df[[c for c in df.columns if c in selected]]
             df.to_csv(str(out_csv), index=False)
             self._stats_status_lbl.setText(
-                f"Done — {len(df)} labels. Saved: {out_csv.name}"
+                f"Done — {len(df)} labels. Saved: {out_csv.name}.{gt_floor_note}"
             )
             print(f"Statistics saved: {out_csv}")
             self._stats_btn.setEnabled(True)
@@ -5565,7 +5627,9 @@ class ZFMicrogliaAIWidget(QWidget):
         flow          = _FLOW_THRESHOLD_FIXED
         max_gap       = self._cp_maxgap_slider.value()
         min_contact   = self._cp_mincontact_slider.value()
-        gt_min        = self._cp_gtmin_slider.value()
+        # Unified with the Pixel Classifier's Min volume -- see the
+        # Common Settings note in _build_ui().
+        gt_min        = self._area_slider.value()
         large_contact = self._cp_largecontact_slider.value()
         # Shared with the Pixel Classifier route -- same underlying idea
         # (real vs. noise-sized enclosed gaps) applies to Cellpose-SAM's
@@ -5575,6 +5639,7 @@ class ZFMicrogliaAIWidget(QWidget):
         # Deliberately NOT the same value as Min volume -- see the
         # "Common Settings" note above self._hole_slider's construction.
         min_size = self._cp_minsize_spin.value()
+        final_min_fraction = self._finalfrac_spin.value()
 
         stem  = target.name
         scale = tuple(float(v) for v in target.scale) if len(target.scale) == 3 else (1.0, 1.0, 1.0)
@@ -5614,6 +5679,7 @@ class ZFMicrogliaAIWidget(QWidget):
                         cellprob=cellprob, flow=flow, anisotropy=anisotropy,
                         max_gap=max_gap, min_contact=min_contact, gt_min=gt_min,
                         large_contact=large_contact, min_hole_size=min_hole_size, min_size=min_size,
+                        final_min_fraction=final_min_fraction,
                         gpu=gpu, progress_cb=_progress,
                     )
                 result["labels"] = labels
@@ -5735,6 +5801,7 @@ class ZFMicrogliaAIWidget(QWidget):
         min_contact = self._cp_mincontact_slider.value()
         min_hole_size = self._hole_slider.value()
         min_size = self._cp_minsize_spin.value()
+        final_min_fraction = self._finalfrac_spin.value()
         gpu = torch.cuda.is_available()
         current_cellprob = self._cp_cellprob_slider.value()
         current_large_contact = self._cp_largecontact_slider.value()
@@ -5759,6 +5826,7 @@ class ZFMicrogliaAIWidget(QWidget):
                         volume, gt_labels, model_path, cellprobs, large_contacts,
                         flow=flow, anisotropy=anisotropy, max_gap=max_gap, min_contact=min_contact,
                         min_hole_size=min_hole_size, min_size=min_size,
+                        final_min_fraction=final_min_fraction,
                         gpu=gpu, progress_cb=_progress_cb, cancel_event=cancel_event,
                     )
                 result["sweep"] = sweep
@@ -5847,17 +5915,30 @@ class ZFMicrogliaAIWidget(QWidget):
                 gt_min_note = ""
                 if gt_min_used is not None:
                     # gt_min IS a safety floor ("smallest volume trusted
-                    # as already a whole cell") -- same never-rises
-                    # treatment as min_volume/min_hole_size, previously
-                    # missing here (this sweep used to just overwrite it
-                    # with whatever this one run measured).
+                    # as already a whole cell") -- and, since it's the
+                    # exact same measurement as the Pixel Classifier's
+                    # Min volume, it now shares that field's history and
+                    # slider entirely rather than keeping its own
+                    # separate one (previously missing this never-rises
+                    # treatment altogether -- this sweep used to just
+                    # overwrite it with whatever this one run measured).
                     recommended_gt_min = self._update_gt_history(
-                        "cellpose_gt_min", fish_key, gt_min_used, mode="min"
+                        "min_volume_vox", fish_key, gt_min_used, mode="min"
                     )
-                    self._cp_gtmin_slider.setValue(recommended_gt_min)
-                    cfg_kwargs["cellpose_gt_min"] = recommended_gt_min
+                    self._save_cfg(min_volume_recommended_vox=recommended_gt_min)
+                    self._area_recommended_lbl.setText(
+                        f"  Recommended minimum (from GT sweeps so far): {recommended_gt_min} vox"
+                    )
+                    if recommended_gt_min > self._area_slider.maximum():
+                        self._area_slider.setMaximum(recommended_gt_min)
+                        self._area_spin.setMaximum(recommended_gt_min)
+                    if recommended_gt_min < self._area_slider.minimum():
+                        self._area_slider.setMinimum(recommended_gt_min)
+                        self._area_spin.setMinimum(recommended_gt_min)
+                    self._area_slider.setValue(recommended_gt_min)
+                    cfg_kwargs["min_volume_vox"] = recommended_gt_min
                     gt_min_note = (
-                        f", gt_min floor={recommended_gt_min} (this fish measured {gt_min_used})"
+                        f", Min volume floor={recommended_gt_min} (this fish measured {gt_min_used})"
                     )
                 self._save_cfg(**cfg_kwargs)
                 self._kr_status_lbl.setText(
