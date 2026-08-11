@@ -5125,6 +5125,14 @@ class ZFMicrogliaAIWidget(QWidget):
                 f"Done — {len(df)} labels. Saved: {out_csv.name}.{gt_floor_note}"
             )
             print(f"Statistics saved: {out_csv}")
+            # One-shot: never leaves the checkbox armed for the next run.
+            # A user re-running Generate Statistics on a different (maybe
+            # unverified) layer right after a GT-verified run must
+            # explicitly re-tick it each time -- otherwise a later
+            # exploratory run could silently contribute to the same
+            # never-rising/never-falling GT bounds without the user
+            # noticing the checkbox was still ticked from before.
+            self._stats_is_gt_cb.setChecked(False)
             self._stats_btn.setEnabled(True)
 
         timer.timeout.connect(_poll)

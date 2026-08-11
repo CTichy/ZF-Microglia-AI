@@ -723,6 +723,8 @@ When ticked, clicking **Generate Statistics** does two things in addition to its
 
 Both give a lighter-weight path to contributing GT evidence beyond running a dedicated Tab 5 sweep, without ever risking an unverified prediction accidentally moving either bound to something wrong. Leave the checkbox unticked for any exploratory or unverified run — the CSV is still produced and still flags outliers against whatever bounds were last measured, it just can't move either one itself.
 
+**The checkbox always un-ticks itself once Generate Statistics finishes**, whether or not it was ticked for that run. It's a one-shot "count this specific run as GT" arm, not a sticky mode — a later exploratory run right after a GT-verified one still requires deliberately re-ticking it, so it can never silently ride along and contribute unverified data just because the box happened to still be checked from before.
+
 ---
 
 ### Generate Statistics (button)
