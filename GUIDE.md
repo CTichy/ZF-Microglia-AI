@@ -713,7 +713,12 @@ Two additional columns are added to the CSV:
 
 **Off by default.** The Labels layer being measured could be anything — a raw, uncorrected prediction just as easily as a hand-verified fish — and this tab computes statistics on whatever layer is active regardless. Only tick this when the layer about to be measured has actually been manually corrected/verified as real ground truth.
 
-When ticked, clicking **Generate Statistics** does one thing in addition to its normal job: this run's smallest measured cell (`volume_vox`) is folded into the same never-rising **Min volume** floor the Tab 5 GT sweeps maintain (Common Settings, 6a) — exactly as if you had run one of those sweeps against this fish instead. This gives a second, lighter-weight path to contributing GT evidence to that floor beyond running a dedicated sweep, without ever risking an unverified prediction accidentally lowering it to something wrong. Leave it unticked for any exploratory or unverified run.
+When ticked, clicking **Generate Statistics** does two things in addition to its normal job:
+
+- This run's **smallest** measured cell (`volume_vox`) is folded into the same never-rising **Min volume** floor the Tab 5 GT sweeps maintain (Common Settings, 6a) — exactly as if you had run one of those sweeps against this fish instead.
+- This run's **largest** measured cell is folded into a separate, never-falling **outlier ceiling** — the biggest cell volume ever confirmed real across every GT fish checked so far. Unlike Min volume, there is no slider for this: it isn't a pipeline parameter, only the number `is_volume_outlier` (below) is compared against. A label showing "Outlier ceiling: not yet measured" underneath the checkbox updates in place once at least one GT-verified run has been made.
+
+Both give a lighter-weight path to contributing GT evidence beyond running a dedicated Tab 5 sweep, without ever risking an unverified prediction accidentally moving either bound to something wrong. Leave the checkbox unticked for any exploratory or unverified run — the CSV is still produced and still flags outliers against whatever bounds were last measured, it just can't move either one itself.
 
 ---
 
@@ -722,9 +727,14 @@ When ticked, clicking **Generate Statistics** does one thing in addition to its 
 Click to compute. Runs in a background thread. When complete:
 
 - A CSV file is saved to the output folder (see Section 10), named `{source_file_stem}_statistics.csv`.
-- The status line shows how many labels were processed, and, if the ground-truth checkbox above was ticked, what this fish's smallest measured cell was and what the updated Min volume floor is.
+- The status line shows how many labels were processed, and, if the ground-truth checkbox above was ticked, what this fish's smallest and largest measured cells were and what the updated Min volume floor / outlier ceiling now are.
 
-The CSV contains one row per label with up to 45 columns depending on which optional features are enabled. See Section 11 for a full description of every column.
+The CSV contains one row per label with up to 47 columns depending on which optional features are enabled. See Section 11 for a full description of every column.
+
+**Every run** — GT-verified or not — includes an `is_volume_outlier` column, `True` for a cell on **either** side of the two GT-tracked bounds:
+
+- **Bigger than the outlier ceiling.** Unlike small fragments (removed outright by the Cellpose-SAM final min-size safety net, see [6c](#6c-cellpose-sam-segmentation)), an oversized cell is never deleted automatically — it's flagged for a human to look at, since "unusually large" is far more often a real biological outlier or an under-corrected merge of two touching cells than definite debris.
+- **Smaller than the Min volume floor.** The Cellpose-SAM pipeline only auto-removes a cell once it drops below `Final min-size fraction × Min volume` (the golden-ratio safety net, 6a/6c) — anything above that deletion line but still under the confirmed floor itself survives the pipeline untouched, yet is still smaller than any cell ever proven real. Flagging it here (rather than silently trusting it) surfaces exactly that gray zone for review, on the Pixel Classifier route too, which has no equivalent deletion stage at all.
 
 ---
 
@@ -1015,7 +1025,7 @@ The folder is created the first time a file is saved. If no input file has been 
 
 ## 11. Statistics CSV — all columns explained
 
-The CSV produced by Generate Statistics has one row per label, with up to 51 columns. 46 are always present; the remaining columns appear only when the corresponding optional feature is enabled. This section explains what each column *means*; for the algorithm/formula/library behind each one, see the separate [STATISTICS_GUIDE.md](STATISTICS_GUIDE.md).
+The CSV produced by Generate Statistics has one row per label, with up to 52 columns. 47 are always present; the remaining columns appear only when the corresponding optional feature is enabled. This section explains what each column *means*; for the algorithm/formula/library behind each one, see the separate [STATISTICS_GUIDE.md](STATISTICS_GUIDE.md).
 
 ---
 
@@ -1033,6 +1043,7 @@ The CSV produced by Generate Statistics has one row per label, with up to 51 col
 |--------|------|-------------|
 | `volume_vox` | integer | Number of voxels belonging to this label |
 | `volume_um3` | float (µm³) | Physical volume in cubic micrometres. Computed as `volume_vox × Z_size × Y_size × X_size`. A typical zebrafish microglia is 1,000–10,000 µm³. |
+| `is_volume_outlier` | boolean | `True` if `volume_vox` falls outside the two GT-tracked bounds — bigger than the largest cell any GT fish has ever confirmed real, or smaller than the smallest one (Common Settings' Min volume floor). See [This is verified ground truth](#this-is-verified-ground-truth-checkbox) above for how those bounds are measured. Flags for human review; never deletes anything. |
 
 ---
 

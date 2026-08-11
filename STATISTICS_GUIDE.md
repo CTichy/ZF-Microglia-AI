@@ -14,7 +14,7 @@ All of this lives in one module, `napari_zf_microglia_ai/_statistics.py`, entere
 4. [Phase 2a — Surface area (marching cubes) and sphericity](#4-phase-2a--surface-area-marching-cubes-and-sphericity)
 5. [Phase 2a — Skeleton and branching statistics](#5-phase-2a--skeleton-and-branching-statistics)
 6. [Phase 2b — Intensity statistics (optional)](#6-phase-2b--intensity-statistics-optional)
-7. [Post-assembly — Spatial statistics](#7-post-assembly--spatial-statistics)
+7. [Post-assembly — Spatial statistics](#7-post-assembly--spatial-statistics) (incl. [7.5 `is_volume_outlier`](#75-is_volume_outlier-not-computed-by-this-module))
 8. [Post-assembly — Brain region assignment (optional)](#8-post-assembly--brain-region-assignment-optional)
 9. [Morphotype classification](#9-morphotype-classification)
 10. [Natural-language description generation](#10-natural-language-description-generation)
@@ -223,6 +223,21 @@ E[NND] = Γ(4/3) · (3 / (4π·ρ))^(1/3)
 
 `clip(centroid_z_um / max(centroid_z_um), 0, 1)` across the current label set — 0 = the shallowest (lowest Z) cell in this result set, 1 = the deepest. Recomputed per-run, so it is **not** comparable across different fish/samples unless they share the same Z range by construction — it's a within-sample relative depth, not an absolute one.
 
+### 7.5 `is_volume_outlier` (not computed by this module)
+
+Unlike every other column on this page, `is_volume_outlier` is not produced inside `compute_stats()` at all — it's appended afterward, in `_widget.py`'s `_on_generate_stats()`, once the DataFrame comes back. It exists to hand the two "is this cell real?" edge cases GT sweeps and pipeline stages can't resolve on their own back to a human:
+
+- **Too big** — could be two touching cells the pipeline's merge/split logic left joined instead of separating.
+- **Too small** — could be genuine debris, or could be a real but unusually small microglia; below the deletion threshold the Cellpose-SAM pipeline already removes it outright (see [GUIDE.md §6a, Final min-size fraction](GUIDE.md#6a-which-tool-is-active--pixel-classifier-or-cellpose-sam)), but the gray zone between that threshold and the confirmed floor survives untouched on purpose, and the Pixel Classifier route has no equivalent deletion stage at all.
+
+```python
+too_big   = df["volume_vox"] > max_ceiling if max_ceiling is not None else False
+too_small = df["volume_vox"] < min_floor   if min_floor   is not None else False
+df["is_volume_outlier"] = too_big | too_small
+```
+
+`max_ceiling` (`max_volume_recommended_vox` in config) and `min_floor` (`min_volume_recommended_vox`, the same field Common Settings' Min volume slider reads) are both cross-fish histories tracked the same way as every Tab 5 sweep's recommendations — see `_update_gt_history()` in `_widget.py`. `min_floor` is a never-rising floor (`mode="min"`); `max_ceiling` is its never-falling mirror (`mode="max"`, the same direction used for `branch_radius`). Both only move when Tab 3's **"This is verified ground truth"** checkbox is ticked for the run that measured them — an unverified/uncorrected prediction can widen neither bound, though every run, verified or not, is still flagged against whichever bounds were last confirmed.
+
 ---
 
 ## 8. Post-assembly — Brain region assignment (optional)
@@ -302,6 +317,7 @@ The `rule`-based backend is the only one exercised by anything else in the pipel
 | `nearest_neighbor_ratio` | [§7.2](#72-clark-evans-3d-index-nearest_neighbor_ratio) |
 | `local_density_100um` | [§7.3](#73-local_density_100um) |
 | `depth_normalized` | [§7.4](#74-depth_normalized) |
+| `is_volume_outlier` | [§7.5](#75-is_volume_outlier-not-computed-by-this-module) — computed in `_widget.py`, not `_statistics.py` |
 | `brain_region`, `region_boundary_dist_um` | [§8](#8-post-assembly--brain-region-assignment-optional) |
 | `morphotype` | [§9](#9-morphotype-classification) |
 | `description` | [§10](#10-natural-language-description-generation) |

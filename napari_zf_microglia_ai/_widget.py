@@ -86,6 +86,7 @@ _STATS_COLUMNS = [
     ("nn_1st",                  "nearest_neighbor 1st  (label + dist µm)",       True),
     ("nn_2nd",                  "nearest_neighbor 2nd  (label + dist µm)",       False),
     ("local_density_100um",     "local_density_100um",                           True),
+    ("is_volume_outlier",       "is_volume_outlier  (smaller/larger than any GT cell confirmed so far)", True),
     # ── default OFF ──────────────────────────────────────────────────────────
     ("eq_diam_um",              "eq_diam_um  (equiv. sphere diam.)",             False),
     ("axis2_um",                "axis2_um  (middle axis, derived)",              False),
@@ -1961,16 +1962,31 @@ class ZFMicrogliaAIWidget(QWidget):
             "  Off by default. The Labels layer being measured could be "
             "anything -- a raw, uncorrected prediction as easily as a "
             "hand-verified fish -- and only real GT should ever be allowed "
-            "to move the recommended-values floors the Tab 5 sweeps also "
-            "maintain (Min volume / Safe-merge \"already a whole cell\"). "
-            "Tick this only when the layer you're about to measure has "
-            "actually been manually corrected/verified; when ticked, this "
-            "run's smallest measured cell volume feeds that same "
-            "never-rising floor, exactly like running a Tab 5 sweep would."
+            "to move the two bounds is_volume_outlier (below) is checked "
+            "against: the never-rising Min volume floor Tab 5's sweeps "
+            "also maintain (Min volume / Safe-merge \"already a whole "
+            "cell\"), and a never-falling largest-cell ceiling tracked "
+            "only here. Tick this only when the layer you're about to "
+            "measure has actually been manually corrected/verified; when "
+            "ticked, this run's smallest AND largest measured cell "
+            "volumes feed those two GT-tracked bounds, exactly like "
+            "running a Tab 5 sweep would."
         )
         stats_is_gt_note.setWordWrap(True)
         stats_is_gt_note.setStyleSheet("color: #888; font-size: 10px;")
         t3.addWidget(stats_is_gt_note)
+        init_max_volume = _root_cfg.get("max_volume_recommended_vox")
+        self._maxvol_ceiling_lbl = QLabel(
+            f"  is_volume_outlier ceiling (largest confirmed GT cell so far): {init_max_volume} vox "
+            "-- the floor side reuses Min volume above."
+            if init_max_volume is not None else
+            "  is_volume_outlier ceiling: not yet measured — tick the box above and "
+            "run this against a verified GT fish at least once. The floor side "
+            "reuses Min volume above."
+        )
+        self._maxvol_ceiling_lbl.setStyleSheet("color: #aaa; font-size: 10px;")
+        self._maxvol_ceiling_lbl.setWordWrap(True)
+        t3.addWidget(self._maxvol_ceiling_lbl)
 
         self._stats_btn = QPushButton("Generate Statistics")
         self._stats_btn.setStyleSheet("QPushButton { font-weight: bold; padding: 6px; }")
@@ -5024,6 +5040,22 @@ class ZFMicrogliaAIWidget(QWidget):
                 return
             df = result["df"]
 
+            # Outlier bounds. Upper: the largest cell volume ever confirmed
+            # real in GT -- not user-editable (no slider), only ever grows,
+            # and only from verified-GT runs, exactly like min_volume_vox
+            # only ever shrinks from them. Lower: the same never-rising
+            # Min volume floor Common Settings/Krendl safe-merge already
+            # use -- anything smaller than the smallest cell any fish has
+            # ever proven real is worth a human's attention, even though
+            # it's above the golden-ratio deletion threshold (Common
+            # Settings' "Final min-size fraction") and so wasn't small
+            # enough for the Cellpose-SAM pipeline to remove it outright.
+            # Read both here first so an exploratory (non-GT) run still
+            # gets flagged against the latest known bounds even though it
+            # can't move either one.
+            max_ceiling = self._state.get("config", {}).get("max_volume_recommended_vox")
+            min_floor = self._state.get("config", {}).get("min_volume_recommended_vox")
+
             gt_floor_note = ""
             if is_gt and "volume_vox" in df.columns and len(df) > 0:
                 # Same never-rising floor as the Tab 5 sweeps and Krendl
@@ -5047,10 +5079,33 @@ class ZFMicrogliaAIWidget(QWidget):
                     self._area_spin.setMaximum(recommended_min)
                 self._area_slider.setValue(recommended_min)
                 self._save_cfg(min_volume_vox=recommended_min)
-                gt_floor_note = (
-                    f" GT-verified: this fish's smallest cell measured "
-                    f"{measured_min} vox; Min volume floor now {recommended_min} vox."
+                min_floor = recommended_min
+
+                # Never-falling ceiling counterpart to the floor above --
+                # a new fish can only push this up (prove an even bigger
+                # real cell exists), never down, mirroring mode="max"'s
+                # use for branch_radius. Unlike Min volume, this has no
+                # slider: it exists purely to flag is_volume_outlier
+                # below, not to drive any pipeline stage.
+                measured_max = int(df["volume_vox"].max())
+                max_ceiling = self._update_gt_history(
+                    "max_volume_vox", stem, measured_max, mode="max"
                 )
+                self._save_cfg(max_volume_recommended_vox=max_ceiling)
+                self._maxvol_ceiling_lbl.setText(
+                    f"  is_volume_outlier ceiling (largest confirmed GT cell so far): "
+                    f"{max_ceiling} vox -- the floor side reuses Min volume above."
+                )
+                gt_floor_note = (
+                    f" GT-verified: this fish's smallest/largest cells measured "
+                    f"{measured_min}/{measured_max} vox; Min volume floor now "
+                    f"{recommended_min} vox, outlier ceiling now {max_ceiling} vox."
+                )
+
+            if "volume_vox" in df.columns:
+                too_big = df["volume_vox"] > max_ceiling if max_ceiling is not None else False
+                too_small = df["volume_vox"] < min_floor if min_floor is not None else False
+                df["is_volume_outlier"] = too_big | too_small
 
             # Filter to selected columns; label is always kept.
             # Group keys (bbox_vox, bbox_um) expand to their constituent columns.
