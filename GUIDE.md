@@ -338,37 +338,21 @@ The **Sort by / Resort Labels**, **Split Label**, and **Save Labels** tools (Sec
 
 ### Common Settings — shared by both routes
 
-Sits in its own box, above the Pixel Classifier/Cellpose-SAM sections and **always visible regardless of which one is currently active** — unlike everything documented under 6b/6c below, which only shows up when its own route is the one selected. These three fields were deliberately pulled out of the route-specific sections: a value that's actually shared, or that looks shared but genuinely is not, is easy to lose track of if it only appears half the time.
+Sits in its own box, above the Pixel Classifier/Cellpose-SAM sections and **always visible regardless of which one is currently active** — unlike everything documented under 6b/6c below, which only shows up when its own route is the one selected. These fields were deliberately pulled out of the route-specific sections: a value that's actually shared, or that looks shared but genuinely is not, is easy to lose track of if it only appears half the time. Cellpose-SAM's own Min size field is a deliberate exception — see [6c](#6c-cellpose-sam-segmentation) for why it lives in that route-specific section instead, not here.
 
-#### Min volume (vox) — Pixel Classifier + Cellpose-SAM's Safe-merge floor
+#### Min volume (vox) — informative, not editable
 
-**Range:** 5000 to 10000 — **Default: 7500**
+Shown as plain text, not a slider — this value can't be typed or dragged directly. It's the smallest real cell volume ever confirmed by GT, shared by the Pixel Classifier's own volume filter and Cellpose-SAM's Safe-merge "already a whole cell" floor (`gt_min_from_labels()`, Krendl's own name for this quantity, and `min_volume_from_gt()` are literally the same computation) — an empirical fact measured from ground truth, not a knob to hand-tune. It only ever moves *down* (a new fish can only prove an even smaller real cell exists, never invalidate one already confirmed), and only from a **Tab 5 GT sweep** or a **GT-verified Generate Statistics run** (Tab 3) — never guessed, and never edited by hand. Starts at 7500 (the old default) until the first such measurement.
 
-After all 2D blobs are linked into 3D objects in the Pixel Classifier's own union-find pipeline, any object smaller than **Final min-size fraction × this value** (below) is deleted as noise — see that field for why the actual cutoff is a fraction of Min volume rather than Min volume itself. This is the *final* debris cutoff for that route — nothing runs after it to reconsider a discarded object.
-
-This same field also drives Cellpose-SAM's Safe-merge "already a whole cell" floor (6c) and the Final min-size safety net below — `gt_min_from_labels()` (Krendl's own name for this quantity) and `min_volume_from_gt()` are literally the same computation, so both routes now read one shared, GT-calibrated number instead of two separately-tracked copies of it.
-
-| Value | When to use |
-|-------|-------------|
-| 5000 | Keep smaller objects — may include noise |
-| **7500** | **Default — validated for adult zebrafish microglia** |
-| 10000 | Keep only large objects — use if many small debris remain |
+The actual tunable control for how strictly this floor is enforced is **Final min-size fraction**, below.
 
 > Zebrafish microglia at 4dpf typically occupy 15,000–50,000 voxels at standard resolution.
-
-#### Min size (vox) — Cellpose-SAM
-
-**Range:** 1 to 5000 — **Default: 15**
-
-Cellpose-SAM's own early noise filter, applied right when raw instance masks are formed from the predicted flow field — previously hardcoded at 15 with no control anywhere in the plugin, now exposed here.
-
-**This is deliberately a different field from Min volume above, not the same value reused.** Min volume is the Pixel Classifier's *final* cutoff; nothing reconsiders an object it discards. Cellpose-SAM's pipeline is structured differently: raw instance masks go through this small early filter, then **3-component GMM cleanup** and **Krendl safe-merge** — those two stages, not this field, make the real "is this debris, or a real fragment that should be reattached to a neighboring cell" decision, using the full size distribution and gap/contact geometry rather than one blunt cutoff. If Min size were raised anywhere near Min volume's range, real small fragments would be discarded here, before GMM cleanup or safe-merge ever got a chance to evaluate them for reattachment — quietly breaking the mechanism those two stages exist for. Leave this small; it only exists to catch prediction artifacts too small to be a fragment of anything.
 
 #### Min hole size (vox) — shared
 
 **Range:** 0 upward — **Default: 0 (fill every enclosed gap, no minimum)**
 
-Unlike the two fields above, this one genuinely is **one shared value** used by both routes. A background region fully enclosed by signal — a "hole" — survives as real background only if its area is **at or above** this value; anything smaller is filled in as noise. Same idea as Min volume, just applied to gaps instead of whole objects, and named the same way on purpose: both name the size something must clear to be trusted as real, not the size at which it gets discarded.
+Unlike Min volume above, this one is a genuinely editable, **shared slider** used by both routes. A background region fully enclosed by signal — a "hole" — survives as real background only if its area is **at or above** this value; anything smaller is filled in as noise. Same idea as Min volume, just applied to gaps instead of whole objects, and named the same way on purpose: both name the size something must clear to be trusted as real, not the size at which it gets discarded.
 
 The old behavior, unconditional hole-filling regardless of size, could silently erase real internal structure: a genuine gap inside a cell (debris exclusion, a real internal void) was treated identically to a single stray pixel of imaging noise, since neither route had any way to tell the two apart. Setting this above 0 draws that line explicitly, in both places it was missing:
 
@@ -387,7 +371,7 @@ The old behavior, unconditional hole-filling regardless of size, could silently 
 
 **Range:** 0.0 to 1.0 — **Default: 0.618 (the golden ratio, 1/φ)**
 
-The actual small-object deletion cutoff **both** routes use is `this fraction × Min volume`, not Min volume itself — applied differently in each, since they have different pipeline shapes:
+Unlike Min volume above, this one is a real, editable slider — it's the actual tunable control over how strictly the (non-editable) Min volume floor gets enforced. The actual small-object deletion cutoff **both** routes use is `this fraction × Min volume`, not Min volume itself — applied differently in each, since they have different pipeline shapes:
 
 - **Cellpose-SAM (6c):** the very last stage, run after large-contact merge — any surviving cell below the cutoff is removed as a final safety net, regardless of how it survived every earlier stage. Nothing upstream is guaranteed to catch every debris object: GMM cleanup separates populations by the raw size distribution and can still leave a gray-zone object standing, and safe-merge/large-contact only act when a nearby neighbor exists to merge into.
 - **Pixel Classifier (6b):** applied directly as the volume filter's own cutoff, right after 3D objects are formed by union-find — this route has no merge/reattach stage of its own, so there's no later stage to hand a gray-zone object off to; the relaxed cutoff has to be the filter itself.
@@ -476,13 +460,21 @@ When done, a `*_labels` layer appears in napari with each detected cell shown in
 
 Shown when the active layer ends in `_ExtRm` (background removed only outside the brain — the interior is left intact for Cellpose-SAM to see). Runs `do_3D` Cellpose-SAM inference, then a 3-component-GMM cleanup pass, a Krendl safe-merge pass (rejoins sub-threshold fragments based on gap size and contact area), and a large-contact merge pass (catches cells accidentally split through a thick junction).
 
-**Min size** and **Min hole size**, both used by this route, live in the always-visible **Common Settings** box above (see 6a) rather than in this section — they stay visible there even while this section is hidden.
+**Min hole size**, used by this route too, lives in the always-visible **Common Settings** box above (see 6a) rather than in this section — it stays visible there even while this section is hidden. **Min size** below is different: it's specific to this route, not shared, so it lives here instead.
 
 **Requires a Cellpose-SAM checkpoint** — see [Section 3](#3-getting-the-model-files). This is a project-specific fine-tuned model, not shipped with the plugin.
 
 #### Model (.pt/checkpoint) — Browse button `[...]`
 
 Browse to your trained Cellpose-SAM checkpoint file. The path is remembered across sessions, the same way the MONAI model path is remembered in Tab 1.
+
+#### Min size (vox)
+
+**Range:** 1 to 5000 — **Default: 15**
+
+Cellpose-SAM's own early noise filter, applied right when raw instance masks are formed from the predicted flow field — previously hardcoded at 15 with no control anywhere in the plugin, now exposed here.
+
+**Not shared with Common Settings' Min volume — deliberately a different field, not the same value reused.** Min volume is a route-agnostic GT-measured floor; nothing about it is specific to Cellpose-SAM. This field is: raw instance masks go through this small early filter, then **3-component GMM cleanup** and **Krendl safe-merge** — those two stages, not this field, make the real "is this debris, or a real fragment that should be reattached to a neighboring cell" decision, using the full size distribution and gap/contact geometry rather than one blunt cutoff. If Min size were raised anywhere near Min volume's range, real small fragments would be discarded here, before GMM cleanup or safe-merge ever got a chance to evaluate them for reattachment — quietly breaking the mechanism those two stages exist for. Leave this small; it only exists to catch prediction artifacts too small to be a fragment of anything.
 
 #### Cellprob threshold
 
@@ -901,6 +893,8 @@ Sweeps **Cellprob** × **Large-contact merge** (both Tab 2, Cellpose-SAM Segment
 **This used to be by far the slowest of the four GT-sweep tools, because it ran on the full fish rather than a handful of cropped cells — that's no longer true.** A single `do_3D` network pass on a full-size fish has historically taken around 3 hours in this project (e.g. D1F4: ~187 minutes), and that's now the sweep's entire cost, regardless of how many Cellprob or Large-contact values are in the grid. **Stop Sweep** only cancels between grid points, and since the network pass now happens once upfront it can't itself be interrupted mid-pass — but that pass is also the whole sweep's cost now, not a multiplier on it. This does **not** run detached — it won't survive closing napari. The report box streams Cellpose's internal `do_3D` progress live during that one pass rather than sitting on one static message — see the note under [Run Cellpose-SAM Segmentation](#run-cellpose-sam-segmentation-button) in Section 6c.
 
 **The shared Min volume field is also recalibrated every time you run this sweep** — measured directly from the GT labels volume's own smallest labeled cell, rather than a frozen historical constant. This used to be tracked as a separate "GT-min" value with no never-rising-floor protection at all (a bug in an earlier version of this tool: it just overwrote GT-min with whatever the latest sweep measured, fixed alongside unifying it with Min volume). Cellprob and Large-contact, which have no safe direction to bias toward, are instead averaged across every fish swept so far. This fish's own best point, the updated cross-fish averages, **and** the Min volume floor are all applied to the Tab 2 sliders and saved to config.
+
+**Min hole size is measured from GT here too** — this route used to just pass through whatever the Min hole size slider already held, never actually looking at this GT's own real holes the way the Pixel Classifier's two GT sweeps (9b, below) already did. It now measures a recommended floor from this GT's own real holes exactly the same way, via `_pixel_sweep.min_hole_size_from_gt()`, and folds it into the same never-rising `min_hole_size_vox` history every other sweep tool contributes to.
 
 ---
 
@@ -1675,10 +1669,9 @@ Shown automatically based on active layer suffix — `_ExtRm` → Cellpose-SAM, 
 
 | Control | Recommended | What it does |
 |---------|-------------|--------------|
-| Min volume | 7500 (until a Tab 5 sweep or GT-checked Statistics run measures a real recommendation) | Pixel Classifier's cutoff **and** Cellpose-SAM's Safe-merge "already a whole cell" floor — one shared value, not two |
-| Min size (Cellpose-SAM) | 15 | Cellpose-SAM only — tiny early noise filter, deliberately not the same value as Min volume (see [6a](#6a-which-tool-is-active--pixel-classifier-or-cellpose-sam)) |
-| Min hole size | 0 (until a Tab 5 sweep measures a real recommendation from GT) | Shared by both routes — minimum voxels for an enclosed gap to survive as real background instead of being filled |
-| Final min-size fraction | 0.618 (golden ratio) | Both routes — the real deletion cutoff is this fraction of Min volume, not Min volume itself (Cellpose-SAM: last-stage safety net; Pixel Classifier: the volume filter's own cutoff) |
+| Min volume | 7500 (until a Tab 5 sweep or GT-checked Statistics run measures a real recommendation) | **Informative only, not editable** — Pixel Classifier's cutoff **and** Cellpose-SAM's Safe-merge "already a whole cell" floor, one shared value; only moves via a GT sweep/GT-verified Statistics run |
+| Min hole size | 0 (until a Tab 5 sweep measures a real recommendation from GT) | Editable slider — shared by both routes — minimum voxels for an enclosed gap to survive as real background instead of being filled |
+| Final min-size fraction | 0.618 (golden ratio) | Editable slider — both routes — the real deletion cutoff is this fraction of Min volume, not Min volume itself (Cellpose-SAM: last-stage safety net; Pixel Classifier: the volume filter's own cutoff) |
 
 **Pixel Classifier**
 
@@ -1692,6 +1685,7 @@ Shown automatically based on active layer suffix — `_ExtRm` → Cellpose-SAM, 
 
 | Control | Recommended | What it does |
 |---------|-------------|--------------|
+| Min size | 15 vox | Cellpose-SAM only, not shared with Common Settings' Min volume — tiny early noise filter |
 | Cellprob threshold | -2.5 | Confidence cutoff for foreground vs. background |
 | Safe-merge max gap | 2 vox | Max gap allowed when merging fragments |
 | Safe-merge min contact | 10 vox | Min touching surface required to merge |

@@ -61,6 +61,7 @@ from ._cellpose_seg import (
 )
 from ._gt_score import score_against_gt
 from ._pixel_sweep import min_volume_from_gt as gt_min_from_labels
+from ._pixel_sweep import min_hole_size_from_gt
 # gt_min_from_labels is kept as a name here for readability at this
 # module's call sites (Krendl safe-merge's "already a whole cell"
 # floor), but it is no longer its own implementation: gt_min and the
@@ -76,7 +77,7 @@ from ._pixel_sweep import min_volume_from_gt as gt_min_from_labels
 
 def run_krendl_sweep(volume, gt_labels, model_path, cellprobs, large_contacts,
                       flow=0.4, anisotropy=5.747, max_gap=2, min_contact=10,
-                      gt_min=None, iou_threshold=0.5, gpu=True, min_hole_size=0,
+                      gt_min=None, iou_threshold=0.5, gpu=True, min_hole_size=None,
                       min_size=15, final_min_fraction=0.618,
                       progress_cb=None, cancel_event=None):
     """
@@ -91,9 +92,13 @@ def run_krendl_sweep(volume, gt_labels, model_path, cellprobs, large_contacts,
 
     min_hole_size: passed through to masks_from_flows() -- see
     _cellpose_seg._make_capped_fill_holes()'s docstring. Shared with the
-    Pixel Classifier route's Min hole size value, so this sweep is
-    validated against the same hole-fill behavior production actually
-    uses. 0 (default) matches Cellpose's own unconditional hole-filling.
+    Pixel Classifier route's Min hole size value. If None (default),
+    computed from gt_labels itself via _pixel_sweep.min_hole_size_from_gt()
+    -- the same real-GT measurement the Pixel Classifier's own two GT
+    sweeps already use, so this route's recommendation is measured, not
+    guessed, and every sweep tool feeds the same never-rising floor.
+    Pass an explicit value (e.g. 0, matching Cellpose's own unconditional
+    hole-filling) to override.
 
     final_min_fraction: passed through to final_min_size_cleanup(), run
     after large_contact_merge on every grid point exactly like
@@ -113,6 +118,8 @@ def run_krendl_sweep(volume, gt_labels, model_path, cellprobs, large_contacts,
       'best_point': (cellprob, large_contact) or None,   # highest Score
       'gt_min_used': int,   # the gt_min value actually applied (measured
                              # or overridden), for reporting/auto-apply
+      'min_hole_size_used': int,   # the min_hole_size value actually
+                             # applied (measured or overridden)
       'cancelled': bool,
     }
     """
@@ -120,6 +127,11 @@ def run_krendl_sweep(volume, gt_labels, model_path, cellprobs, large_contacts,
         gt_min = gt_min_from_labels(gt_labels)
         if progress_cb:
             progress_cb(f"gt_min computed from this GT's smallest labeled cell: {gt_min} vox")
+
+    if min_hole_size is None:
+        min_hole_size = min_hole_size_from_gt(gt_labels)
+        if progress_cb:
+            progress_cb(f"min_hole_size computed from this GT's own real holes: {min_hole_size} vox")
 
     if progress_cb:
         progress_cb("Predicting flows (do_3D network pass -- the one expensive step, runs once)...")
@@ -160,7 +172,7 @@ def run_krendl_sweep(volume, gt_labels, model_path, cellprobs, large_contacts,
     best_point = max(results, key=lambda k: results[k]["score"]) if results else None
 
     return dict(grid=grid, results=results, best_point=best_point,
-                gt_min_used=gt_min, cancelled=cancelled)
+                gt_min_used=gt_min, min_hole_size_used=min_hole_size, cancelled=cancelled)
 
 
 def format_krendl_sweep_report(sweep, current_cellprob=None, current_large_contact=None):
@@ -178,6 +190,11 @@ def format_krendl_sweep_report(sweep, current_cellprob=None, current_large_conta
         lines0.append(
             f"gt_min used for Safe-merge: {sweep['gt_min_used']} vox "
             f"(measured from this GT's smallest labeled cell)\n"
+        )
+    if sweep.get("min_hole_size_used") is not None:
+        lines0.append(
+            f"min_hole_size used: {sweep['min_hole_size_used']} vox "
+            f"(measured from this GT's own real holes)\n"
         )
 
     header = f"{'LrgCnt':>8} | " + " | ".join(f"cp={c:>5} " for c in cellprobs)

@@ -236,7 +236,7 @@ too_small = df["volume_vox"] < min_floor   if min_floor   is not None else False
 df["is_volume_outlier"] = too_big | too_small
 ```
 
-`max_ceiling` (`max_volume_recommended_vox` in config) and `min_floor` (`min_volume_recommended_vox`, the same field Common Settings' Min volume slider reads) are both cross-fish histories tracked the same way as every Tab 5 sweep's recommendations — see `_update_gt_history()` in `_widget.py`. `min_floor` is a never-rising floor (`mode="min"`); `max_ceiling` is its never-falling mirror (`mode="max"`, the same direction used for `branch_radius`). Both only move when Tab 3's **"This is verified ground truth"** checkbox is ticked for the run that measured them — an unverified/uncorrected prediction can widen neither bound, though every run, verified or not, is still flagged against whichever bounds were last confirmed.
+`max_ceiling` (`max_volume_recommended_vox` in config) and `min_floor` (`min_volume_recommended_vox`, the same field Common Settings' informative Min volume display reads) are both cross-fish histories tracked the same way as every Tab 5 sweep's recommendations — see `_update_gt_history()` in `_widget.py`. `min_floor` is a never-rising floor (`mode="min"`); `max_ceiling` is its never-falling mirror (`mode="max"`, the same direction used for `branch_radius`). Both only move when Tab 3's **"This is verified ground truth"** checkbox is ticked for the run that measured them — an unverified/uncorrected prediction can widen neither bound, though every run, verified or not, is still flagged against whichever bounds were last confirmed.
 
 ---
 
