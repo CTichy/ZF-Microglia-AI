@@ -228,7 +228,7 @@ E[NND] = Γ(4/3) · (3 / (4π·ρ))^(1/3)
 Unlike every other column on this page, `is_volume_outlier` is not produced inside `compute_stats()` at all — it's appended afterward, in `_widget.py`'s `_on_generate_stats()`, once the DataFrame comes back. It exists to hand the two "is this cell real?" edge cases GT sweeps and pipeline stages can't resolve on their own back to a human:
 
 - **Too big** — could be two touching cells the pipeline's merge/split logic left joined instead of separating.
-- **Too small** — could be genuine debris, or could be a real but unusually small microglia; below the deletion threshold the Cellpose-SAM pipeline already removes it outright (see [GUIDE.md §6a, Final min-size fraction](GUIDE.md#6a-which-tool-is-active--pixel-classifier-or-cellpose-sam)), but the gray zone between that threshold and the confirmed floor survives untouched on purpose, and the Pixel Classifier route has no equivalent deletion stage at all.
+- **Too small** — could be genuine debris, or could be a real but unusually small microglia; below the deletion threshold, both routes already remove it outright (see [GUIDE.md §6a, Final min-size fraction](GUIDE.md#6a-which-tool-is-active--pixel-classifier-or-cellpose-sam) — Cellpose-SAM's final safety-net stage, the Pixel Classifier's own volume filter cutoff), but the gray zone between that threshold and the confirmed floor survives untouched on purpose on both routes.
 
 ```python
 too_big   = df["volume_vox"] > max_ceiling if max_ceiling is not None else False

@@ -13,7 +13,8 @@ Workflow
 2. Gaussian smooth (σ_xy, σ_z) → re-threshold at 0.5
 3. Fill holes per Z slice
 4. 3D connected components (26-connectivity via ones(3,3,3) structure)
-5. Remove blobs < min_volume voxels
+5. Remove blobs < final_min_fraction * min_volume voxels (golden ratio
+   safety-net relaxation by default, see create_labels()'s docstring)
 6. Renumber 1…N by descending volume  (label 1 = largest)
 """
 
@@ -113,6 +114,7 @@ def _create_labels_cuda(
     sigma_z: float,
     min_volume: int,
     min_hole_size: int = 0,
+    final_min_fraction: float = 0.618,
 ) -> np.ndarray:
     cp   = _CP
     cpnd = _CPND
@@ -146,13 +148,24 @@ def _create_labels_cuda(
         return result
 
     # ── Step 5: remove small blobs — vectorised on GPU ────────────────────
+    # Final cutoff is final_min_fraction * min_volume, not min_volume
+    # itself -- same golden-ratio safety-net philosophy _cellpose_seg.py's
+    # final_min_size_cleanup() uses, applied here since this route has no
+    # merge/reattach stage of its own to leave a gray-zone object standing
+    # for a later stage to reconsider (unlike Cellpose-SAM's GMM/safe-
+    # merge/large-contact chain): min_volume alone as a hard cutoff would
+    # discard a legitimately smaller-than-average real cell just as
+    # readily as real debris. final_min_fraction=1.0 recovers the exact
+    # historical behaviour (cutoff == min_volume) for any caller that
+    # doesn't pass a fraction.
+    threshold = max(1, round(final_min_fraction * min_volume))
     max_out = int(labeled_gpu.max())
     counts  = cp.bincount(labeled_gpu.ravel().astype(cp.int64), minlength=max_out + 1)
 
-    keep_lut    = counts >= min_volume
+    keep_lut    = counts >= threshold
     keep_lut[0] = True
     output_gpu  = cp.where(keep_lut[labeled_gpu], labeled_gpu, cp.int32(0))
-    removed     = int(((counts[1:] > 0) & (counts[1:] < min_volume)).sum())
+    removed     = int(((counts[1:] > 0) & (counts[1:] < threshold)).sum())
     del labeled_gpu
 
     # ── Step 6: renumber 1…N by descending volume ─────────────────────────
@@ -168,7 +181,7 @@ def _create_labels_cuda(
 
     output  = cp.asarray(lut2)[output_gpu].get()
     n_final = int(output.max())
-    print(f"   3D blobs removed (< {min_volume} vox): {removed}")
+    print(f"   3D blobs removed (< {threshold} vox = {final_min_fraction:.3f} x min_volume {min_volume}): {removed}")
     print(f"   Final 3D labels: {n_final}  (label 1 = largest)")
     del output_gpu, counts, keep_lut
     _free_gpu_cache()
@@ -185,6 +198,7 @@ def _create_labels_threaded(
     sigma_z: float,
     min_volume: int,
     min_hole_size: int = 0,
+    final_min_fraction: float = 0.618,
 ) -> np.ndarray:
     Z, Y, X = volume.shape
 
@@ -226,13 +240,16 @@ def _create_labels_threaded(
         return labeled.astype(np.int32)
 
     # ── Step 5: remove small blobs ────────────────────────────────────────
+    # See _create_labels_cuda's matching comment: the deletion cutoff is
+    # final_min_fraction * min_volume, not min_volume itself.
+    threshold = max(1, round(final_min_fraction * min_volume))
     max_out = int(labeled.max())
     counts  = np.bincount(labeled.ravel().astype(np.int64), minlength=max_out + 1)
 
-    keep_lut    = counts >= min_volume
+    keep_lut    = counts >= threshold
     keep_lut[0] = True
     output      = np.where(keep_lut[labeled], labeled, 0).astype(np.int32)
-    removed     = int(((counts[1:] > 0) & (counts[1:] < min_volume)).sum())
+    removed     = int(((counts[1:] > 0) & (counts[1:] < threshold)).sum())
     del labeled
 
     # ── Step 6: renumber 1…N by descending volume ─────────────────────────
@@ -247,7 +264,7 @@ def _create_labels_threaded(
 
     output  = lut2[output]
     n_final = int(output.max())
-    print(f"   3D blobs removed (< {min_volume} vox): {removed}")
+    print(f"   3D blobs removed (< {threshold} vox = {final_min_fraction:.3f} x min_volume {min_volume}): {removed}")
     print(f"   Final 3D labels: {n_final}  (label 1 = largest)")
     return output.astype(np.int32)
 
@@ -511,6 +528,7 @@ def create_labels(
     sigma_z: float = 0.5,
     min_volume: int = 7500,
     min_hole_size: int = 0,
+    final_min_fraction: float = 0.618,
 ) -> np.ndarray:
     """
     Create 3D labels from brain_only volume using true 3D connected components.
@@ -536,6 +554,17 @@ def create_labels(
                     original, unconditional behaviour, kept as the
                     default so existing callers are unaffected unless
                     they opt in.
+    final_min_fraction : the actual 3D-blob deletion cutoff is
+                    final_min_fraction * min_volume, not min_volume
+                    itself -- same golden-ratio safety-net idea as
+                    _cellpose_seg.py's final_min_size_cleanup(), applied
+                    here too since this route has no merge/reattach
+                    stage to leave a gray-zone object standing for later
+                    reconsideration the way Cellpose-SAM's GMM/safe-
+                    merge/large-contact chain does. Default 0.618 (the
+                    golden ratio, 1/phi) matches that route's default;
+                    pass 1.0 to recover the exact historical behaviour
+                    (cutoff == min_volume, no relaxation).
 
     Returns
     -------
@@ -551,7 +580,7 @@ def create_labels(
     if _BACKEND == "cuda":
         try:
             return _create_labels_cuda(
-                volume, sigma_xy, sigma_z, min_volume, min_hole_size
+                volume, sigma_xy, sigma_z, min_volume, min_hole_size, final_min_fraction
             )
         except Exception as exc:
             # e.g. out-of-memory — fall back gracefully
@@ -559,5 +588,5 @@ def create_labels(
             _free_gpu_cache()
 
     return _create_labels_threaded(
-        volume, sigma_xy, sigma_z, min_volume, min_hole_size
+        volume, sigma_xy, sigma_z, min_volume, min_hole_size, final_min_fraction
     )

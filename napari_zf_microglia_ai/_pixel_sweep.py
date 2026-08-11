@@ -122,7 +122,7 @@ def min_volume_from_gt(gt_labels):
 def run_pixel_sweep(image_path, brain_mask_path, gt_labels_path,
                      bg_thresholds, erosions, scale_zyx,
                      sigma_xy=1.5, sigma_z=3.0, min_volume=None,
-                     min_hole_size=None,
+                     min_hole_size=None, final_min_fraction=0.618,
                      n_cells=5, pad_z=15, pad_xy=40,
                      progress_cb=None, cancel_event=None):
     """
@@ -152,6 +152,14 @@ def run_pixel_sweep(image_path, brain_mask_path, gt_labels_path,
                          from gt_labels itself via
                          min_hole_size_from_gt() instead of guessed.
                          Pass an explicit value to override.
+    final_min_fraction  : passed straight to create_labels() -- the
+                         actual small-blob deletion cutoff used there is
+                         final_min_fraction * min_volume, not min_volume
+                         itself. Default 0.618 (golden ratio) matches
+                         Common Settings' Tab 2 field and Cellpose-SAM's
+                         own final_min_size_cleanup() default, so this
+                         sweep is validated against the exact same
+                         cutoff production actually uses.
 
     progress_cb(str), if given, is called with a one-line status message
     as work proceeds. cancel_event (threading.Event), if given, is
@@ -237,6 +245,7 @@ def run_pixel_sweep(image_path, brain_mask_path, gt_labels_path,
                 pred_labels = create_labels(
                     brain_only_crop, sigma_xy=sigma_xy, sigma_z=sigma_z,
                     min_volume=min_volume, min_hole_size=min_hole_size,
+                    final_min_fraction=final_min_fraction,
                 )
                 r = _best_gt_match(pred_labels, c["gt_mask"], c["gt_vox"])
                 results[(bg_threshold, erosion, label_id)] = r
@@ -270,7 +279,7 @@ def run_pixel_sweep(image_path, brain_mask_path, gt_labels_path,
 def run_sigma_sweep(image_path, brain_mask_path, gt_labels_path,
                      sigma_xy_values, sigma_z_values, scale_zyx,
                      bg_threshold, erosion, min_volume=None,
-                     min_hole_size=None,
+                     min_hole_size=None, final_min_fraction=0.618,
                      n_cells=5, pad_z=15, pad_xy=40,
                      progress_cb=None, cancel_event=None):
     """
@@ -297,6 +306,8 @@ def run_sigma_sweep(image_path, brain_mask_path, gt_labels_path,
     min_hole_size  : per-slice hole-fill floor. If None (default), measured
                      from gt_labels via min_hole_size_from_gt() instead
                      of guessed.
+    final_min_fraction : passed straight to create_labels() -- see
+                     run_pixel_sweep's docstring for the same parameter.
 
     progress_cb(str)/cancel_event : same contract as run_pixel_sweep.
 
@@ -368,6 +379,7 @@ def run_sigma_sweep(image_path, brain_mask_path, gt_labels_path,
                 pred_labels = create_labels(
                     c["brain_only"], sigma_xy=sigma_xy, sigma_z=sigma_z,
                     min_volume=min_volume, min_hole_size=min_hole_size,
+                    final_min_fraction=final_min_fraction,
                 )
                 r = _best_gt_match(pred_labels, c["gt_mask"], c["gt_vox"])
                 results[(sigma_xy, sigma_z, label_id)] = r

@@ -344,7 +344,7 @@ Sits in its own box, above the Pixel Classifier/Cellpose-SAM sections and **alwa
 
 **Range:** 5000 to 10000 — **Default: 7500**
 
-After all 2D blobs are linked into 3D objects in the Pixel Classifier's own union-find pipeline, any object smaller than this voxel count is deleted as noise. This is the *final* debris cutoff for that route — nothing runs after it to reconsider a discarded object.
+After all 2D blobs are linked into 3D objects in the Pixel Classifier's own union-find pipeline, any object smaller than **Final min-size fraction × this value** (below) is deleted as noise — see that field for why the actual cutoff is a fraction of Min volume rather than Min volume itself. This is the *final* debris cutoff for that route — nothing runs after it to reconsider a discarded object.
 
 This same field also drives Cellpose-SAM's Safe-merge "already a whole cell" floor (6c) and the Final min-size safety net below — `gt_min_from_labels()` (Krendl's own name for this quantity) and `min_volume_from_gt()` are literally the same computation, so both routes now read one shared, GT-calibrated number instead of two separately-tracked copies of it.
 
@@ -383,13 +383,16 @@ The old behavior, unconditional hole-filling regardless of size, could silently 
 
 > Leave this at 0 unless you have actually seen real internal holes disappearing from your labels, or a Tab 5 sweep has measured a recommended value from ground truth. There is no universal correct number — real GT checked during development showed a sharp split between 1–2 voxel gaps (near-certainly annotation noise) and 400+ voxel gaps (clearly real structure), with nothing in between, so a value anywhere in that gap works for that fish; a different fish may look different.
 
-#### Final min-size fraction — Cellpose-SAM
+#### Final min-size fraction — both routes
 
 **Range:** 0.0 to 1.0 — **Default: 0.618 (the golden ratio, 1/φ)**
 
-The very last stage of the Cellpose-SAM pipeline (6c), run after large-contact merge: any surviving cell smaller than `this fraction × Min volume` is removed as a final safety net, regardless of how it survived every earlier stage. Nothing upstream is guaranteed to catch every debris object — GMM cleanup separates populations by the raw size distribution and can still leave a gray-zone object standing, and safe-merge/large-contact only act when a nearby neighbor exists to merge into.
+The actual small-object deletion cutoff **both** routes use is `this fraction × Min volume`, not Min volume itself — applied differently in each, since they have different pipeline shapes:
 
-The golden ratio is the default for a specific reason, not decoration: it needs to be strict enough that a fragment genuinely that much smaller than the smallest real GT cell ever measured is a defensible "almost certainly not a real cell" cutoff, while staying lenient enough not to reject a legitimately smaller-than-average real cell the way using Min volume itself (fraction = 1.0) would. Set to `0.0` to disable this stage entirely (nothing gets removed by it).
+- **Cellpose-SAM (6c):** the very last stage, run after large-contact merge — any surviving cell below the cutoff is removed as a final safety net, regardless of how it survived every earlier stage. Nothing upstream is guaranteed to catch every debris object: GMM cleanup separates populations by the raw size distribution and can still leave a gray-zone object standing, and safe-merge/large-contact only act when a nearby neighbor exists to merge into.
+- **Pixel Classifier (6b):** applied directly as the volume filter's own cutoff, right after 3D objects are formed by union-find — this route has no merge/reattach stage of its own, so there's no later stage to hand a gray-zone object off to; the relaxed cutoff has to be the filter itself.
+
+The golden ratio is the default for a specific reason, not decoration: it needs to be strict enough that a fragment genuinely that much smaller than the smallest real GT cell ever measured is a defensible "almost certainly not a real cell" cutoff, while staying lenient enough not to reject a legitimately smaller-than-average real cell the way using Min volume itself (fraction = 1.0) would. Set to `1.0` to recover the old, unrelaxed behavior (cutoff == Min volume exactly) on either route; `0.0` disables the Cellpose-SAM safety-net stage entirely and, on the Pixel Classifier, removes its volume filter's floor altogether (every non-zero object survives).
 
 ---
 
@@ -459,7 +462,7 @@ if overlap_ratio ≥ min_overlap% → same object (linked)
 
 ### Create Labels
 
-Click to run the 3D labelling algorithm. Processing runs in a background thread — the button is disabled until complete, and the small live-output box underneath shows the same per-stage messages the console gets (backend used, signal voxel count, blobs found/removed), instead of only landing in a terminal you may not have open.
+Click to run the 3D labelling algorithm. Processing runs in a background thread — the button is disabled until complete, and the small live-output box underneath shows the same per-stage messages the console gets (backend used, signal voxel count, blobs found/removed), instead of only landing in a terminal you may not have open. The volume filter's actual cutoff is `Final min-size fraction × Min volume` (Common Settings, 6a), not Min volume alone — see that field for why.
 
 When done, a `*_labels` layer appears in napari with each detected cell shown in a different colour. The console prints how many labels were found.
 
@@ -733,8 +736,8 @@ The CSV contains one row per label with up to 47 columns depending on which opti
 
 **Every run** — GT-verified or not — includes an `is_volume_outlier` column, `True` for a cell on **either** side of the two GT-tracked bounds:
 
-- **Bigger than the outlier ceiling.** Unlike small fragments (removed outright by the Cellpose-SAM final min-size safety net, see [6c](#6c-cellpose-sam-segmentation)), an oversized cell is never deleted automatically — it's flagged for a human to look at, since "unusually large" is far more often a real biological outlier or an under-corrected merge of two touching cells than definite debris.
-- **Smaller than the Min volume floor.** The Cellpose-SAM pipeline only auto-removes a cell once it drops below `Final min-size fraction × Min volume` (the golden-ratio safety net, 6a/6c) — anything above that deletion line but still under the confirmed floor itself survives the pipeline untouched, yet is still smaller than any cell ever proven real. Flagging it here (rather than silently trusting it) surfaces exactly that gray zone for review, on the Pixel Classifier route too, which has no equivalent deletion stage at all.
+- **Bigger than the outlier ceiling.** Neither route ever deletes an oversized cell automatically — it's flagged for a human to look at instead, since "unusually large" is far more often a real biological outlier or an under-corrected merge of two touching cells than definite debris.
+- **Smaller than the Min volume floor.** Both routes only auto-remove a cell once it drops below `Final min-size fraction × Min volume` (the golden-ratio cutoff, 6a — Cellpose-SAM's final safety-net stage in [6c](#6c-cellpose-sam-segmentation), the Pixel Classifier's own volume filter in [6b](#6b-pixel-classifier--union-find-labels)) — anything above that deletion line but still under the confirmed floor itself survives untouched on either route, yet is still smaller than any cell ever proven real. Flagging it here (rather than silently trusting it) surfaces exactly that gray zone for review.
 
 ---
 
@@ -1673,7 +1676,7 @@ Shown automatically based on active layer suffix — `_ExtRm` → Cellpose-SAM, 
 | Min volume | 7500 (until a Tab 5 sweep or GT-checked Statistics run measures a real recommendation) | Pixel Classifier's cutoff **and** Cellpose-SAM's Safe-merge "already a whole cell" floor — one shared value, not two |
 | Min size (Cellpose-SAM) | 15 | Cellpose-SAM only — tiny early noise filter, deliberately not the same value as Min volume (see [6a](#6a-which-tool-is-active--pixel-classifier-or-cellpose-sam)) |
 | Min hole size | 0 (until a Tab 5 sweep measures a real recommendation from GT) | Shared by both routes — minimum voxels for an enclosed gap to survive as real background instead of being filled |
-| Final min-size fraction | 0.618 (golden ratio) | Cellpose-SAM only — last-stage safety net removing anything below this fraction of Min volume |
+| Final min-size fraction | 0.618 (golden ratio) | Both routes — the real deletion cutoff is this fraction of Min volume, not Min volume itself (Cellpose-SAM: last-stage safety net; Pixel Classifier: the volume filter's own cutoff) |
 
 **Pixel Classifier**
 

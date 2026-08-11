@@ -830,22 +830,28 @@ class ZFMicrogliaAIWidget(QWidget):
         common_layout.addWidget(self._hole_recommended_lbl)
 
         finalfrac_row = QHBoxLayout()
-        finalfrac_row.addWidget(QLabel("Final min-size fraction — Cellpose-SAM:"))
+        finalfrac_row.addWidget(QLabel("Final min-size fraction — both routes:"))
         self._finalfrac_spin = QDoubleSpinBox()
         self._finalfrac_spin.setDecimals(3)
         self._finalfrac_spin.setRange(0.0, 1.0)
         self._finalfrac_spin.setSingleStep(0.01)
-        self._finalfrac_spin.setValue(_root_cfg.get("cellpose_final_min_fraction", 0.618))
+        self._finalfrac_spin.setValue(
+            _root_cfg.get("final_min_fraction", _root_cfg.get("cellpose_final_min_fraction", 0.618))
+        )
         finalfrac_row.addWidget(self._finalfrac_spin)
         common_layout.addLayout(finalfrac_row)
         finalfrac_note = QLabel(
-            "  Last stage of the Cellpose-SAM pipeline, after large-contact "
-            "merge: any surviving cell smaller than this fraction of the "
-            "Min volume floor above (the smallest real cell ever confirmed "
-            "in GT) is removed as a final safety net. Default is the "
-            "golden ratio, ~0.618 -- strict enough to catch debris that "
-            "slipped past GMM cleanup and safe-merge, lenient enough not "
-            "to reject a legitimately smaller-than-average real cell."
+            "  The actual small-object deletion cutoff both routes use is "
+            "this fraction of the Min volume floor above (the smallest "
+            "real cell ever confirmed in GT), not Min volume itself: "
+            "Cellpose-SAM applies it as a final safety-net stage after "
+            "large-contact merge; the Pixel Classifier applies it directly "
+            "as its own 3D-blob volume filter, since that route has no "
+            "merge/reattach stage to leave a smaller object standing for "
+            "later reconsideration. Default is the golden ratio, ~0.618 -- "
+            "strict enough to catch clear debris, lenient enough not to "
+            "reject a legitimately smaller-than-average real cell. 1.0 "
+            "disables the relaxation entirely (cutoff == Min volume)."
         )
         finalfrac_note.setStyleSheet("color: #888; font-size: 10px;")
         finalfrac_note.setWordWrap(True)
@@ -5177,6 +5183,7 @@ class ZFMicrogliaAIWidget(QWidget):
         sigma_z       = self._sz_slider.value()
         min_volume    = self._area_slider.value()
         min_hole_size = self._hole_slider.value()
+        final_min_fraction = self._finalfrac_spin.value()
         stem            = target.name
         scale           = tuple(float(v) for v in target.scale) if len(target.scale) == 3 else (1., 1., 1.)
 
@@ -5186,7 +5193,8 @@ class ZFMicrogliaAIWidget(QWidget):
 
         print(f"\n{'='*70}")
         print(f"CREATE LABELS — {stem}  shape={volume.shape}")
-        print(f"σ_xy={sigma_xy}  σ_z={sigma_z}  min_volume={min_volume} vox  min_hole_size={min_hole_size} vox")
+        print(f"σ_xy={sigma_xy}  σ_z={sigma_z}  min_volume={min_volume} vox  min_hole_size={min_hole_size} vox  "
+              f"final_min_fraction={final_min_fraction}")
         print(f"{'='*70}")
 
         result = {}
@@ -5206,6 +5214,7 @@ class ZFMicrogliaAIWidget(QWidget):
                         sigma_z=sigma_z,
                         min_volume=min_volume,
                         min_hole_size=min_hole_size,
+                        final_min_fraction=final_min_fraction,
                     )
                 result["labels"] = labels
             except Exception as exc:
@@ -5309,6 +5318,7 @@ class ZFMicrogliaAIWidget(QWidget):
         pad_xy = self._ps_padxy_spin.value()
         current_bg = self._tol_slider.value()
         current_erosion = self._erosion_slider.value()
+        final_min_fraction = self._finalfrac_spin.value()
 
         cancel_event = threading.Event()
         result = {}
@@ -5324,6 +5334,7 @@ class ZFMicrogliaAIWidget(QWidget):
                 sweep = _psw.run_pixel_sweep(
                     img_path, mask_path, lbl_path, bg_thresholds, erosions, scale_zyx,
                     sigma_xy=sigma_xy, sigma_z=sigma_z, min_volume=None, min_hole_size=None,
+                    final_min_fraction=final_min_fraction,
                     n_cells=n_cells, pad_z=pad_z, pad_xy=pad_xy,
                     progress_cb=_progress_cb, cancel_event=cancel_event,
                 )
@@ -5525,6 +5536,7 @@ class ZFMicrogliaAIWidget(QWidget):
         pad_xy = self._sg_padxy_spin.value()
         current_sxy = self._sxy_slider.value()
         current_sz = self._sz_slider.value()
+        final_min_fraction = self._finalfrac_spin.value()
 
         cancel_event = threading.Event()
         result = {}
@@ -5540,6 +5552,7 @@ class ZFMicrogliaAIWidget(QWidget):
                 sweep = _psw.run_sigma_sweep(
                     img_path, mask_path, lbl_path, sigma_xy_values, sigma_z_values, scale_zyx,
                     bg_threshold, erosion, min_volume=None, min_hole_size=None,
+                    final_min_fraction=final_min_fraction,
                     n_cells=n_cells, pad_z=pad_z, pad_xy=pad_xy,
                     progress_cb=_progress_cb, cancel_event=cancel_event,
                 )
