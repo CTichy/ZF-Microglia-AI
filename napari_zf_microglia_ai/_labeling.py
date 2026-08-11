@@ -325,6 +325,39 @@ def resort_labels(
     return lut[labels].astype(np.int32)
 
 
+def remove_debris(labels: np.ndarray, threshold: int) -> "tuple[np.ndarray, int]":
+    """Zero out every object smaller than threshold voxels. A manual
+    edit in napari -- deleting a whole label that turned out to be
+    misclassified skin, splitting a label, painting part of one away --
+    can leave small disconnected fragments behind that never went
+    through create_labels()'s own volume filter (which only ever ran
+    once, before the edit). This is that same filter, callable again on
+    demand against whatever the Labels layer currently looks like.
+
+    Deliberately does NOT renumber surviving labels -- unlike
+    create_labels()'s own filter, this is a targeted cleanup step on an
+    already-in-use label set, not a fresh labeling pass, so IDs the user
+    may already be tracking (via Split Label, manual annotation, etc.)
+    are left exactly as they were.
+
+    threshold : typically final_min_fraction * min_volume (Common
+    Settings), the same golden-ratio-relaxed cutoff create_labels()'s
+    own filter and Cellpose-SAM's final_min_size_cleanup() already use.
+
+    Returns (labels, n_removed)."""
+    labels = np.asarray(labels)
+    max_lbl = int(labels.max()) if labels.size else 0
+    if max_lbl == 0:
+        return labels.copy(), 0
+    counts = np.bincount(labels.ravel().astype(np.int64), minlength=max_lbl + 1)
+    small = np.nonzero((counts[1:] > 0) & (counts[1:] < threshold))[0] + 1
+    if small.size == 0:
+        return labels.copy(), 0
+    out = labels.copy()
+    out[np.isin(out, small)] = 0
+    return out.astype(np.int32), int(small.size)
+
+
 def split_label(
     labels: np.ndarray,
     target_label: int,

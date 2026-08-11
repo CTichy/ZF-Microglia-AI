@@ -332,7 +332,7 @@ Tab 2 shows **exactly one** of the two labelling methods below, chosen automatic
 
 So the choice is really made back in **Tab 1, Step 5**: pick **Option 1** if you plan to segment with Cellpose-SAM, or **Option 2** if you plan to use the Pixel Classifier.
 
-The **Sort by / Resort Labels**, **Split Label**, and **Save Labels** tools (Section 6, further down) only appear once one of the two sections above is showing — with no `_ExtRm`/`_NoBG` layer selected, there's nothing yet to sort, split, or save. **Tab 3 — Statistics** takes a different approach: it stays visible regardless, showing an explanatory hint in place of its controls until at least one Labels layer exists in the viewer, so a first-time user can still discover the tab is there.
+The **Sort by / Resort Labels**, **Remove Debris**, **Split Label**, and **Save Labels** tools (Section 6, further down) only appear once one of the two sections above is showing — with no `_ExtRm`/`_NoBG` layer selected, there's nothing yet to sort, clean up, split, or save. **Tab 3 — Statistics** takes a different approach: it stays visible regardless, showing an explanatory hint in place of its controls until at least one Labels layer exists in the viewer, so a first-time user can still discover the tab is there.
 
 ---
 
@@ -550,6 +550,14 @@ After creating (or loading) labels, you can renumber them by a criterion of your
 **Reverse order** checkbox — inverts the ordering (e.g. smallest = label 1 for Size).
 
 Click **Resort Labels** to apply. The active Labels layer is renumbered 1…N in the chosen order, in place. This is useful for consistent numbering across samples or for matching cells to a reference atlas.
+
+---
+
+### Remove Debris
+
+Manual edits in napari — deleting a whole label because it turned out to be misclassified skin, splitting one, painting part of one away — can leave small disconnected fragments behind that never went through Create Labels' own volume filter (which only ran once, before the edit). Click **Remove Debris** and the active Labels layer, exactly as it currently stands, is swept for any object smaller than `Final min-size fraction × Min volume` (Common Settings, 6a) — the same golden-ratio-relaxed cutoff Create Labels' own filter and Cellpose-SAM's final safety-net stage already use — and every one found is zeroed out.
+
+Works on labels from either route. Surviving labels' IDs are left exactly as they were — this only removes, it never renumbers (use **Resort Labels** above afterward if you also want a clean 1…N sequence).
 
 ---
 

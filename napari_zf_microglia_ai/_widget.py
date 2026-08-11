@@ -26,7 +26,7 @@ from superqt import QLabeledSlider, QLabeledDoubleSlider
 from ._io import load_file
 from ._inference import DEFAULT_MODEL, _SKIN_SEG_DIR, run_inference
 from ._background import remove_outside_brain, remove_global, fill_outside_brain_random
-from ._labeling import create_labels, resort_labels, split_label
+from ._labeling import create_labels, resort_labels, split_label, remove_debris
 from ._statistics import compute_stats
 from ._cellpose_seg import run_full_pipeline as _run_cellpose_pipeline
 from . import _pixel_sweep as _psw
@@ -1690,6 +1690,27 @@ class ZFMicrogliaAIWidget(QWidget):
 
         dlt.addWidget(_sep())
 
+        self._debris_btn = QPushButton("Remove Debris")
+        self._debris_btn.setStyleSheet("QPushButton { padding: 5px; }")
+        dlt.addWidget(self._debris_btn)
+        debris_note = QLabel(
+            "  Removes any object below Final min-size fraction x Min "
+            "volume (Common Settings, 6a) from the active Labels layer "
+            "as it currently stands -- for debris a manual edit left "
+            "behind (e.g. deleting a whole label that was actually skin, "
+            "or splitting one) that never went through Create Labels' "
+            "own volume filter, since that filter only ran once, before "
+            "the edit. Works on labels from either route."
+        )
+        debris_note.setWordWrap(True)
+        debris_note.setStyleSheet("color: #888; font-size: 10px;")
+        dlt.addWidget(debris_note)
+        self._debris_status_lbl = QLabel("")
+        self._debris_status_lbl.setWordWrap(True)
+        dlt.addWidget(self._debris_status_lbl)
+
+        dlt.addWidget(_sep())
+
         split_lbl_row = QHBoxLayout()
         split_lbl_row.addWidget(QLabel("Target label:"))
         self._split_label_spin = QSpinBox()
@@ -3112,6 +3133,7 @@ class ZFMicrogliaAIWidget(QWidget):
         self._gtp_run_btn.clicked.connect(self._on_gtp_run)
         self._notify_test_btn.clicked.connect(self._on_send_test_email)
         self._resort_btn.clicked.connect(self._on_resort_labels)
+        self._debris_btn.clicked.connect(self._on_remove_debris)
         self._split_use_sel_btn.clicked.connect(self._on_use_selected_label)
         self._split_btn.clicked.connect(self._on_split_label)
         self._save_labels_btn.clicked.connect(self._on_save_labels)
@@ -4860,6 +4882,53 @@ class ZFMicrogliaAIWidget(QWidget):
                 f"Done — {n} labels, sorted by {sort_label}{rev_str}."
             )
             self._resort_btn.setEnabled(True)
+
+        timer.timeout.connect(_poll)
+        timer.start(200)
+
+    def _on_remove_debris(self):
+        lyr = self._active_labels_layer()
+        if lyr is None:
+            self._debris_status_lbl.setText("No Labels layer selected.")
+            return
+
+        min_volume = self._current_min_volume()
+        fraction = self._finalfrac_spin.value()
+        threshold = max(1, round(fraction * min_volume))
+
+        self._debris_btn.setEnabled(False)
+        self._debris_status_lbl.setText(f"Removing debris (< {threshold} vox)...")
+
+        labels = np.asarray(lyr.data)
+        result = {}
+
+        def _worker():
+            try:
+                result["labels"], result["n_removed"] = remove_debris(labels, threshold)
+            except Exception as exc:
+                traceback.print_exc()
+                result["error"] = str(exc)
+
+        thread = threading.Thread(target=_worker, daemon=True)
+        thread.start()
+
+        timer = QTimer(self)
+
+        def _poll():
+            if thread.is_alive():
+                return
+            timer.stop()
+            if "error" in result:
+                self._debris_status_lbl.setText(f"ERROR: {result['error']}")
+                self._debris_btn.setEnabled(True)
+                return
+            lyr.data = result["labels"]
+            n = result["n_removed"]
+            self._debris_status_lbl.setText(
+                f"Done — removed {n} object(s) below {threshold} vox "
+                f"({fraction:.3f} x Min volume {min_volume})."
+            )
+            self._debris_btn.setEnabled(True)
 
         timer.timeout.connect(_poll)
         timer.start(200)
