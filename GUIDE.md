@@ -348,11 +348,17 @@ The actual tunable control for how strictly this floor is enforced is **Final mi
 
 > Zebrafish microglia at 4dpf typically occupy 15,000–50,000 voxels at standard resolution.
 
+#### Max volume (vox) — informative, not editable
+
+Shown the same way as Min volume above, right below it — plain text, not a slider. The largest real cell volume ever confirmed by GT, tracked as its never-falling mirror: it only ever moves *up* (a new fish can only prove an even bigger real cell exists, never invalidate one already confirmed), and only from a **GT-verified Generate Statistics run** (Tab 3) — Tab 5 sweeps don't feed it, since none of them score a whole fish's every cell the way Statistics does. Reads "not yet measured" until the first such run.
+
+Unlike Min volume, this doesn't drive any pipeline stage — nothing in either route deletes an oversized cell. It exists purely so `is_volume_outlier` in the Tab 3 Statistics CSV has something to flag against on the large side, the same way Min volume gives it something to flag against on the small side.
+
 #### Min hole size (vox) — shared
 
 **Range:** 0 upward — **Default: 0 (fill every enclosed gap, no minimum)**
 
-Unlike Min volume above, this one is a genuinely editable, **shared slider** used by both routes. A background region fully enclosed by signal — a "hole" — survives as real background only if its area is **at or above** this value; anything smaller is filled in as noise. Same idea as Min volume, just applied to gaps instead of whole objects, and named the same way on purpose: both name the size something must clear to be trusted as real, not the size at which it gets discarded.
+Unlike Min/Max volume above, this one is a genuinely editable, **shared slider** used by both routes. A background region fully enclosed by signal — a "hole" — survives as real background only if its area is **at or above** this value; anything smaller is filled in as noise. Same idea as Min volume, just applied to gaps instead of whole objects, and named the same way on purpose: both name the size something must clear to be trusted as real, not the size at which it gets discarded.
 
 The old behavior, unconditional hole-filling regardless of size, could silently erase real internal structure: a genuine gap inside a cell (debris exclusion, a real internal void) was treated identically to a single stray pixel of imaging noise, since neither route had any way to tell the two apart. Setting this above 0 draws that line explicitly, in both places it was missing:
 
@@ -363,9 +369,11 @@ The old behavior, unconditional hole-filling regardless of size, could silently 
 |-------|-------------|
 | **0** | **Default — fills every enclosed gap regardless of size (old behavior)** |
 | Small (e.g. 20) | Only single-pixel noise gaps get filled; anything larger is preserved |
-| Measured from GT (Tab 5 sweep) | The smallest confirmed-real hole size seen in hand-corrected ground truth — see below |
+| Measured from GT | The smallest confirmed-real hole size seen in hand-corrected ground truth — see below |
 
-> Leave this at 0 unless you have actually seen real internal holes disappearing from your labels, or a Tab 5 sweep has measured a recommended value from ground truth. There is no universal correct number — real GT checked during development showed a sharp split between 1–2 voxel gaps (near-certainly annotation noise) and 400+ voxel gaps (clearly real structure), with nothing in between, so a value anywhere in that gap works for that fish; a different fish may look different.
+> Leave this at 0 unless you have actually seen real internal holes disappearing from your labels, or a GT sweep/GT-verified Statistics run has measured a recommended value from ground truth. There is no universal correct number — real GT checked during development showed a sharp split between 1–2 voxel gaps (near-certainly annotation noise) and 400+ voxel gaps (clearly real structure), with nothing in between, so a value anywhere in that gap works for that fish; a different fish may look different.
+>
+> Measured by every GT-sweep tool that has a GT labels volume available (both Pixel Classifier sweeps, [9b](#9b-verify-bg-threshold--erosion-gt-sweep)/[9g](#9g-verify-smooth-sigma-xy-sigma-z-gt-sweep), and the Cellprob/Large-contact sweep, [9c](#9c-verify-cellprob--large-contact-gt-sweep)) **and** by a GT-verified Generate Statistics run (Tab 3) — all folded into the same never-rising floor.
 
 #### Final min-size fraction — both routes
 
@@ -708,12 +716,13 @@ Two additional columns are added to the CSV:
 
 **Off by default.** The Labels layer being measured could be anything — a raw, uncorrected prediction just as easily as a hand-verified fish — and this tab computes statistics on whatever layer is active regardless. Only tick this when the layer about to be measured has actually been manually corrected/verified as real ground truth.
 
-When ticked, clicking **Generate Statistics** does two things in addition to its normal job:
+When ticked, clicking **Generate Statistics** does three things in addition to its normal job:
 
 - This run's **smallest** measured cell (`volume_vox`) is folded into the same never-rising **Min volume** floor the Tab 5 GT sweeps maintain (Common Settings, 6a) — exactly as if you had run one of those sweeps against this fish instead.
-- This run's **largest** measured cell is folded into a separate, never-falling **outlier ceiling** — the biggest cell volume ever confirmed real across every GT fish checked so far. Unlike Min volume, there is no slider for this: it isn't a pipeline parameter, only the number `is_volume_outlier` (below) is compared against. A label showing "Outlier ceiling: not yet measured" underneath the checkbox updates in place once at least one GT-verified run has been made.
+- This run's **largest** measured cell is folded into a separate, never-falling **Max volume** — the biggest cell volume ever confirmed real across every GT fish checked so far (Common Settings, 6a). Like Min volume, there is no slider for it — it isn't a pipeline parameter, only the number `is_volume_outlier` (below) is compared against.
+- The active Labels layer's own **smallest real hole** is measured directly (the same way the Pixel Classifier's two GT sweeps and the Cellprob/Large-contact sweep already measure it) and folded into the shared, never-rising **Min hole size** floor — this is a real slider (Common Settings, 6a), so a GT-verified Statistics run moves it visibly.
 
-Both give a lighter-weight path to contributing GT evidence beyond running a dedicated Tab 5 sweep, without ever risking an unverified prediction accidentally moving either bound to something wrong. Leave the checkbox unticked for any exploratory or unverified run — the CSV is still produced and still flags outliers against whatever bounds were last measured, it just can't move either one itself.
+All three give a lighter-weight path to contributing GT evidence beyond running a dedicated Tab 5 sweep, without ever risking an unverified prediction accidentally moving any of them to something wrong. Leave the checkbox unticked for any exploratory or unverified run — the CSV is still produced and still flags outliers against whatever bounds were last measured, it just can't move any of them itself.
 
 **The checkbox always un-ticks itself once Generate Statistics finishes**, whether or not it was ticked for that run. It's a one-shot "count this specific run as GT" arm, not a sticky mode — a later exploratory run right after a GT-verified one still requires deliberately re-ticking it, so it can never silently ride along and contribute unverified data just because the box happened to still be checked from before.
 
@@ -724,7 +733,7 @@ Both give a lighter-weight path to contributing GT evidence beyond running a ded
 Click to compute. Runs in a background thread. When complete:
 
 - A CSV file is saved to the output folder (see Section 10), named `{source_file_stem}_statistics.csv`.
-- The status line shows how many labels were processed, and, if the ground-truth checkbox above was ticked, what this fish's smallest and largest measured cells were and what the updated Min volume floor / outlier ceiling now are.
+- The status line shows how many labels were processed, and, if the ground-truth checkbox above was ticked, what this fish's smallest/largest measured cells and smallest real hole were, and what the updated Min volume floor / Max volume / Min hole size floor now are.
 
 The CSV contains one row per label with up to 47 columns depending on which optional features are enabled. See Section 11 for a full description of every column.
 
@@ -1669,8 +1678,9 @@ Shown automatically based on active layer suffix — `_ExtRm` → Cellpose-SAM, 
 
 | Control | Recommended | What it does |
 |---------|-------------|--------------|
-| Min volume | 7500 (until a Tab 5 sweep or GT-checked Statistics run measures a real recommendation) | **Informative only, not editable** — Pixel Classifier's cutoff **and** Cellpose-SAM's Safe-merge "already a whole cell" floor, one shared value; only moves via a GT sweep/GT-verified Statistics run |
-| Min hole size | 0 (until a Tab 5 sweep measures a real recommendation from GT) | Editable slider — shared by both routes — minimum voxels for an enclosed gap to survive as real background instead of being filled |
+| Min volume | 7500 (until a Tab 5 sweep or GT-verified Statistics run measures a real recommendation) | **Informative only, not editable** — Pixel Classifier's cutoff **and** Cellpose-SAM's Safe-merge "already a whole cell" floor, one shared value; only moves via a GT sweep/GT-verified Statistics run |
+| Max volume | not yet measured (until a GT-verified Statistics run measures one) | **Informative only, not editable** — largest cell ever confirmed real by GT; drives no pipeline stage, only flags `is_volume_outlier` (Tab 3 CSV) |
+| Min hole size | 0 (until a GT sweep or GT-verified Statistics run measures a real recommendation) | Editable slider — shared by both routes — minimum voxels for an enclosed gap to survive as real background instead of being filled |
 | Final min-size fraction | 0.618 (golden ratio) | Editable slider — both routes — the real deletion cutoff is this fraction of Min volume, not Min volume itself (Cellpose-SAM: last-stage safety net; Pixel Classifier: the volume filter's own cutoff) |
 
 **Pixel Classifier**

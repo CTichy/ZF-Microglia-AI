@@ -772,6 +772,28 @@ class ZFMicrogliaAIWidget(QWidget):
         area_note.setStyleSheet("color: #888; font-size: 10px;")
         common_layout.addWidget(area_note)
 
+        maxvol_row = QHBoxLayout()
+        maxvol_row.addWidget(QLabel("Max volume (vox):"))
+        init_max_volume = _root_cfg.get("max_volume_recommended_vox")
+        self._maxvol_value_lbl = QLabel(
+            str(init_max_volume) if init_max_volume is not None else "not yet measured"
+        )
+        self._maxvol_value_lbl.setStyleSheet("font-weight: bold;")
+        maxvol_row.addWidget(self._maxvol_value_lbl)
+        maxvol_row.addStretch()
+        common_layout.addLayout(maxvol_row)
+        maxvol_note = QLabel(
+            "  Informative only, not directly editable — the largest real "
+            "cell volume ever confirmed by GT. It only ever grows, and "
+            "only from a GT-verified Generate Statistics run (Tab 3) — "
+            "never guessed or hand-tuned. Doesn't drive any pipeline "
+            "stage; only used to flag is_volume_outlier in the "
+            "Statistics CSV (Tab 3) for anything bigger."
+        )
+        maxvol_note.setWordWrap(True)
+        maxvol_note.setStyleSheet("color: #888; font-size: 10px;")
+        common_layout.addWidget(maxvol_note)
+
         hole_row = QHBoxLayout()
         hole_row.addWidget(QLabel("Min hole size (vox) — shared:"))
         self._hole_slider = QLabeledSlider(Qt.Horizontal)
@@ -5103,10 +5125,34 @@ class ZFMicrogliaAIWidget(QWidget):
                     f"  is_volume_outlier ceiling (largest confirmed GT cell so far): "
                     f"{max_ceiling} vox -- the floor side reuses Min volume above."
                 )
+                self._maxvol_value_lbl.setText(str(max_ceiling))
+
+                # Same never-rising floor the Pixel Classifier's two GT
+                # sweeps and the Cellprob/Large-contact sweep already
+                # measure -- Generate Statistics has the full 3D labels
+                # array right here too, so it can measure this fish's own
+                # real holes exactly the same way instead of leaving Min
+                # hole size stuck at whatever it last was.
+                measured_hole = _psw.min_hole_size_from_gt(labels)
+                recommended_hole = self._update_gt_history(
+                    "min_hole_size_vox", stem, measured_hole, mode="min"
+                )
+                self._save_cfg(min_hole_size_recommended_vox=recommended_hole,
+                                min_hole_size_vox=recommended_hole)
+                if recommended_hole > self._hole_slider.maximum():
+                    self._hole_slider.setMaximum(recommended_hole)
+                    self._hole_spin.setMaximum(recommended_hole)
+                self._hole_slider.setValue(recommended_hole)
+                self._hole_recommended_lbl.setText(
+                    f"  Recommended floor (from GT sweeps so far): {recommended_hole} vox"
+                )
+
                 gt_floor_note = (
                     f" GT-verified: this fish's smallest/largest cells measured "
                     f"{measured_min}/{measured_max} vox; Min volume floor now "
-                    f"{recommended_min} vox, outlier ceiling now {max_ceiling} vox."
+                    f"{recommended_min} vox, outlier ceiling now {max_ceiling} vox, "
+                    f"min hole size floor now {recommended_hole} vox "
+                    f"(this fish measured {measured_hole})."
                 )
 
             if "volume_vox" in df.columns:
