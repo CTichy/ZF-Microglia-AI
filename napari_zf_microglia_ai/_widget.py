@@ -4667,32 +4667,41 @@ class ZFMicrogliaAIWidget(QWidget):
 
         def _worker():
             try:
-                # Step 1: inference on original volume (never bg-removed)
+                # Both steps share one capture_live_output block -- Step 2
+                # (background/skin removal) has its own real print()
+                # statements in _background.py (threshold computed, voxels
+                # removed/filled) that were previously invisible in the
+                # GUI: the old code only wrapped Step 1, so once MONAI's
+                # inference progress bar finished, the log view went
+                # completely silent for the rest of the run even though
+                # background removal on a full-stack volume is itself a
+                # real, sometimes slow, whole-volume pass.
                 with capture_live_output(_push_log):
+                    # Step 1: inference on original volume (never bg-removed)
                     brain_mask, brain_only, eroded_mask = run_inference(
                         volume, model_path, threshold, device, erosion_voxels
                     )
 
-                # Step 2: optional background processing -- uses eroded_mask,
-                # not brain_mask, so Erosion still takes effect here. (Using
-                # brain_mask -- the always-un-eroded mask meant only for
-                # saving brain_mask.tif -- would silently discard whatever
-                # the Erosion slider is set to whenever a background mode is
-                # active, which is every recommended labeling workflow.)
-                if bg_mode == 1:
-                    vol_proc, *_ = remove_outside_brain(
-                        volume, eroded_mask, tolerance_pct=bg_tolerance_pct
-                    )
-                    brain_only = (vol_proc * eroded_mask).astype(volume.dtype)
-                elif bg_mode == 2:
-                    vol_proc, *_ = remove_global(
-                        volume, eroded_mask, tolerance_pct=bg_tolerance_pct
-                    )
-                    brain_only = (vol_proc * eroded_mask).astype(volume.dtype)
-                elif bg_mode == 3:
-                    brain_only, _ = fill_outside_brain_random(
-                        volume, eroded_mask
-                    )
+                    # Step 2: optional background processing -- uses eroded_mask,
+                    # not brain_mask, so Erosion still takes effect here. (Using
+                    # brain_mask -- the always-un-eroded mask meant only for
+                    # saving brain_mask.tif -- would silently discard whatever
+                    # the Erosion slider is set to whenever a background mode is
+                    # active, which is every recommended labeling workflow.)
+                    if bg_mode == 1:
+                        vol_proc, *_ = remove_outside_brain(
+                            volume, eroded_mask, tolerance_pct=bg_tolerance_pct
+                        )
+                        brain_only = (vol_proc * eroded_mask).astype(volume.dtype)
+                    elif bg_mode == 2:
+                        vol_proc, *_ = remove_global(
+                            volume, eroded_mask, tolerance_pct=bg_tolerance_pct
+                        )
+                        brain_only = (vol_proc * eroded_mask).astype(volume.dtype)
+                    elif bg_mode == 3:
+                        brain_only, _ = fill_outside_brain_random(
+                            volume, eroded_mask
+                        )
 
                 result["brain_mask"] = brain_mask
                 result["brain_only"] = brain_only

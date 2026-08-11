@@ -299,7 +299,7 @@ Both files are saved in the output folder (see Section 10). The `brain_only` fil
 
 ### Run Skin-Remover
 
-Click to start processing. The button is greyed out while running; the status bar shows one summary line, and the small live-output box underneath streams MONAI's own sliding-window progress (one line per processed window) as it happens — the same progress you'd see running MONAI from a terminal, previously invisible in the GUI. Tick **"Email me when done"** above the button first if you want a notification — see [Section 9h](#9h-email-notification-optional) for setup.
+Click to start processing. The button is greyed out while running; the status bar shows one summary line, and the small live-output box underneath streams progress from **both** stages the run actually goes through, not just the first one — MONAI's own sliding-window progress (one line per processed window) during brain segmentation, followed by the background/skin-removal step's own messages (background level detected, threshold applied, voxel counts removed or filled) once that starts. The same progress you'd see running each step from a terminal, previously invisible in the GUI for either. Tick **"Email me when done"** above the button first if you want a notification — see [Section 9h](#9h-email-notification-optional) for setup.
 
 When complete, two new layers appear in napari:
 
