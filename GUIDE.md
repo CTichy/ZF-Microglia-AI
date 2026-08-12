@@ -569,9 +569,11 @@ Click **Resort Labels** to apply. The active Labels layer is renumbered 1…N in
 
 ### Remove Debris
 
-Manual edits in napari — deleting a whole label because it turned out to be misclassified skin, splitting one, painting part of one away — can leave small disconnected fragments behind that never went through Create Labels' own volume filter (which only ran once, before the edit). Click **Remove Debris** and the active Labels layer, exactly as it currently stands, is swept for any object smaller than `Final min-size fraction × Min volume` (Common Settings, 6a) — the same golden-ratio-relaxed cutoff Create Labels' own filter and Cellpose-SAM's final safety-net stage already use — and every one found is zeroed out.
+Manual edits in napari — deleting a whole label because it turned out to be misclassified skin, splitting one, painting part of one away — can leave small disconnected fragments behind that never went through Create Labels' own volume filter (which only ran once, before the edit). Click **Remove Debris** and the active Labels layer, exactly as it currently stands, is swept for anything smaller than `Final min-size fraction × Min volume` (Common Settings, 6a) — the same golden-ratio-relaxed cutoff Create Labels' own filter and Cellpose-SAM's final safety-net stage already use — and every one found is zeroed out.
 
-Works on labels from either route. Surviving labels' IDs are left exactly as they were — this only removes, it never renumbers (use **Resort Labels** above afterward if you also want a clean 1…N sequence).
+**Evaluated per spatially-connected fragment, not per label ID.** Erasing most of a wrongly-segmented label by hand (painting over it) commonly leaves several small, disconnected leftover pieces still carrying that *same* original ID — and their combined voxel count can look large enough to survive even though every individual piece is genuine debris on its own. This tool checks each disconnected piece's own size, not the sum across everything still tagged with that ID, so those leftovers are correctly caught.
+
+Works on labels from either route. Surviving labels' IDs are left exactly as they were — this only removes, it never renumbers (use **Resort Labels** above afterward if you also want a clean 1…N sequence). A label ID with one real surviving piece and one small disconnected leftover keeps its ID on the real piece; only the leftover is zeroed.
 
 ---
 

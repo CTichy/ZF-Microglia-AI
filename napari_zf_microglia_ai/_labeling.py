@@ -326,36 +326,69 @@ def resort_labels(
 
 
 def remove_debris(labels: np.ndarray, threshold: int) -> "tuple[np.ndarray, int]":
-    """Zero out every object smaller than threshold voxels. A manual
-    edit in napari -- deleting a whole label that turned out to be
-    misclassified skin, splitting a label, painting part of one away --
-    can leave small disconnected fragments behind that never went
-    through create_labels()'s own volume filter (which only ever ran
-    once, before the edit). This is that same filter, callable again on
-    demand against whatever the Labels layer currently looks like.
+    """Zero out every spatially-connected fragment smaller than threshold
+    voxels. A manual edit in napari -- deleting a whole label that turned
+    out to be misclassified skin, splitting a label, painting part of
+    one away -- can leave small disconnected fragments behind that never
+    went through create_labels()'s own volume filter (which only ever
+    ran once, before the edit). This is that same filter, callable again
+    on demand against whatever the Labels layer currently looks like.
+
+    Deliberately evaluated **per connected component, not per raw label
+    ID** -- a naive per-label-ID voxel count (bincount over the whole
+    array) silently missed exactly the case this function exists for: a
+    manually-erased label's own small leftover fragments still carry
+    that same original ID, and summing their voxels together can clear
+    the threshold even though each individual disconnected piece is
+    genuine debris on its own. 26-connectivity, matching create_labels()'s
+    own connected-component convention.
 
     Deliberately does NOT renumber surviving labels -- unlike
     create_labels()'s own filter, this is a targeted cleanup step on an
     already-in-use label set, not a fresh labeling pass, so IDs the user
     may already be tracking (via Split Label, manual annotation, etc.)
-    are left exactly as they were.
+    are left exactly as they were. A label ID with one real surviving
+    piece and one small disconnected debris piece keeps its ID on the
+    real piece; only the debris piece is zeroed.
 
     threshold : typically final_min_fraction * min_volume (Common
     Settings), the same golden-ratio-relaxed cutoff create_labels()'s
     own filter and Cellpose-SAM's final_min_size_cleanup() already use.
 
-    Returns (labels, n_removed)."""
+    Returns (labels, n_removed) -- n_removed counts fragments, not label
+    IDs (one ID can contribute more than one removed fragment)."""
+    from scipy.ndimage import label as _cc_label, find_objects
+
     labels = np.asarray(labels)
     max_lbl = int(labels.max()) if labels.size else 0
     if max_lbl == 0:
         return labels.copy(), 0
-    counts = np.bincount(labels.ravel().astype(np.int64), minlength=max_lbl + 1)
-    small = np.nonzero((counts[1:] > 0) & (counts[1:] < threshold))[0] + 1
-    if small.size == 0:
-        return labels.copy(), 0
+
     out = labels.copy()
-    out[np.isin(out, small)] = 0
-    return out.astype(np.int32), int(small.size)
+    structure = np.ones((3, 3, 3), dtype=np.int32)
+    objs = find_objects(labels)
+    n_removed = 0
+    for lbl in range(1, max_lbl + 1):
+        sl = objs[lbl - 1] if lbl - 1 < len(objs) else None
+        if sl is None:
+            continue
+        crop = out[sl]
+        mask = crop == lbl
+        if not mask.any():
+            continue
+        cc, n_cc = _cc_label(mask, structure=structure)
+        if n_cc <= 1:
+            if int(mask.sum()) < threshold:
+                crop[mask] = 0
+                n_removed += 1
+            continue
+        counts = np.bincount(cc.ravel())
+        for piece_id in range(1, n_cc + 1):
+            if counts[piece_id] < threshold:
+                crop[cc == piece_id] = 0
+                n_removed += 1
+
+    return out.astype(np.int32), n_removed
 
 
 def split_label(
