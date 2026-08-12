@@ -13,6 +13,7 @@ import numpy as np
 import tifffile
 import torch
 import napari
+from scipy.ndimage import binary_erosion
 
 from qtpy.QtWidgets import (
     QPushButton, QLabel, QWidget, QVBoxLayout, QHBoxLayout,
@@ -543,7 +544,7 @@ class ZFMicrogliaAIWidget(QWidget):
         )
 
         erosion_row = QHBoxLayout()
-        erosion_row.addWidget(QLabel("Erosion (vox):"))
+        erosion_row.addWidget(QLabel("MONAI Erosion (vox):"))
         self._erosion_slider = QLabeledSlider(Qt.Horizontal)
         self._erosion_slider.setMinimum(0)
         self._erosion_slider.setMaximum(15)
@@ -554,13 +555,13 @@ class ZFMicrogliaAIWidget(QWidget):
         )
         t1.addLayout(erosion_row)
         erosion_note = QLabel(
-            "  Erodes mask before applying to brain_only\n"
+            "  Erodes the raw MONAI brain mask (Skin-Remover step)\n"
             "  (raw brain_mask is always saved un-eroded)"
         )
         erosion_note.setStyleSheet("color: #aaa; font-size: 10px;")
         t1.addWidget(erosion_note)
         self._erosion_recommended_lbl = _add_recommended_label(
-            t1, _root_cfg.get("erosion_voxels_recommended"), unit=" vox", noun="Erosion"
+            t1, _root_cfg.get("erosion_voxels_recommended"), unit=" vox", noun="MONAI Erosion"
         )
 
         t1.addWidget(_sep())
@@ -599,9 +600,31 @@ class ZFMicrogliaAIWidget(QWidget):
             t1, _root_cfg.get("bg_tolerance_recommended"), noun="BG Threshold"
         )
 
+        self._sig_erosion_row = QHBoxLayout()
+        self._sig_erosion_lbl = QLabel("  Signal Erosion (vox):")
+        self._sig_erosion_row.addWidget(self._sig_erosion_lbl)
+        self._sig_erosion_slider = QLabeledSlider(Qt.Horizontal)
+        self._sig_erosion_slider.setMinimum(0)
+        self._sig_erosion_slider.setMaximum(15)
+        self._sig_erosion_slider.setValue(_root_cfg.get("signal_erosion_voxels", 0))
+        self._sig_erosion_row.addWidget(self._sig_erosion_slider)
+        self._sig_erosion_spin = _add_reliable_spinbox(
+            self._sig_erosion_row, self._sig_erosion_slider, 0, 15, 1
+        )
+        t1.addLayout(self._sig_erosion_row)
+        self._sig_erosion_recommended_lbl = _add_recommended_label(
+            t1, _root_cfg.get("signal_erosion_voxels_recommended"), unit=" vox", noun="Signal Erosion"
+        )
+        # Only meaningful for Background mode 2 (noBG stack prep) -- shown/
+        # hidden, not just enabled/disabled, so it doesn't sit there
+        # looking relevant when it does nothing in modes Off/1/3.
+        _set_layout_widgets_visible(self._sig_erosion_row, False)
+        self._sig_erosion_recommended_lbl.setVisible(False)
+
         bg_note = QLabel(
             "  Probe: inside-brain mode (post-inference)\n"
-            "  Mode 1 & 2 use BG Threshold  |  Mode 3: no threshold"
+            "  Mode 1 & 2 use BG Threshold  |  Mode 3: no threshold\n"
+            "  Signal Erosion applies only to Mode 2 (noBG stack prep)"
         )
         bg_note.setStyleSheet("color: #aaa; font-size: 10px;")
         t1.addWidget(bg_note)
@@ -1001,13 +1024,14 @@ class ZFMicrogliaAIWidget(QWidget):
         # explicit file paths, not the current viewer selection, and no
         # GPU is required (Create Labels already has a CPU fallback), so
         # it isn't grouped with Tab 4's GPU-gated tools either.
-        psg = QGroupBox("Verify BG Threshold / Erosion (GT Sweep)")
+        psg = QGroupBox("Verify BG Threshold / Signal Erosion (GT Sweep)")
         psl = QVBoxLayout()
         psl.setSpacing(6)
 
         ps_note = QLabel(
-            "Sweeps Tab 1's BG Threshold x Erosion (Background mode 2 — "
-            "\"Remove globally\") against the N most morphologically complex "
+            "Sweeps Tab 1's BG Threshold x Signal Erosion (Background mode 2 — "
+            "\"Remove globally\", the noBG stack used by the Pixel Classifier) "
+            "against the N most morphologically complex "
             "cells in a ground-truth-annotated fish, using this section's own "
             "σ XY / σ Z / Min volume above. Doesn't re-run MONAI inference — "
             "needs a pre-computed brain_mask.tif from a normal Tab 1 run."
@@ -1086,7 +1110,7 @@ class ZFMicrogliaAIWidget(QWidget):
         psl.addLayout(ps_bg_row2)
 
         ps_er_row = QHBoxLayout()
-        ps_er_row.addWidget(QLabel("Erosion min:"))
+        ps_er_row.addWidget(QLabel("Signal Erosion min:"))
         self._ps_ermin_spin = QSpinBox()
         self._ps_ermin_spin.setRange(0, 15)
         self._ps_ermin_spin.setValue(0)
@@ -1143,7 +1167,7 @@ class ZFMicrogliaAIWidget(QWidget):
         self._ps_is_gt_cb = _add_gt_checkbox(psl, "this sweep")
 
         ps_btn_row = QHBoxLayout()
-        self._ps_run_btn = QPushButton("Run BG/Erosion Sweep")
+        self._ps_run_btn = QPushButton("Run BG Threshold/Erosion Sweep")
         self._ps_run_btn.setStyleSheet("QPushButton { font-weight: bold; padding: 5px; }")
         ps_btn_row.addWidget(self._ps_run_btn)
         self._ps_stop_btn = QPushButton("Stop Sweep")
@@ -1177,7 +1201,7 @@ class ZFMicrogliaAIWidget(QWidget):
             "Sweeps Smooth sigma XY x sigma Z (the Pixel Classifier's "
             "pre-threshold Gaussian smoothing) against the N most complex "
             "cells in a ground-truth-annotated fish, holding BG Threshold "
-            "and Erosion fixed at Tab 1's current values. These sigma "
+            "and Signal Erosion fixed at Tab 1's current values. These sigma "
             "values have never been swept before in this project -- "
             "1.5/3.0 has been a guessed starting point since Tab 2 was "
             "first built, never verified against real GT."
@@ -3274,12 +3298,17 @@ class ZFMicrogliaAIWidget(QWidget):
         self._status_lbl.setText(f"Status: {msg}")
 
     def _on_bg_mode_changed(self, btn):
-        """Enable/disable tolerance slider depending on mode."""
+        """Enable/disable the tolerance slider, and show/hide Signal Erosion
+        (mode 2 only -- it's meaningless in every other mode), depending
+        on the selected Background mode."""
         mode = self._bg_group.checkedId()
         has_tol = mode in (1, 2)
         self._tol_slider.setEnabled(has_tol)
         self._tol_spin.setEnabled(has_tol)
         self._tol_lbl.setEnabled(has_tol)
+        has_sig_erosion = mode == 2
+        _set_layout_widgets_visible(self._sig_erosion_row, has_sig_erosion)
+        self._sig_erosion_recommended_lbl.setVisible(has_sig_erosion)
 
     def _on_ai_tools_mode_changed(self, *_):
         """Show only the training group matching the switch position."""
@@ -4625,6 +4654,7 @@ class ZFMicrogliaAIWidget(QWidget):
         erosion_voxels   = self._erosion_slider.value()
         bg_mode          = self._bg_group.checkedId()  # 0=off, 1=remove, 2=fill
         bg_tolerance_pct = self._tol_slider.value()
+        signal_erosion_voxels = self._sig_erosion_slider.value()
         model_path       = Path(self._state["model_path"])
         stem             = target.name
         file_path        = self._state.get("last_file_path")
@@ -4646,11 +4676,11 @@ class ZFMicrogliaAIWidget(QWidget):
         print(f"SKIN-REMOVER — {stem}  shape={volume.shape}")
         print(f"Model    : {model_path.name}")
         print(f"Threshold: {threshold}   Device: {device}")
-        print(f"Erosion  : {erosion_voxels} voxel(s)")
+        print(f"MONAI Erosion : {erosion_voxels} voxel(s)")
         bg_mode_str = {
             0: "Off",
             1: f"Remove outside-brain (BG threshold={bg_tolerance_pct:.2f})",
-            2: f"Remove globally (BG threshold={bg_tolerance_pct:.2f})",
+            2: f"Remove globally (BG threshold={bg_tolerance_pct:.2f}, Signal Erosion={signal_erosion_voxels} vox)",
             3: "Fill sub-background with random noise",
         }[bg_mode]
         print(f"BG mode  : {bg_mode_str}")
@@ -4682,22 +4712,33 @@ class ZFMicrogliaAIWidget(QWidget):
                         volume, model_path, threshold, device, erosion_voxels
                     )
 
-                    # Step 2: optional background processing -- uses eroded_mask,
-                    # not brain_mask, so Erosion still takes effect here. (Using
+                    # Step 2: optional background processing -- modes 1 and 3
+                    # use eroded_mask (MONAI Erosion, from Step 1), so that
+                    # Erosion slider still takes effect there. (Using
                     # brain_mask -- the always-un-eroded mask meant only for
                     # saving brain_mask.tif -- would silently discard whatever
-                    # the Erosion slider is set to whenever a background mode is
-                    # active, which is every recommended labeling workflow.)
+                    # the MONAI Erosion slider is set to.) Mode 2 (noBG stack
+                    # prep for the Pixel Classifier) instead erodes the raw
+                    # brain_mask by its own independent Signal Erosion value --
+                    # this is a conceptually different erosion (how far
+                    # background is stripped away from each cell's signal
+                    # when flattening the whole stack), not the brain's
+                    # semantic segmentation boundary, so it must not share
+                    # MONAI Erosion's slider/value.
                     if bg_mode == 1:
                         vol_proc, *_ = remove_outside_brain(
                             volume, eroded_mask, tolerance_pct=bg_tolerance_pct
                         )
                         brain_only = (vol_proc * eroded_mask).astype(volume.dtype)
                     elif bg_mode == 2:
-                        vol_proc, *_ = remove_global(
-                            volume, eroded_mask, tolerance_pct=bg_tolerance_pct
+                        bg_eroded_mask = (
+                            binary_erosion(brain_mask, iterations=signal_erosion_voxels)
+                            if signal_erosion_voxels > 0 else brain_mask
                         )
-                        brain_only = (vol_proc * eroded_mask).astype(volume.dtype)
+                        vol_proc, *_ = remove_global(
+                            volume, bg_eroded_mask, tolerance_pct=bg_tolerance_pct
+                        )
+                        brain_only = (vol_proc * bg_eroded_mask).astype(volume.dtype)
                     elif bg_mode == 3:
                         brain_only, _ = fill_outside_brain_random(
                             volume, eroded_mask
@@ -4955,7 +4996,7 @@ class ZFMicrogliaAIWidget(QWidget):
                         erosion_voxels=round(avg_er), erosion_voxels_recommended=round(avg_er),
                     )
                     self._thresh_recommended_lbl.setText(f"  Recommended MONAI Threshold: {avg_th:.3f}")
-                    self._erosion_recommended_lbl.setText(f"  Recommended Erosion: {round(avg_er)} vox")
+                    self._erosion_recommended_lbl.setText(f"  Recommended MONAI Erosion: {round(avg_er)} vox")
                     applied_note = (
                         f" Applied average across all fish swept so far: "
                         f"Threshold={avg_th:.3f}, Erosion={avg_er:.1f}. Saved."
@@ -5591,7 +5632,7 @@ class ZFMicrogliaAIWidget(QWidget):
         pad_z = self._ps_padz_spin.value()
         pad_xy = self._ps_padxy_spin.value()
         current_bg = self._tol_slider.value()
-        current_erosion = self._erosion_slider.value()
+        current_erosion = self._sig_erosion_slider.value()
         final_min_fraction = self._finalfrac_spin.value()
 
         cancel_event = threading.Event()
@@ -5629,7 +5670,7 @@ class ZFMicrogliaAIWidget(QWidget):
         self._ps_stop_btn.setEnabled(True)
         self._ps_report_view.clear()
         self._ps_status_lbl.setText(
-            f"Sweeping {len(bg_thresholds)} BG Threshold x {len(erosions)} Erosion "
+            f"Sweeping {len(bg_thresholds)} BG Threshold x {len(erosions)} Signal Erosion "
             f"values across up to {n_cells} cells ..."
         )
         thread.start()
@@ -5709,15 +5750,16 @@ class ZFMicrogliaAIWidget(QWidget):
                         f"  Recommended floor (from GT sweeps so far): {recommended_hole} vox"
                     )
 
-                    # BG Threshold and Erosion aren't safety floors -- each
+                    # BG Threshold and Signal Erosion aren't safety floors -- each
                     # fish's sweep just finds that fish's own local optimum,
                     # with no safe direction to bias toward -- so these are
                     # averaged across every fish swept so far instead of
-                    # floored. Erosion's history is shared with the MONAI
-                    # Threshold/Erosion sweep, since both tune the same
-                    # underlying Tab 1 slider.
+                    # floored. Signal Erosion has its own history, separate from
+                    # the MONAI Threshold/Erosion sweep's -- it tunes the
+                    # noBG-stack-prep erosion (Tab 1's Signal Erosion slider),
+                    # not the semantic brain-mask erosion.
                     avg_bt = self._update_gt_history("bg_tolerance", fish_key, best_bt, mode="mean")
-                    avg_er = self._update_gt_history("erosion_voxels", fish_key, best_er, mode="mean")
+                    avg_er = self._update_gt_history("signal_erosion_voxels", fish_key, best_er, mode="mean")
 
                     # Widen the Min hole size slider's (and its paired
                     # spinbox's -- kept in sync only via signals, see
@@ -5734,18 +5776,18 @@ class ZFMicrogliaAIWidget(QWidget):
                         self._hole_spin.setMaximum(recommended_hole)
                     self._hole_slider.setValue(recommended_hole)
                     self._tol_slider.setValue(avg_bt)
-                    self._erosion_slider.setValue(round(avg_er))
+                    self._sig_erosion_slider.setValue(round(avg_er))
                     self._tol_recommended_lbl.setText(f"  Recommended BG Threshold: {avg_bt:.3f}")
-                    self._erosion_recommended_lbl.setText(f"  Recommended Erosion: {round(avg_er)} vox")
+                    self._sig_erosion_recommended_lbl.setText(f"  Recommended Signal Erosion: {round(avg_er)} vox")
 
                     self._save_cfg(
                         bg_tolerance=avg_bt, bg_tolerance_recommended=avg_bt,
-                        erosion_voxels=round(avg_er), erosion_voxels_recommended=round(avg_er),
+                        signal_erosion_voxels=round(avg_er), signal_erosion_voxels_recommended=round(avg_er),
                         min_volume_vox=recommended, min_hole_size_vox=recommended_hole,
                     )
                     applied_note = (
                         f" Applied average across all fish swept so far: BG Threshold="
-                        f"{avg_bt:.3f}, Erosion={avg_er:.1f}. Min volume floor={recommended} "
+                        f"{avg_bt:.3f}, Signal Erosion={avg_er:.1f}. Min volume floor={recommended} "
                         f"vox, min hole size floor={recommended_hole} vox. All saved."
                     )
                 else:
@@ -5754,7 +5796,7 @@ class ZFMicrogliaAIWidget(QWidget):
                         "(tick \"This is verified ground truth\" before running to apply)."
                     )
                 self._ps_status_lbl.setText(
-                    f"This fish's best: BG Threshold={best_bt}, Erosion={best_er} "
+                    f"This fish's best: BG Threshold={best_bt}, Signal Erosion={best_er} "
                     f"(avg IoU={sweep['per_point_avg'][sweep['best_point']]['iou']:.1f}%)."
                     f"{applied_note}"
                 )
@@ -5815,9 +5857,11 @@ class ZFMicrogliaAIWidget(QWidget):
 
         scale_zyx = (self._sg_scalez_spin.value(), self._sg_scalexy_spin.value(), self._sg_scalexy_spin.value())
         # Held fixed at Tab 1's current values -- this sweep varies sigma,
-        # not BG Threshold/Erosion (see run_pixel_sweep above for that one).
+        # not BG Threshold/Signal Erosion (see run_pixel_sweep above for that
+        # one). Signal Erosion, not MONAI Erosion, since this pipeline is the
+        # same noBG-stack-prep path the BG Threshold/Erosion sweep tunes.
         bg_threshold = self._tol_slider.value()
-        erosion = self._erosion_slider.value()
+        erosion = self._sig_erosion_slider.value()
         n_cells = self._sg_ncells_spin.value()
         pad_z = self._sg_padz_spin.value()
         pad_xy = self._sg_padxy_spin.value()
@@ -5862,7 +5906,7 @@ class ZFMicrogliaAIWidget(QWidget):
         self._sg_status_lbl.setText(
             f"Sweeping {len(sigma_xy_values)} sigma XY x {len(sigma_z_values)} sigma Z "
             f"values across up to {n_cells} cells (BG Threshold={bg_threshold}, "
-            f"Erosion={erosion} held fixed) ..."
+            f"Signal Erosion={erosion} held fixed) ..."
         )
         thread.start()
         self._start_sigma_sweep_polling()
