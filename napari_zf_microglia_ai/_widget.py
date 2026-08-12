@@ -13,7 +13,6 @@ import numpy as np
 import tifffile
 import torch
 import napari
-from scipy.ndimage import binary_erosion
 
 from qtpy.QtWidgets import (
     QPushButton, QLabel, QWidget, QVBoxLayout, QHBoxLayout,
@@ -4712,33 +4711,31 @@ class ZFMicrogliaAIWidget(QWidget):
                         volume, model_path, threshold, device, erosion_voxels
                     )
 
-                    # Step 2: optional background processing -- modes 1 and 3
-                    # use eroded_mask (MONAI Erosion, from Step 1), so that
-                    # Erosion slider still takes effect there. (Using
-                    # brain_mask -- the always-un-eroded mask meant only for
-                    # saving brain_mask.tif -- would silently discard whatever
-                    # the MONAI Erosion slider is set to.) Mode 2 (noBG stack
-                    # prep for the Pixel Classifier) instead erodes the raw
-                    # brain_mask by its own independent Signal Erosion value --
-                    # this is a conceptually different erosion (how far
-                    # background is stripped away from each cell's signal
-                    # when flattening the whole stack), not the brain's
-                    # semantic segmentation boundary, so it must not share
-                    # MONAI Erosion's slider/value.
+                    # Step 2: optional background processing -- all three
+                    # modes use eroded_mask (MONAI Erosion, from Step 1) as
+                    # the brain boundary, so that slider still takes effect
+                    # everywhere. (Using brain_mask -- the always-un-eroded
+                    # mask meant only for saving brain_mask.tif -- would
+                    # silently discard whatever the MONAI Erosion slider is
+                    # set to.) Mode 2 (noBG stack prep for the Pixel
+                    # Classifier) additionally passes Signal Erosion into
+                    # remove_global(), which erodes the *retained signal*
+                    # after thresholding, not the brain boundary -- a
+                    # conceptually different operation (how much background
+                    # halo survives immediately around each cell) from
+                    # MONAI Erosion's semantic brain-segmentation boundary,
+                    # so it must not share MONAI Erosion's slider/value.
                     if bg_mode == 1:
                         vol_proc, *_ = remove_outside_brain(
                             volume, eroded_mask, tolerance_pct=bg_tolerance_pct
                         )
                         brain_only = (vol_proc * eroded_mask).astype(volume.dtype)
                     elif bg_mode == 2:
-                        bg_eroded_mask = (
-                            binary_erosion(brain_mask, iterations=signal_erosion_voxels)
-                            if signal_erosion_voxels > 0 else brain_mask
-                        )
                         vol_proc, *_ = remove_global(
-                            volume, bg_eroded_mask, tolerance_pct=bg_tolerance_pct
+                            volume, eroded_mask, tolerance_pct=bg_tolerance_pct,
+                            signal_erosion_voxels=signal_erosion_voxels,
                         )
-                        brain_only = (vol_proc * bg_eroded_mask).astype(volume.dtype)
+                        brain_only = (vol_proc * eroded_mask).astype(volume.dtype)
                     elif bg_mode == 3:
                         brain_only, _ = fill_outside_brain_random(
                             volume, eroded_mask

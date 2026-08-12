@@ -25,6 +25,7 @@ Three processing modes:
 """
 
 import numpy as np
+from scipy.ndimage import binary_erosion
 
 
 def _estimate_background(volume, brain_mask):
@@ -97,16 +98,33 @@ def remove_global(
     volume: np.ndarray,
     brain_mask: np.ndarray,
     tolerance_pct: float = 0.05,
+    signal_erosion_voxels: int = 0,
 ):
     """
     Zero ALL pixels in the full stack at or below the background threshold.
     Negative tolerance shrinks the threshold (removes less),
     positive tolerance raises it (removes more).
+
+    signal_erosion_voxels, if > 0, additionally erodes what survives the
+    threshold (the retained signal, not the background) by that many
+    voxels -- stripping a halo of background-adjacent pixels immediately
+    around each signal blob, on top of the intensity threshold itself.
+    Eroding brain_mask instead (the region the threshold is estimated
+    from) barely moves a population-mode threshold estimate and has no
+    visible effect; eroding the signal that actually survives is what
+    makes a difference.
     """
     bg_values, bg_max, thresh, bg_mask = _threshold(volume, brain_mask, tolerance_pct)
+
+    if signal_erosion_voxels > 0:
+        signal_mask = binary_erosion(~bg_mask, iterations=signal_erosion_voxels)
+        bg_mask = ~signal_mask
+
     n_removed = int(bg_mask.sum())
 
     print(f"   Threshold: {thresh:.2f}  (tol={tolerance_pct:+.3f}%)")
+    if signal_erosion_voxels > 0:
+        print(f"   Signal erosion: {signal_erosion_voxels} vox")
     print(f"   Removed {n_removed:,} voxels globally"
           f"  ({100.*n_removed/volume.size:.1f}% of stack)")
 

@@ -1,25 +1,30 @@
 """
-_pixel_sweep.py — GT-verified BG Threshold x Erosion sweep for microglia
-labels produced by the Pixel Classifier path (Tab 1 background removal +
-Tab 2 Create Labels / union-find), scored the same way as
+_pixel_sweep.py — GT-verified BG Threshold x Signal Erosion sweep for
+microglia labels produced by the Pixel Classifier path (Tab 1 background
+removal + Tab 2 Create Labels / union-find), scored the same way as
 _epoch_sweep.py's Cellpose-SAM checkpoint sweep: crop to the N most
 morphologically complex GT cells, best-IoU-match the resulting labels
 against GT, average.
 
 Deliberately does NOT re-run MONAI inference per grid point -- neither
-Erosion nor BG Threshold change what MONAI predicts, only how that
-prediction gets turned into brain_only and then labels. Takes a
+Signal Erosion nor BG Threshold change what MONAI predicts, only how
+that prediction gets turned into brain_only and then labels. Takes a
 pre-computed, un-eroded brain_mask.tif (produced once via a normal Tab 1
-run) as input instead. This makes the whole sweep union-find-bound, not
-GPU-inference-bound -- a full grid finishes in minutes, not hours, and
-doesn't need a GPU at all (Create Labels already has a CPU fallback).
+run) as input instead -- MONAI Erosion is out of scope for this sweep
+entirely, same as for a real Tab 1 run's Background mode 2 step. This
+makes the whole sweep union-find-bound, not GPU-inference-bound -- a
+full grid finishes in minutes, not hours, and doesn't need a GPU at all
+(Create Labels already has a CPU fallback).
 
 Uses Background mode 2 ("Remove globally") -- the documented recommended
 setting before labeling -- since that's the mode this sweep validates.
-Reuses _background.py's own threshold math (not reimplemented) so swept
-results match exactly what a real Tab 1 run at the same values would
-produce -- see the Erosion/background-mode composition fix in _on_run,
-which this sweep depends on to be meaningful in the first place.
+Mirrors _background.py's remove_global() threshold + signal-erosion math
+by hand (erode what survives the intensity threshold, not the probe
+mask feeding it) rather than calling it directly, since this sweep
+operates on small padded crops instead of full volumes -- see
+remove_global()'s signal_erosion_voxels docstring for why eroding the
+probe/brain-boundary mask instead has no real effect and was the wrong
+design the first time this sweep was written.
 """
 
 import numpy as np
@@ -138,7 +143,9 @@ def run_pixel_sweep(image_path, brain_mask_path, gt_labels_path,
     bg_thresholds       : list of BG Threshold values to sweep (same
                          units as Tab 1's BG Threshold field --
                          percent-of-data-range tolerance)
-    erosions            : list of erosion radii (voxels) to sweep
+    erosions            : list of Signal Erosion radii (voxels) to sweep --
+                         erodes what survives the BG Threshold, not the
+                         brain mask itself
     scale_zyx           : (Z, Y, X) um/voxel -- drives complexity ranking
     sigma_xy/sigma_z    : held fixed, passed straight to create_labels()
                          (same defaults as Tab 2)
@@ -207,41 +214,35 @@ def run_pixel_sweep(image_path, brain_mask_path, gt_labels_path,
         if progress_cb:
             progress_cb(f"cell {label_id}: bbox shape={img_crop.shape}  gt_vox={gt_vox}")
 
+    # Global background estimate -- a genuinely global quantity (histogram
+    # over ALL brain-masked pixels in the full volume, not something safe
+    # to compute from a small crop), and independent of Signal Erosion:
+    # Signal Erosion no longer touches this probe, only what survives the
+    # threshold afterward -- see remove_global()'s signal_erosion_voxels.
+    _, bg_max, _, _ = _bg_threshold(image, brain_mask, tolerance_pct=0.0)
+    if progress_cb:
+        progress_cb(f"global bg_max={bg_max:.2f}")
+
     results = {}
     cancelled = False
-    for erosion in erosions:
+    for bg_threshold in bg_thresholds:
         if cancel_event is not None and cancel_event.is_set():
             cancelled = True
             break
-
-        # Global background estimate for this erosion level -- needs
-        # full-volume context (_background.py's _estimate_background is a
-        # histogram over ALL brain-masked pixels, a genuinely global
-        # quantity, not something safe to compute from a small crop).
-        eroded_full = (binary_erosion(brain_mask, iterations=erosion).astype(np.uint8)
-                       if erosion > 0 else brain_mask.astype(np.uint8))
-        _, bg_max, _, _ = _bg_threshold(image, eroded_full, tolerance_pct=0.0)
-        if progress_cb:
-            progress_cb(f"erosion {erosion}: global bg_max={bg_max:.2f}")
-
-        # Padding (default 15 vox Z, 40 vox XY) comfortably exceeds any
-        # sane erosion radius, so eroding the padded crop directly here
-        # (instead of eroding the full volume per cell) gives the same
-        # result much more cheaply.
-        for label_id in cells:
-            c = crops[label_id]
-            c["eroded_mask"] = (binary_erosion(c["raw_mask"], iterations=erosion)
-                                 if erosion > 0 else c["raw_mask"])
-
-        for bg_threshold in bg_thresholds:
+        thresh = bg_max + data_range * (bg_threshold / 100.0)
+        for erosion in erosions:
             if cancel_event is not None and cancel_event.is_set():
                 cancelled = True
                 break
-            thresh = bg_max + data_range * (bg_threshold / 100.0)
             for label_id in cells:
                 c = crops[label_id]
                 img_thresholded = np.where(c["img"] <= thresh, 0, c["img"])
-                brain_only_crop = (img_thresholded * c["eroded_mask"]).astype(c["img"].dtype)
+                # Erode what survived the threshold (the signal), not the
+                # brain-boundary probe mask -- matches remove_global().
+                signal_mask = (img_thresholded > 0) & c["raw_mask"]
+                if erosion > 0:
+                    signal_mask = binary_erosion(signal_mask, iterations=erosion)
+                brain_only_crop = (img_thresholded * signal_mask).astype(c["img"].dtype)
                 pred_labels = create_labels(
                     brain_only_crop, sigma_xy=sigma_xy, sigma_z=sigma_z,
                     min_volume=min_volume, min_hole_size=min_hole_size,
@@ -286,20 +287,23 @@ def run_sigma_sweep(image_path, brain_mask_path, gt_labels_path,
     Sweep every (sigma_xy, sigma_z) combination in the given lists, scoring
     the resulting Pixel Classifier labels against the N most complex GT
     cells -- the Smooth sigma counterpart to run_pixel_sweep's BG
-    Threshold x Erosion sweep, with the roles reversed: BG Threshold and
-    Erosion are held fixed here (at whatever Tab 1 is currently set to),
-    and Smooth sigma XY/Z -- previously never swept at all, always left at
-    whatever default (1.5/3.0) happened to be guessed -- is what varies.
+    Threshold x Signal Erosion sweep, with the roles reversed: BG
+    Threshold and Signal Erosion are held fixed here (at whatever Tab 1
+    is currently set to), and Smooth sigma XY/Z -- previously never swept
+    at all, always left at whatever default (1.5/3.0) happened to be
+    guessed -- is what varies.
 
     Cheaper per grid point than run_pixel_sweep: sigma only affects the
-    create_labels() call, not the background-threshold/erosion step that
-    builds each cell's brain_only crop, so that crop is computed once per
-    cell (not once per grid point) and every sigma combination reuses it.
+    create_labels() call, not the background-threshold/signal-erosion
+    step that builds each cell's brain_only crop, so that crop is
+    computed once per cell (not once per grid point) and every sigma
+    combination reuses it.
 
     image_path/brain_mask_path/gt_labels_path : same as run_pixel_sweep
     sigma_xy_values/sigma_z_values : lists of Smooth sigma values to sweep
     scale_zyx      : (Z, Y, X) um/voxel -- drives complexity ranking
     bg_threshold/erosion : held fixed, same units as Tab 1's own fields
+                     (erosion = Signal Erosion, not MONAI Erosion)
     min_volume     : small-blob cleanup threshold. If None (default),
                      measured from gt_labels via min_volume_from_gt()
                      instead of guessed.
@@ -344,22 +348,24 @@ def run_sigma_sweep(image_path, brain_mask_path, gt_labels_path,
 
     # bg_threshold/erosion are fixed, so the global background estimate and
     # each cell's thresholded brain_only crop are each computed exactly
-    # once here, not once per (sigma_xy, sigma_z) grid point.
-    eroded_full = (binary_erosion(brain_mask, iterations=erosion).astype(np.uint8)
-                   if erosion > 0 else brain_mask.astype(np.uint8))
-    _, bg_max, _, _ = _bg_threshold(image, eroded_full, tolerance_pct=0.0)
+    # once here, not once per (sigma_xy, sigma_z) grid point. Signal
+    # Erosion erodes what survives the threshold (the signal), not the
+    # brain-boundary probe mask -- matches remove_global().
+    _, bg_max, _, _ = _bg_threshold(image, brain_mask, tolerance_pct=0.0)
     thresh = bg_max + data_range * (bg_threshold / 100.0)
     if progress_cb:
-        progress_cb(f"Fixed BG Threshold={bg_threshold}, Erosion={erosion} -> bg_max={bg_max:.2f}")
+        progress_cb(f"Fixed BG Threshold={bg_threshold}, Signal Erosion={erosion} -> bg_max={bg_max:.2f}")
 
     crops = {}
     for label_id in cells:
         img_crop, gt_mask, gt_vox = bbox_crop(image, gt_labels, label_id, pad_z, pad_xy, objs=objs)
         mask_crop, _, _ = bbox_crop(brain_mask.astype(np.int32), gt_labels, label_id, pad_z, pad_xy, objs=objs)
         raw_mask = mask_crop.astype(bool)
-        eroded_mask = binary_erosion(raw_mask, iterations=erosion) if erosion > 0 else raw_mask
         img_thresholded = np.where(img_crop <= thresh, 0, img_crop)
-        brain_only_crop = (img_thresholded * eroded_mask).astype(img_crop.dtype)
+        signal_mask = (img_thresholded > 0) & raw_mask
+        if erosion > 0:
+            signal_mask = binary_erosion(signal_mask, iterations=erosion)
+        brain_only_crop = (img_thresholded * signal_mask).astype(img_crop.dtype)
         crops[label_id] = dict(brain_only=brain_only_crop, gt_mask=gt_mask, gt_vox=gt_vox)
         if progress_cb:
             progress_cb(f"cell {label_id}: bbox shape={img_crop.shape}  gt_vox={gt_vox}")
@@ -480,7 +486,7 @@ def format_pixel_sweep_report(sweep, current_bg_threshold=None, current_erosion=
     bg_thresholds = sorted({bt for bt, _ in grid})
     erosions = sorted({er for _, er in grid})
 
-    header = f"{'Erosion':>8} | " + " | ".join(f"bg={bt:>5} " for bt in bg_thresholds)
+    header = f"{'SigErode':>8} | " + " | ".join(f"bg={bt:>5} " for bt in bg_thresholds)
     lines = [header, "-" * len(header)]
     for er in erosions:
         row_cells = []
@@ -500,7 +506,7 @@ def format_pixel_sweep_report(sweep, current_bg_threshold=None, current_erosion=
         best_bt, best_er = best
         lines.append("")
         lines.append(
-            f"Best: BG Threshold={best_bt}, Erosion={best_er} "
+            f"Best: BG Threshold={best_bt}, Signal Erosion={best_er} "
             f"(avg IoU={sweep['per_point_avg'][best]['iou']:.1f}%, "
             f"avg Dice={sweep['per_point_avg'][best]['dice']:.1f}%)"
         )
@@ -508,7 +514,7 @@ def format_pixel_sweep_report(sweep, current_bg_threshold=None, current_erosion=
             current = (current_bg_threshold, current_erosion)
             if current in sweep["per_point_avg"] and current != best:
                 lines.append(
-                    f"Current setting (BG Threshold={current_bg_threshold}, Erosion={current_erosion}): "
+                    f"Current setting (BG Threshold={current_bg_threshold}, Signal Erosion={current_erosion}): "
                     f"avg IoU={sweep['per_point_avg'][current]['iou']:.1f}% -- "
                     f"the sweep found a better combination above."
                 )
@@ -524,7 +530,7 @@ def format_pixel_sweep_report(sweep, current_bg_threshold=None, current_erosion=
         best_c = max(grid, key=lambda pt: sweep["results"][(pt[0], pt[1], c)]["iou"])
         bt_c, er_c = best_c
         lines.append(
-            f"  cell {c:>4}: best at BG Threshold={bt_c}, Erosion={er_c} "
+            f"  cell {c:>4}: best at BG Threshold={bt_c}, Signal Erosion={er_c} "
             f"(IoU={sweep['results'][(bt_c, er_c, c)]['iou']:.1f}%)"
         )
     return "\n".join(lines)
