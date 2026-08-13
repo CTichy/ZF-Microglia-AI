@@ -29,9 +29,9 @@ design the first time this sweep was written.
 
 import numpy as np
 import tifffile
-from scipy.ndimage import binary_erosion, find_objects
+from scipy.ndimage import find_objects
 
-from ._background import _threshold as _bg_threshold
+from ._background import _threshold as _bg_threshold, erode_signal_2d
 from ._epoch_sweep import find_complex_cells, bbox_crop, _best_gt_match
 from ._labeling import create_labels
 
@@ -239,9 +239,10 @@ def run_pixel_sweep(image_path, brain_mask_path, gt_labels_path,
                 img_thresholded = np.where(c["img"] <= thresh, 0, c["img"])
                 # Erode what survived the threshold (the signal), not the
                 # brain-boundary probe mask -- matches remove_global().
+                # 2D per-slice, matching create_labels()'s own
+                # per-slice-then-stitch design -- see erode_signal_2d.
                 signal_mask = (img_thresholded > 0) & c["raw_mask"]
-                if erosion > 0:
-                    signal_mask = binary_erosion(signal_mask, iterations=erosion)
+                signal_mask = erode_signal_2d(signal_mask, erosion)
                 brain_only_crop = (img_thresholded * signal_mask).astype(c["img"].dtype)
                 pred_labels = create_labels(
                     brain_only_crop, sigma_xy=sigma_xy, sigma_z=sigma_z,
@@ -363,8 +364,7 @@ def run_sigma_sweep(image_path, brain_mask_path, gt_labels_path,
         raw_mask = mask_crop.astype(bool)
         img_thresholded = np.where(img_crop <= thresh, 0, img_crop)
         signal_mask = (img_thresholded > 0) & raw_mask
-        if erosion > 0:
-            signal_mask = binary_erosion(signal_mask, iterations=erosion)
+        signal_mask = erode_signal_2d(signal_mask, erosion)
         brain_only_crop = (img_thresholded * signal_mask).astype(img_crop.dtype)
         crops[label_id] = dict(brain_only=brain_only_crop, gt_mask=gt_mask, gt_vox=gt_vox)
         if progress_cb:

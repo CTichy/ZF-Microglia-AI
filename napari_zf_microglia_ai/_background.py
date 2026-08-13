@@ -94,6 +94,28 @@ def remove_outside_brain(
 # Mode 2 — global threshold removal (whole stack)
 # ------------------------------------------------------------------ #
 
+def erode_signal_2d(mask: np.ndarray, iterations: int) -> np.ndarray:
+    """Erode a (Z, Y, X) mask one Z-slice at a time, in 2D (X/Y contour
+    only).
+
+    The Pixel Classifier's create_labels() works per-slice-then-stitch,
+    not as one continuous 3D volume -- a blob is really a stack of
+    independent 2D shapes tied together across Z, not a solid 3D object.
+    A plain 3D binary_erosion(iterations=N) treats it as the latter: it
+    also eats N slices off the TOP and BOTTOM of every blob along Z, which
+    for a blob only a handful of slices thick can delete most or all of
+    it -- wildly disproportionate to "shrink the in-plane contour by N
+    pixels." Eroding slice-by-slice in 2D only ever shrinks each slice's
+    own contour, leaving the blob's Z-extent untouched.
+    """
+    if iterations <= 0:
+        return mask
+    eroded = np.empty_like(mask)
+    for z in range(mask.shape[0]):
+        eroded[z] = binary_erosion(mask[z], iterations=iterations)
+    return eroded
+
+
 def remove_global(
     volume: np.ndarray,
     brain_mask: np.ndarray,
@@ -117,7 +139,7 @@ def remove_global(
     bg_values, bg_max, thresh, bg_mask = _threshold(volume, brain_mask, tolerance_pct)
 
     if signal_erosion_voxels > 0:
-        signal_mask = binary_erosion(~bg_mask, iterations=signal_erosion_voxels)
+        signal_mask = erode_signal_2d(~bg_mask, signal_erosion_voxels)
         bg_mask = ~signal_mask
 
     n_removed = int(bg_mask.sum())
