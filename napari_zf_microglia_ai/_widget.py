@@ -6,6 +6,7 @@ import json
 import os
 import threading
 import traceback
+import zipfile
 from datetime import datetime
 from pathlib import Path
 
@@ -205,6 +206,25 @@ def _add_gt_checkbox(layout, hint):
     note.setStyleSheet("color: #888; font-size: 10px;")
     layout.addWidget(note)
     return cb
+
+
+def _is_valid_cellpose_checkpoint(path) -> bool:
+    """True if `path` looks like a real PyTorch checkpoint (a zip
+    archive -- the format torch.save() has used since PyTorch 1.6) rather
+    than some other file picked by mistake.
+
+    Cellpose-SAM checkpoints are typically extensionless, so the browse
+    dialog can't filter by extension (see _on_browse_cp_model) -- without
+    this check, selecting the wrong file (e.g. an input image .tif) was
+    silently accepted and stored, and only failed much later, deep
+    inside cellpose's own torch.load(), with a cryptic
+    "mmap can only be used with files saved with torch.save(...)" error
+    in a background thread partway through a live run.
+    """
+    try:
+        return zipfile.is_zipfile(path)
+    except OSError:
+        return False
 
 
 def _add_recommended_label(layout, initial=None, unit="", noun="value"):
@@ -4631,6 +4651,12 @@ class ZFMicrogliaAIWidget(QWidget):
         if not path_str:
             return
         p = Path(path_str)
+        if not _is_valid_cellpose_checkpoint(p):
+            self._labels_status_lbl.setText(
+                f"ERROR: {p.name} doesn't look like a valid PyTorch checkpoint "
+                f"(not a zip archive) -- selected the wrong file? Not applied."
+            )
+            return
         self._state["cellpose_model_path"] = p
         self._cp_model_lbl.setText(path_str)
         self._save_cfg(cellpose_model_path=str(p))
@@ -6027,6 +6053,12 @@ class ZFMicrogliaAIWidget(QWidget):
         if not model_path or not Path(model_path).is_file():
             self._cp_status_lbl.setText("ERROR: no Cellpose-SAM model selected — browse to a checkpoint.")
             return
+        if not _is_valid_cellpose_checkpoint(model_path):
+            self._cp_status_lbl.setText(
+                f"ERROR: {Path(model_path).name} doesn't look like a valid PyTorch "
+                f"checkpoint (not a zip archive) -- re-browse to the correct file."
+            )
+            return
 
         cellprob      = self._cp_cellprob_slider.value()
         flow          = _FLOW_THRESHOLD_FIXED
@@ -6173,6 +6205,12 @@ class ZFMicrogliaAIWidget(QWidget):
         model_path = self._state.get("cellpose_model_path")
         if not model_path or not Path(model_path).is_file():
             self._kr_status_lbl.setText("ERROR: no Cellpose-SAM model selected — browse to a checkpoint above.")
+            return
+        if not _is_valid_cellpose_checkpoint(model_path):
+            self._kr_status_lbl.setText(
+                f"ERROR: {Path(model_path).name} doesn't look like a valid PyTorch "
+                f"checkpoint (not a zip archive) -- re-browse to the correct file."
+            )
             return
         img_path = self._kr_img_edit.text().strip()
         gt_path = self._kr_gt_edit.text().strip()
