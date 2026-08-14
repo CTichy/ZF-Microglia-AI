@@ -117,10 +117,16 @@ def _make_capped_fill_holes(min_hole_size):
 
     min_hole_size<=0 keeps the exact original behaviour (unconditional
     fill_voids.fill()); a positive value switches to skimage's
-    area-limited remove_small_holes, which works natively in 3D so no
-    per-slice loop is needed here the way _labeling.py's 2D case needed
-    one. The min_size small-mask-removal logic is otherwise reproduced
-    unchanged from cellpose/utils.py."""
+    area-limited remove_small_holes, applied one Z-slice at a time --
+    same per-slice loop _labeling.py's 2D case needs, and for the same
+    reason: min_hole_size is calibrated as a 2D per-slice area (see
+    min_hole_size_from_gt()), and a single remove_small_holes() call
+    over the whole 3D crop treats a real per-slice-small hole that
+    persists across many Z-slices as one 3D-connected void whose total
+    volume can dwarf that threshold -- "too big to be noise" by 3D
+    volume, even though it's exactly the per-slice-small gap the
+    threshold is meant to catch. The min_size small-mask-removal logic
+    is otherwise reproduced unchanged from cellpose/utils.py."""
     import fastremap
     from scipy.ndimage import find_objects as _find_objects
     from skimage.morphology import remove_small_holes
@@ -143,7 +149,21 @@ def _make_capped_fill_holes(min_hole_size):
                     import fill_voids
                     msk = fill_voids.fill(msk)
                 else:
-                    msk = remove_small_holes(msk, area_threshold=min_hole_size)
+                    # Per-slice, not one remove_small_holes() call over the
+                    # whole 3D crop: min_hole_size is calibrated as a 2D
+                    # per-slice area (see min_hole_size_from_gt()), but a
+                    # real per-slice-small hole that persists across many
+                    # Z-slices is one 3D-connected void whose total volume
+                    # can dwarf that threshold -- remove_small_holes() in
+                    # 3D then judges it "too big to be noise" and leaves it
+                    # unfilled on every slice, producing a visible ring
+                    # inside the cell on each of those slices. _labeling.py
+                    # (the Pixel Classifier route) already loops per-slice
+                    # for exactly this reason; this path just never did.
+                    filled = np.empty_like(msk)
+                    for z in range(msk.shape[0]):
+                        filled[z] = remove_small_holes(msk[z], area_threshold=min_hole_size)
+                    msk = filled
                 masks[slc][msk] = (j + 1)
                 j += 1
 
