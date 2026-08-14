@@ -169,7 +169,16 @@ def run_krendl_sweep(volume, gt_labels, model_path, cellprobs, large_contacts,
                 )
 
     grid = sorted(results.keys())
-    best_point = max(results, key=lambda k: results[k]["score"]) if results else None
+    # Score (TP - 0.5*(FP+FN)) is coarse -- built from integer counts, so
+    # many grid points can tie on it even though they differ meaningfully
+    # in how tightly the matched cells are actually segmented. Breaking
+    # ties by mean_iou then mean_dice picks the most precise segmentation
+    # among equally-good-on-Score candidates, instead of just the first
+    # one encountered in grid order.
+    best_point = (
+        max(results, key=lambda k: (results[k]["score"], results[k]["mean_iou"], results[k]["mean_dice"]))
+        if results else None
+    )
 
     return dict(grid=grid, results=results, best_point=best_point,
                 gt_min_used=gt_min, min_hole_size_used=min_hole_size, cancelled=cancelled)
