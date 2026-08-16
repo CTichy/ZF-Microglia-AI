@@ -639,7 +639,18 @@ def rerun_single_cell(volume, labels, label_id, model_path, cellprob=-2.5, flow=
     """
     from scipy.ndimage import find_objects as _find_objects
 
+    volume = np.asarray(volume)
     labels = np.asarray(labels)
+    if volume.ndim != 3 or labels.ndim != 3:
+        raise ValueError(
+            f"volume and labels must both be 3D (Z, Y, X); got "
+            f"volume.shape={volume.shape}, labels.shape={labels.shape}."
+        )
+    if volume.shape != labels.shape:
+        raise ValueError(
+            f"volume and labels must have matching shapes; got "
+            f"volume.shape={volume.shape}, labels.shape={labels.shape}."
+        )
     label_id = int(label_id)
     obj_slices = _find_objects(labels, max_label=label_id)
     if label_id < 1 or label_id > len(obj_slices) or obj_slices[label_id - 1] is None:

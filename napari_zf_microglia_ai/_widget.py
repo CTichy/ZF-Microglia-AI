@@ -6407,6 +6407,30 @@ class ZFMicrogliaAIWidget(QWidget):
             return
         labels_layer = self._viewer.layers[lname]
         labels = np.asarray(labels_layer.data)
+        if labels.ndim != 3:
+            # A stray singleton axis (e.g. from a save/reload round-trip
+            # through a TIFF writer/reader that adds a unit-length T or C
+            # dimension) is common enough to auto-recover from rather than
+            # crash on -- squeeze first, only error if that doesn't get to
+            # exactly 3D.
+            squeezed = np.squeeze(labels)
+            if squeezed.ndim == 3:
+                labels = squeezed
+            else:
+                self._cp_status_lbl.setText(
+                    f"ERROR: '{lname}' is {labels.ndim}D (shape={labels.shape}), "
+                    f"expected 3D even after squeezing singleton axes -- "
+                    f"re-run the full segmentation on this volume, or fix "
+                    f"the layer's shape before re-running a single cell."
+                )
+                return
+        if labels.shape != volume.shape:
+            self._cp_status_lbl.setText(
+                f"ERROR: '{lname}' shape {labels.shape} doesn't match the "
+                f"volume's shape {volume.shape} -- make sure this is really "
+                f"the labels layer produced from this exact volume."
+            )
+            return
 
         label_id = self._cp_relabel_id_spin.value()
         if not np.any(labels == label_id):
