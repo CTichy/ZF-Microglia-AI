@@ -593,3 +593,98 @@ def run_full_pipeline(volume, model_path, cellprob=-2.5, flow=0.4, anisotropy=5.
         "solidity_threshold":  solidity_threshold,
     }
     return masks, stats
+
+
+def rerun_single_cell(volume, labels, label_id, model_path, cellprob=-2.5, flow=0.4,
+                       anisotropy=5.747, max_gap=2, min_contact=10, large_contact=20,
+                       gt_min=GT_MIN, gpu=True, min_hole_size=0, min_size=15,
+                       final_min_fraction=0.618, niter=None, solidity_threshold=0.5,
+                       pad_z=15, pad_xy=40, progress_cb=None):
+    """
+    Re-run do_3D inference (+ the same GMM/Krendl-safe-merge/large-
+    contact-merge/final-min-size cleanup as run_full_pipeline) on just
+    the small padded bounding-box crop around one existing label,
+    instead of the whole volume -- turns "fix one porous/mis-segmented
+    cell" (see compute_porosity()) into seconds instead of the hours a
+    full-fish re-run costs.
+
+    Safe to reuse run_full_pipeline() unmodified on a tiny crop: GMM
+    cleanup already no-ops below 3 objects (see its own docstring), and
+    Krendl safe-merge / large-contact merge / final-min-size cleanup
+    all use a fixed gt_min floor, not population statistics fit from
+    whatever happens to be in the crop.
+
+    Only objects from the crop's re-run that actually overlap
+    label_id's own original footprint (within that same crop) are
+    spliced back in, as brand-new label IDs appended after the current
+    max -- anything else the crop's do_3D pass also happens to detect
+    (e.g. a neighbouring cell caught by the padding) is discarded, not
+    duplicated into the full volume. If the fix genuinely reveals more
+    than one real cell where there was one label before, all of them
+    are kept.
+
+    volume : the SAME intensity volume label_id's original segmentation
+    was produced from (not the label array itself) -- do_3D needs
+    pixel intensities, not previous predictions.
+
+    Returns (new_labels, info):
+      new_labels : full-size label array, label_id's voxels replaced.
+      info : {'old_label': label_id, 'new_labels': [id, ...],
+              'n_new': int, 'porous_cells': {...}, 'crop_stats': {...}}
+             -- porous_cells is compute_porosity() re-run restricted to
+             just the newly spliced-in objects; crop_stats is
+             run_full_pipeline()'s own stats dict from the crop.
+
+    Raises ValueError if label_id isn't present in labels at all.
+    """
+    from scipy.ndimage import find_objects as _find_objects
+
+    labels = np.asarray(labels)
+    label_id = int(label_id)
+    obj_slices = _find_objects(labels, max_label=label_id)
+    if label_id < 1 or label_id > len(obj_slices) or obj_slices[label_id - 1] is None:
+        raise ValueError(f"Label {label_id} not found in the current labels layer.")
+    sl = obj_slices[label_id - 1]
+
+    Z, Y, X = labels.shape
+    z0 = max(0, sl[0].start - pad_z); z1 = min(Z, sl[0].stop + pad_z)
+    y0 = max(0, sl[1].start - pad_xy); y1 = min(Y, sl[1].stop + pad_xy)
+    x0 = max(0, sl[2].start - pad_xy); x1 = min(X, sl[2].stop + pad_xy)
+    crop_sl = (slice(z0, z1), slice(y0, y1), slice(x0, x1))
+
+    vol_crop = volume[crop_sl]
+    orig_footprint = labels[crop_sl] == label_id
+
+    if progress_cb:
+        progress_cb(f"Re-running label {label_id} only: crop shape={vol_crop.shape} ...")
+
+    crop_labels, crop_stats = run_full_pipeline(
+        vol_crop, model_path, cellprob=cellprob, flow=flow, anisotropy=anisotropy,
+        max_gap=max_gap, min_contact=min_contact, large_contact=large_contact,
+        gt_min=gt_min, gpu=gpu, min_hole_size=min_hole_size, min_size=min_size,
+        final_min_fraction=final_min_fraction, niter=niter,
+        solidity_threshold=solidity_threshold, progress_cb=progress_cb,
+    )
+
+    keep_ids = sorted({int(v) for v in np.unique(crop_labels[orig_footprint]) if v > 0})
+
+    new_labels = labels.copy()
+    new_labels[labels == label_id] = 0
+
+    region = new_labels[crop_sl]
+    next_id = int(new_labels.max()) + 1 if new_labels.max() > 0 else 1
+    spliced_ids = []
+    for old_local_id in keep_ids:
+        region[crop_labels == old_local_id] = next_id
+        spliced_ids.append(next_id)
+        next_id += 1
+    new_labels[crop_sl] = region
+
+    porous_recheck = compute_porosity(new_labels, solidity_threshold=solidity_threshold)
+    porous_recheck = {k: v for k, v in porous_recheck.items() if k in spliced_ids}
+
+    info = dict(
+        old_label=label_id, new_labels=spliced_ids, n_new=len(spliced_ids),
+        porous_cells=porous_recheck, crop_stats=crop_stats,
+    )
+    return new_labels, info

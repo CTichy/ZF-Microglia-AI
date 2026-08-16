@@ -30,6 +30,7 @@ from ._background import remove_outside_brain, remove_global, fill_outside_brain
 from ._labeling import create_labels, resort_labels, split_label, remove_debris
 from ._statistics import compute_stats
 from ._cellpose_seg import run_full_pipeline as _run_cellpose_pipeline
+from ._cellpose_seg import rerun_single_cell as _rerun_single_cell
 from . import _pixel_sweep as _psw
 from . import _brain_sweep as _bsw
 from . import _gt_score as _gts
@@ -1554,6 +1555,35 @@ class ZFMicrogliaAIWidget(QWidget):
         self._cp_log_view.setStyleSheet("font-family: monospace; font-size: 9px;")
         self._cp_log_view.setFixedHeight(120)
         cpg.addWidget(self._cp_log_view)
+
+        cpg.addWidget(_sep())
+        cp_relabel_note = QLabel(
+            "Re-run one cell instead of the whole fish -- crops to that "
+            "label's own bounding box (+ padding), re-runs do_3D + the "
+            "same GMM/Krendl/large-contact/final-min-size cleanup on "
+            "just the crop (using this section's current settings, "
+            "including Flow iterations above), then splices the result "
+            "back in place of the old label. Only pieces that actually "
+            "overlap the original label survive the splice -- a "
+            "neighbouring cell caught by the padding is discarded, not "
+            "duplicated. If the fix reveals more than one real cell, "
+            "all of them are kept as new label IDs. Requires the "
+            "matching '<image>_cellpose_labels' layer to already exist "
+            "(run the full segmentation once first)."
+        )
+        cp_relabel_note.setWordWrap(True)
+        cp_relabel_note.setStyleSheet("color: #888; font-size: 10px;")
+        cpg.addWidget(cp_relabel_note)
+
+        cp_relabel_row = QHBoxLayout()
+        cp_relabel_row.addWidget(QLabel("Label ID to re-run:"))
+        self._cp_relabel_id_spin = QSpinBox()
+        self._cp_relabel_id_spin.setRange(1, 1_000_000)
+        cp_relabel_row.addWidget(self._cp_relabel_id_spin)
+        cpg.addLayout(cp_relabel_row)
+
+        self._cp_relabel_btn = QPushButton("Re-run This Cell Only")
+        cpg.addWidget(self._cp_relabel_btn)
 
         self._cellpose_group.setLayout(cpg)
         self._cellpose_group = _make_collapsible(self._cellpose_group)
@@ -3274,6 +3304,7 @@ class ZFMicrogliaAIWidget(QWidget):
         self._sg_stop_btn.clicked.connect(self._on_sg_stop_sweep)
         self._cp_model_browse_btn.clicked.connect(self._on_browse_cp_model)
         self._cp_run_btn.clicked.connect(self._on_run_cellpose_seg)
+        self._cp_relabel_btn.clicked.connect(self._on_rerun_single_cell)
         self._kr_img_browse_btn.clicked.connect(self._on_kr_browse_img)
         self._kr_gt_browse_btn.clicked.connect(self._on_kr_browse_gt)
         self._kr_run_btn.clicked.connect(self._on_kr_run_sweep)
@@ -6229,6 +6260,132 @@ class ZFMicrogliaAIWidget(QWidget):
 
         timer2.timeout.connect(_poll2)
         timer2.start(500)
+
+    def _on_rerun_single_cell(self):
+        target = self._active_layer()
+        if target is None:
+            self._cp_status_lbl.setText(
+                "Select the brain_only layer first (the same one Cellpose-SAM "
+                "Segmentation ran on)."
+            )
+            return
+        volume = np.asarray(target.data)
+        if volume.ndim != 3:
+            self._cp_status_lbl.setText(f"ERROR: 3D volume required, got {volume.ndim}D.")
+            return
+
+        stem = target.name
+        lname = f"{stem}_cellpose_labels"
+        if lname not in self._viewer.layers:
+            self._cp_status_lbl.setText(
+                f"ERROR: no '{lname}' layer found — run Cellpose-SAM Segmentation "
+                f"on this volume first."
+            )
+            return
+        labels_layer = self._viewer.layers[lname]
+        labels = np.asarray(labels_layer.data)
+
+        label_id = self._cp_relabel_id_spin.value()
+        if not np.any(labels == label_id):
+            self._cp_status_lbl.setText(f"ERROR: label {label_id} not found in '{lname}'.")
+            return
+
+        model_path = self._state.get("cellpose_model_path")
+        if not model_path or not Path(model_path).is_file():
+            self._cp_status_lbl.setText("ERROR: no Cellpose-SAM model selected — browse to a checkpoint.")
+            return
+        if not _is_valid_cellpose_checkpoint(model_path):
+            self._cp_status_lbl.setText(
+                f"ERROR: {Path(model_path).name} doesn't look like a valid PyTorch "
+                f"checkpoint (not a zip archive) -- re-browse to the correct file."
+            )
+            return
+
+        cellprob      = self._cp_cellprob_slider.value()
+        flow          = _FLOW_THRESHOLD_FIXED
+        max_gap       = self._cp_maxgap_slider.value()
+        min_contact   = self._cp_mincontact_slider.value()
+        gt_min        = self._current_min_volume()
+        large_contact = self._cp_largecontact_slider.value()
+        min_hole_size = self._hole_slider.value()
+        min_size      = self._cp_minsize_spin.value()
+        final_min_fraction = self._finalfrac_spin.value()
+        niter         = self._cp_niter_spin.value()
+
+        scale = tuple(float(v) for v in target.scale) if len(target.scale) == 3 else (1.0, 1.0, 1.0)
+        z, y, x = scale
+        xy = (x + y) / 2.0
+        anisotropy = z / xy if xy > 0 else 5.747
+
+        gpu = torch.cuda.is_available()
+
+        # Disable both buttons -- this splices into the same labels
+        # array a full run would overwrite outright, so the two must
+        # not run concurrently.
+        self._cp_run_btn.setEnabled(False)
+        self._cp_relabel_btn.setEnabled(False)
+        self._cp_status_lbl.setText(f"Re-running label {label_id} only (device={'cuda' if gpu else 'cpu'})...")
+
+        result = {}
+
+        def _progress(msg):
+            result["_progress"] = msg
+
+        def _worker():
+            try:
+                new_labels, info = _rerun_single_cell(
+                    volume, labels, label_id, model_path,
+                    cellprob=cellprob, flow=flow, anisotropy=anisotropy,
+                    max_gap=max_gap, min_contact=min_contact, large_contact=large_contact,
+                    gt_min=gt_min, gpu=gpu, min_hole_size=min_hole_size, min_size=min_size,
+                    final_min_fraction=final_min_fraction, niter=niter,
+                    progress_cb=_progress,
+                )
+                result["new_labels"] = new_labels
+                result["info"] = info
+            except Exception as exc:
+                traceback.print_exc()
+                result["error"] = str(exc)
+
+        thread = threading.Thread(target=_worker, daemon=True)
+        thread.start()
+
+        timer3 = QTimer(self)
+
+        def _poll3():
+            if thread.is_alive():
+                if "_progress" in result:
+                    self._cp_status_lbl.setText(result["_progress"])
+                return
+            timer3.stop()
+            self._cp_run_btn.setEnabled(True)
+            self._cp_relabel_btn.setEnabled(True)
+
+            if "error" in result:
+                self._cp_status_lbl.setText(f"ERROR: {result['error']}")
+                return
+
+            info = result["info"]
+            labels_layer.data = result["new_labels"]
+
+            new_ids_str = ", ".join(str(i) for i in info["new_labels"]) or "(none -- discarded, no overlap survived)"
+            porous_note = ""
+            if info["porous_cells"]:
+                porous_note = (
+                    f" Still porous after re-run: "
+                    + ", ".join(f"#{lid} (solidity={sol:.2f})" for lid, sol in info["porous_cells"].items())
+                    + " -- try a higher niter."
+                )
+            self._cp_status_lbl.setText(
+                f"Done — label {label_id} replaced with {info['n_new']} new label(s): "
+                f"{new_ids_str}.{porous_note}"
+            )
+            print(f"RE-RUN SINGLE CELL — label {label_id} -> {info['n_new']} new label(s): {new_ids_str}")
+            if porous_note:
+                print(f"  {porous_note.strip()}")
+
+        timer3.timeout.connect(_poll3)
+        timer3.start(500)
 
     def _on_kr_browse_img(self):
         path_str, _ = QFileDialog.getOpenFileName(self, "Select image to sweep", "", "TIFF files (*.tif *.tiff)")
