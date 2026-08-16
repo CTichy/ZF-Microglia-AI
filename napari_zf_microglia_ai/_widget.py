@@ -1436,6 +1436,28 @@ class ZFMicrogliaAIWidget(QWidget):
         cpminsize_note.setWordWrap(True)
         cpg.addWidget(cpminsize_note)
 
+        cpniter_row = QHBoxLayout()
+        cpniter_row.addWidget(QLabel("Flow iterations (niter):"))
+        self._cp_niter_spin = QSpinBox()
+        self._cp_niter_spin.setRange(50, 2000)
+        self._cp_niter_spin.setSingleStep(50)
+        self._cp_niter_spin.setValue(_root_cfg.get("cellpose_niter", 200))
+        cpniter_row.addWidget(self._cp_niter_spin)
+        cpg.addLayout(cpniter_row)
+        cpniter_note = QLabel(
+            "  Euler-integration steps each voxel's flow trajectory gets "
+            "before instances are formed. 200 is Cellpose's own default. "
+            "Raise this if a cell comes out looking porous/\"pumice "
+            "stone\" in 3D (parallel banding per 2D slice) -- a sign "
+            "some voxels didn't fully converge within 200 steps, most "
+            "likely on structurally complex cells under this pipeline's "
+            "heavy Z-anisotropy stretch. See the Solidity warning below "
+            "after a run for which cells, if any, are affected."
+        )
+        cpniter_note.setStyleSheet("color: #888; font-size: 10px;")
+        cpniter_note.setWordWrap(True)
+        cpg.addWidget(cpniter_note)
+
         cp_cellprob_row = QHBoxLayout()
         cp_cellprob_row.addWidget(QLabel("Cellprob threshold:"))
         self._cp_cellprob_slider = QLabeledDoubleSlider(Qt.Horizontal)
@@ -6077,6 +6099,7 @@ class ZFMicrogliaAIWidget(QWidget):
         # "Common Settings" note above self._hole_slider's construction.
         min_size = self._cp_minsize_spin.value()
         final_min_fraction = self._finalfrac_spin.value()
+        niter = self._cp_niter_spin.value()
 
         stem  = target.name
         scale = tuple(float(v) for v in target.scale) if len(target.scale) == 3 else (1.0, 1.0, 1.0)
@@ -6096,6 +6119,7 @@ class ZFMicrogliaAIWidget(QWidget):
         print(f"Cellprob     : {cellprob}   Flow: {flow}   Anisotropy: {anisotropy:.3f}")
         print(f"Safe merge   : max_gap={max_gap}  min_contact={min_contact}")
         print(f"Large contact: {large_contact}")
+        print(f"Flow iters   : {niter}")
         print(f"{'='*70}")
 
         result = {}
@@ -6116,7 +6140,7 @@ class ZFMicrogliaAIWidget(QWidget):
                         cellprob=cellprob, flow=flow, anisotropy=anisotropy,
                         max_gap=max_gap, min_contact=min_contact, gt_min=gt_min,
                         large_contact=large_contact, min_hole_size=min_hole_size, min_size=min_size,
-                        final_min_fraction=final_min_fraction,
+                        final_min_fraction=final_min_fraction, niter=niter,
                         gpu=gpu, progress_cb=_progress,
                     )
                 result["labels"] = labels
@@ -6163,10 +6187,26 @@ class ZFMicrogliaAIWidget(QWidget):
                 self._viewer.layers.remove(lname)
             self._viewer.add_labels(labels, name=lname, scale=scale)
 
+            porous = stats.get("porous_cells") or {}
+            porous_note = ""
+            if porous:
+                sol_thr = stats.get("solidity_threshold", 0.5)
+                ids_str = ", ".join(
+                    f"#{lid} (solidity={sol:.2f})"
+                    for lid, sol in sorted(porous.items(), key=lambda kv: kv[1])
+                )
+                porous_note = (
+                    f" WARNING: {len(porous)} cell(s) look porous/skeletonized "
+                    f"(solidity < {sol_thr:.2f}): {ids_str} -- select these label "
+                    f"IDs in the layer to inspect; try raising Flow iterations "
+                    f"(niter) and re-running if confirmed."
+                )
+
             self._cp_status_lbl.setText(
                 f"Done — {stats['n_final']} cells "
                 f"(raw={stats['n_raw']} -> gmm={stats['n_after_gmm']} -> "
                 f"safe={stats['n_after_safe_merge']} -> large={stats['n_after_large_contact']})."
+                f"{porous_note}"
             )
             self._cp_run_btn.setEnabled(True)
             self._maybe_send_notify(
@@ -6174,7 +6214,8 @@ class ZFMicrogliaAIWidget(QWidget):
                 f"[ZF-Microglia-AI] Cellpose-SAM Segmentation done — {stem}",
                 f"Cellpose-SAM Segmentation on {stem} finished.\n\n"
                 f"{stats['n_final']} cells (raw={stats['n_raw']} -> gmm={stats['n_after_gmm']} "
-                f"-> safe={stats['n_after_safe_merge']} -> large={stats['n_after_large_contact']}).",
+                f"-> safe={stats['n_after_safe_merge']} -> large={stats['n_after_large_contact']})."
+                f"{porous_note}",
             )
 
             print(f"{'='*70}")
@@ -6182,6 +6223,8 @@ class ZFMicrogliaAIWidget(QWidget):
             print(f"  raw={stats['n_raw']}  after_gmm={stats['n_after_gmm']}"
                   f"  after_safe_merge={stats['n_after_safe_merge']}"
                   f"  after_large_contact={stats['n_after_large_contact']}")
+            if porous:
+                print(f"  {porous_note.strip()}")
             print(f"{'='*70}\n")
 
         timer2.timeout.connect(_poll2)

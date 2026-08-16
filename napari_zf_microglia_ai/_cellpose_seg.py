@@ -50,7 +50,7 @@ def _joint_bbox(b1, b2):
 
 
 def run_do3d_inference(volume, model_path, cellprob, flow, anisotropy, gpu=True,
-                        min_hole_size=0, min_size=15):
+                        min_hole_size=0, min_size=15, niter=None):
     """Raw Cellpose-SAM do_3D inference. Returns an int32 label array.
 
     Convenience wrapper around predict_flows()+masks_from_flows() for a
@@ -60,10 +60,13 @@ def run_do3d_inference(volume, model_path, cellprob, flow, anisotropy, gpu=True,
     min_size : deliberately tiny early noise filter, not this project's
     Min volume floor -- see the "Common Settings" note in _widget.py for
     why the two are kept separate. Default 15 matches Cellpose's own
-    default and this project's prior, unexposed hardcoded value."""
+    default and this project's prior, unexposed hardcoded value.
+
+    niter : passed through to masks_from_flows() -- see its docstring.
+    None (default) resolves to Cellpose's own default of 200."""
     model, dP, cellprob_map, shape = predict_flows(volume, model_path, anisotropy, gpu=gpu)
     return masks_from_flows(model, dP, cellprob_map, shape, cellprob, flow,
-                             min_size=min_size, min_hole_size=min_hole_size)
+                             min_size=min_size, min_hole_size=min_hole_size, niter=niter)
 
 
 def predict_flows(volume, model_path, anisotropy, gpu=True):
@@ -203,6 +206,16 @@ def masks_from_flows(model, dP, cellprob, shape, cellprob_threshold, flow_thresh
     integer". This project always calls predict_flows() with
     diameter=None and no rescale, the exact case eval() itself resolves
     to niter=200, so that same value is applied here explicitly.
+
+    Raising niter above 200 gives each voxel's flow trajectory more
+    Euler-integration steps to fully converge before follow_flows() bins
+    final positions into instances -- relevant for structurally complex
+    cells under this pipeline's heavy Z-anisotropy stretch, where some
+    voxels can fail to converge within 200 steps and get scattered into
+    inconsistent bins near their true instance, producing a porous/
+    "pumice stone" 3D shape (parallel banding on any given 2D slice) for
+    that one cell instead of a solid blob. See compute_porosity() below
+    for a way to detect this after the fact rather than guessing.
 
     min_hole_size : passed through to _make_capped_fill_holes() -- see
     that function's docstring. 0 (default) matches cellpose's own
@@ -450,10 +463,42 @@ def relabel_sequential(masks):
     return lut[masks], int(ids.size)
 
 
+def compute_porosity(masks, solidity_threshold=0.5):
+    """Flag any label whose 3D shape is abnormally porous -- solidity =
+    actual voxel volume / convex-hull volume, via skimage's regionprops
+    (each label's own bounding box, so cheap even though convex-hull
+    computation itself is not free).
+
+    A solid blob sits close to 1.0. A "pumice stone"/skeletonized label
+    -- voxels scattered inside a much larger convex envelope than they
+    actually fill -- sits well below it. This is the shape Cellpose's
+    do_3D flow-following produces when some voxels' trajectories fail
+    to fully converge within niter steps on a structurally complex cell
+    (see masks_from_flows()'s niter docstring) -- an algorithmic
+    convergence artifact, not something this pipeline's own merge/
+    cleanup stages can introduce or repair.
+
+    Returns {label_id: solidity, ...} for every label below
+    solidity_threshold -- a list of suspects to inspect/re-run (e.g. at
+    a higher niter), not an automatic fix. There is no safe way to
+    "repair" a label like this in place."""
+    from skimage.measure import regionprops
+    flagged = {}
+    for p in regionprops(masks):
+        try:
+            sol = float(p.solidity)
+        except Exception:
+            continue
+        if sol < solidity_threshold:
+            flagged[int(p.label)] = sol
+    return flagged
+
+
 def run_full_pipeline(volume, model_path, cellprob=-2.5, flow=0.4, anisotropy=5.747,
                        max_gap=2, min_contact=10, large_contact=20, gt_min=GT_MIN,
                        gpu=True, progress_cb=None, precomputed_flows=None,
-                       min_hole_size=0, min_size=15, final_min_fraction=0.618):
+                       min_hole_size=0, min_size=15, final_min_fraction=0.618,
+                       niter=None, solidity_threshold=0.5):
     """
     Full do_3D + 3-GMM + Krendl safe merge + large-contact merge + final
     min-size safety net pipeline — identical math to krendl_do3d.py plus
@@ -481,6 +526,17 @@ def run_full_pipeline(volume, model_path, cellprob=-2.5, flow=0.4, anisotropy=5.
     final_min_fraction : passed through to final_min_size_cleanup(), run
     as the very last stage after large-contact merge -- see that
     function's docstring for why 0.618 (golden ratio) is the default.
+
+    niter : passed through to masks_from_flows()/run_do3d_inference() --
+    see masks_from_flows()'s docstring. None (default) resolves to
+    Cellpose's own default of 200.
+
+    solidity_threshold : passed to compute_porosity(), run as the very
+    last step against the final relabeled masks. 0.5 (default) is a
+    conservative catch-most-real-artifacts starting point, not a
+    calibrated GT-verified value (unlike this project's other
+    thresholds) -- there is no GT for "is this shape porous" to
+    calibrate against.
     """
     def _report(msg):
         if progress_cb:
@@ -490,11 +546,11 @@ def run_full_pipeline(volume, model_path, cellprob=-2.5, flow=0.4, anisotropy=5.
         model, dP, cellprob_map, shape = precomputed_flows
         _report(f"cellprob={cellprob}: forming masks from precomputed flows...")
         masks = masks_from_flows(model, dP, cellprob_map, shape, cellprob, flow,
-                                  min_size=min_size, min_hole_size=min_hole_size)
+                                  min_size=min_size, min_hole_size=min_hole_size, niter=niter)
     else:
         _report("Running do_3D inference...")
         masks = run_do3d_inference(volume, model_path, cellprob, flow, anisotropy, gpu=gpu,
-                                    min_hole_size=min_hole_size, min_size=min_size)
+                                    min_hole_size=min_hole_size, min_size=min_size, niter=niter)
     n0 = len(np.unique(masks[masks > 0]))
 
     _report(f"{n0} raw cells — 3-component GMM cleanup...")
@@ -517,6 +573,9 @@ def run_full_pipeline(volume, model_path, cellprob=-2.5, flow=0.4, anisotropy=5.
     _report(f"{n4} cells — relabeling...")
     masks, n_final = relabel_sequential(masks)
 
+    _report(f"{n_final} cells — checking shape solidity...")
+    porous_cells = compute_porosity(masks, solidity_threshold=solidity_threshold)
+
     stats = {
         "n_raw":               n0,
         "n_after_gmm":         n1,
@@ -530,5 +589,7 @@ def run_full_pipeline(volume, model_path, cellprob=-2.5, flow=0.4, anisotropy=5.
         "large_contact_merges": lc_merges,
         "final_min_threshold_vox": final_min_threshold,
         "final_min_removed":   final_removed,
+        "porous_cells":        porous_cells,
+        "solidity_threshold":  solidity_threshold,
     }
     return masks, stats
