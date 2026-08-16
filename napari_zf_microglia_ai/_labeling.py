@@ -588,6 +588,36 @@ def split_label(
     return out.astype(np.int32), new_ids
 
 
+def join_labels(labels: np.ndarray, label_a: int, label_b: int) -> np.ndarray:
+    """
+    Merge label_b into label_a -- every voxel currently labeled label_b
+    becomes label_a instead. The inverse of split_label(): two labels
+    that are really one cell, wrongly segmented into two pieces (e.g. a
+    thin neck that fooled the segmenter into cutting it in half),
+    collapsed back into one. label_a survives; label_b's ID disappears.
+
+    A single vectorized boolean assignment over the whole volume --
+    unlike split_label(), there's no bounding-box crop to compute
+    (nothing here depends on shape/geometry) and no GPU path needed,
+    so this stays fast even on a full-fish volume without one.
+
+    Returns new_labels (same shape, same dtype). Raises ValueError if
+    either label is not found, or if label_a == label_b.
+    """
+    if label_a == label_b:
+        raise ValueError("Label A and Label B must be different labels.")
+    mask_a = labels == label_a
+    mask_b = labels == label_b
+    if not np.any(mask_a):
+        raise ValueError(f"Label {label_a} not found")
+    if not np.any(mask_b):
+        raise ValueError(f"Label {label_b} not found")
+
+    new_labels = labels.copy()
+    new_labels[mask_b] = label_a
+    return new_labels
+
+
 def create_labels(
     volume: np.ndarray,
     sigma_xy: float = 1.0,

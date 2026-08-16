@@ -27,7 +27,7 @@ from superqt import QLabeledSlider, QLabeledDoubleSlider
 from ._io import load_file
 from ._inference import DEFAULT_MODEL, _SKIN_SEG_DIR, run_inference
 from ._background import remove_outside_brain, remove_global, fill_outside_brain_random
-from ._labeling import create_labels, resort_labels, split_label, remove_debris
+from ._labeling import create_labels, resort_labels, split_label, join_labels, remove_debris
 from ._statistics import compute_stats
 from ._cellpose_seg import run_full_pipeline as _run_cellpose_pipeline
 from ._cellpose_seg import rerun_single_cell as _rerun_single_cell
@@ -1945,6 +1945,50 @@ class ZFMicrogliaAIWidget(QWidget):
 
         dlt.addWidget(_sep())
 
+        join_note = QLabel(
+            "  Join Labels — the inverse of Split: merges Label B into "
+            "Label A when one cell got wrongly cut into two pieces "
+            "(e.g. a thin process fooled the segmenter into treating it "
+            "as a neck). Label A's ID survives; Label B disappears."
+        )
+        join_note.setWordWrap(True)
+        join_note.setStyleSheet("color: #888; font-size: 10px;")
+        dlt.addWidget(join_note)
+
+        join_a_row = QHBoxLayout()
+        join_a_row.addWidget(QLabel("Label A (keep):"))
+        self._join_a_spin = QSpinBox()
+        self._join_a_spin.setMinimum(1)
+        self._join_a_spin.setMaximum(99999)
+        self._join_a_spin.setValue(1)
+        join_a_row.addWidget(self._join_a_spin)
+        self._join_a_use_sel_btn = QPushButton("Use selected")
+        self._join_a_use_sel_btn.setFixedWidth(90)
+        join_a_row.addWidget(self._join_a_use_sel_btn)
+        dlt.addLayout(join_a_row)
+
+        join_b_row = QHBoxLayout()
+        join_b_row.addWidget(QLabel("Label B (merge into A):"))
+        self._join_b_spin = QSpinBox()
+        self._join_b_spin.setMinimum(1)
+        self._join_b_spin.setMaximum(99999)
+        self._join_b_spin.setValue(2)
+        join_b_row.addWidget(self._join_b_spin)
+        self._join_b_use_sel_btn = QPushButton("Use selected")
+        self._join_b_use_sel_btn.setFixedWidth(90)
+        join_b_row.addWidget(self._join_b_use_sel_btn)
+        dlt.addLayout(join_b_row)
+
+        self._join_btn = QPushButton("Join Labels")
+        self._join_btn.setStyleSheet("QPushButton { padding: 5px; }")
+        dlt.addWidget(self._join_btn)
+
+        self._join_status_lbl = QLabel("")
+        self._join_status_lbl.setWordWrap(True)
+        dlt.addWidget(self._join_status_lbl)
+
+        dlt.addWidget(_sep())
+
         self._save_labels_btn = QPushButton("Save Labels")
         self._save_labels_btn.setStyleSheet("QPushButton { padding: 5px; }")
         dlt.addWidget(self._save_labels_btn)
@@ -3320,6 +3364,9 @@ class ZFMicrogliaAIWidget(QWidget):
         self._debris_btn.clicked.connect(self._on_remove_debris)
         self._split_use_sel_btn.clicked.connect(self._on_use_selected_label)
         self._split_btn.clicked.connect(self._on_split_label)
+        self._join_a_use_sel_btn.clicked.connect(self._on_use_selected_label_join_a)
+        self._join_b_use_sel_btn.clicked.connect(self._on_use_selected_label_join_b)
+        self._join_btn.clicked.connect(self._on_join_labels)
         self._save_labels_btn.clicked.connect(self._on_save_labels)
         self._stats_backend_combo.currentIndexChanged.connect(self._on_stats_backend_changed)
         self._stats_btn.clicked.connect(self._on_generate_stats)
@@ -5264,6 +5311,82 @@ class ZFMicrogliaAIWidget(QWidget):
                 f"Done — {n_splits} parts: {all_ids}. Total labels: {n_total}."
             )
             self._split_btn.setEnabled(True)
+
+        timer.timeout.connect(_poll)
+        timer.start(200)
+
+    def _on_use_selected_label_join_a(self):
+        """Copy the currently selected label from the active Labels layer
+        into Join's Label A field."""
+        lyr = self._active_labels_layer()
+        if lyr is None:
+            self._join_status_lbl.setText("No Labels layer selected.")
+            return
+        sel = int(lyr.selected_label)
+        if sel == 0:
+            self._join_status_lbl.setText("Selected label is 0 (background).")
+            return
+        self._join_a_spin.setValue(sel)
+        self._join_status_lbl.setText(f"Label A set to {sel}.")
+
+    def _on_use_selected_label_join_b(self):
+        """Copy the currently selected label from the active Labels layer
+        into Join's Label B field."""
+        lyr = self._active_labels_layer()
+        if lyr is None:
+            self._join_status_lbl.setText("No Labels layer selected.")
+            return
+        sel = int(lyr.selected_label)
+        if sel == 0:
+            self._join_status_lbl.setText("Selected label is 0 (background).")
+            return
+        self._join_b_spin.setValue(sel)
+        self._join_status_lbl.setText(f"Label B set to {sel}.")
+
+    def _on_join_labels(self):
+        lyr = self._active_labels_layer()
+        if lyr is None:
+            self._join_status_lbl.setText("No Labels layer selected.")
+            return
+
+        label_a = self._join_a_spin.value()
+        label_b = self._join_b_spin.value()
+        if label_a == label_b:
+            self._join_status_lbl.setText("ERROR: Label A and Label B must be different.")
+            return
+
+        self._join_btn.setEnabled(False)
+        self._join_status_lbl.setText(f"Joining label {label_b} into {label_a}…")
+
+        labels = np.asarray(lyr.data)
+        result = {}
+
+        def _worker():
+            try:
+                result["labels"] = join_labels(labels, label_a, label_b)
+            except Exception as exc:
+                traceback.print_exc()
+                result["error"] = str(exc)
+
+        thread = threading.Thread(target=_worker, daemon=True)
+        thread.start()
+
+        timer = QTimer(self)
+
+        def _poll():
+            if thread.is_alive():
+                return
+            timer.stop()
+            if "error" in result:
+                self._join_status_lbl.setText(f"ERROR: {result['error']}")
+                self._join_btn.setEnabled(True)
+                return
+            lyr.data = result["labels"]
+            self._join_status_lbl.setText(
+                f"Done — label {label_b} merged into {label_a}. "
+                f"Label {label_b} no longer exists."
+            )
+            self._join_btn.setEnabled(True)
 
         timer.timeout.connect(_poll)
         timer.start(200)
