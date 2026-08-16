@@ -50,7 +50,7 @@ def _joint_bbox(b1, b2):
 
 
 def run_do3d_inference(volume, model_path, cellprob, flow, anisotropy, gpu=True,
-                        min_hole_size=0, min_size=15, niter=None):
+                        min_hole_size=0, min_size=15, niter=None, progress_cb=None):
     """Raw Cellpose-SAM do_3D inference. Returns an int32 label array.
 
     Convenience wrapper around predict_flows()+masks_from_flows() for a
@@ -63,10 +63,15 @@ def run_do3d_inference(volume, model_path, cellprob, flow, anisotropy, gpu=True,
     default and this project's prior, unexposed hardcoded value.
 
     niter : passed through to masks_from_flows() -- see its docstring.
-    None (default) resolves to Cellpose's own default of 200."""
+    None (default) resolves to Cellpose's own default of 200.
+
+    progress_cb : passed through to masks_from_flows() -- see its
+    docstring for why this one call matters (the step it announces is
+    otherwise completely silent, cellpose's own included)."""
     model, dP, cellprob_map, shape = predict_flows(volume, model_path, anisotropy, gpu=gpu)
     return masks_from_flows(model, dP, cellprob_map, shape, cellprob, flow,
-                             min_size=min_size, min_hole_size=min_hole_size, niter=niter)
+                             min_size=min_size, min_hole_size=min_hole_size, niter=niter,
+                             progress_cb=progress_cb)
 
 
 def predict_flows(volume, model_path, anisotropy, gpu=True):
@@ -181,7 +186,8 @@ def _make_capped_fill_holes(min_hole_size):
 
 
 def masks_from_flows(model, dP, cellprob, shape, cellprob_threshold, flow_threshold=0.4,
-                      min_size=15, max_size_fraction=0.4, niter=None, min_hole_size=0):
+                      min_size=15, max_size_fraction=0.4, niter=None, min_hole_size=0,
+                      progress_cb=None):
     """Cheap step: form instance masks from an already-computed flow field
     (see predict_flows()). do_3D=True is baked in -- this project's
     pipeline never uses 2D/stitch mode.
@@ -220,9 +226,26 @@ def masks_from_flows(model, dP, cellprob, shape, cellprob_threshold, flow_thresh
     min_hole_size : passed through to _make_capped_fill_holes() -- see
     that function's docstring. 0 (default) matches cellpose's own
     unconditional hole-filling exactly.
+
+    progress_cb(str), if given, is called once right before this step
+    starts. There's no way to report finer-grained progress during it:
+    neither this function nor cellpose's own follow_flows()/
+    compute_masks() (checked directly in cellpose/dynamics.py) log
+    anything while it runs, so without this call the entire niter-
+    scaled flow-following + hole-fill + small-object-removal step is
+    silent -- easy to mistake for a hang, especially at a raised niter,
+    since the caller's own "Running do_3D inference..." message (see
+    run_full_pipeline) already fired before the GPU network pass and
+    doesn't fire again until this whole step returns.
     """
     if niter is None:
         niter = 200
+    if progress_cb:
+        progress_cb(
+            f"Forming masks: flow-following ({niter} iterations) + "
+            f"hole-fill + small-object removal -- no further progress "
+            f"until this step finishes..."
+        )
     from cellpose import utils as _cp_utils
     _original_fill_holes = _cp_utils.fill_holes_and_remove_small_masks
     _cp_utils.fill_holes_and_remove_small_masks = _make_capped_fill_holes(min_hole_size)
@@ -546,11 +569,13 @@ def run_full_pipeline(volume, model_path, cellprob=-2.5, flow=0.4, anisotropy=5.
         model, dP, cellprob_map, shape = precomputed_flows
         _report(f"cellprob={cellprob}: forming masks from precomputed flows...")
         masks = masks_from_flows(model, dP, cellprob_map, shape, cellprob, flow,
-                                  min_size=min_size, min_hole_size=min_hole_size, niter=niter)
+                                  min_size=min_size, min_hole_size=min_hole_size, niter=niter,
+                                  progress_cb=_report)
     else:
         _report("Running do_3D inference...")
         masks = run_do3d_inference(volume, model_path, cellprob, flow, anisotropy, gpu=gpu,
-                                    min_hole_size=min_hole_size, min_size=min_size, niter=niter)
+                                    min_hole_size=min_hole_size, min_size=min_size, niter=niter,
+                                    progress_cb=_report)
     n0 = len(np.unique(masks[masks > 0]))
 
     _report(f"{n0} raw cells — 3-component GMM cleanup...")
