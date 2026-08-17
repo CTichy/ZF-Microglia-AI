@@ -4417,19 +4417,25 @@ class ZFMicrogliaAIWidget(QWidget):
                 "labeling options here."
             )
 
-        # Downstream label tools (Resort/Split/Save) only make sense once a
-        # creation option is applicable to the current selection — same
-        # "based on what the user selects" logic, cascaded one step further.
-        creation_available = self._cellpose_group.isVisible() or self._pixel_classifier_group.isVisible()
-        self._downstream_label_tools.setVisible(creation_available)
-
-        # Statistics needs an actual Labels layer to operate on — a
-        # different, more direct condition than "is a creation tool shown",
-        # since labels can persist even after switching the active layer.
-        # The tab itself always stays visible (explain instead of hide, per
-        # explicit instruction) -- _update_stats_tab_content swaps its
-        # content for an explanatory hint instead.
+        # Downstream label tools (Resort/Remove Debris/Split/Join/Save) work
+        # directly on whatever Labels layer exists — none of them are
+        # route-specific (unlike the Cellpose-SAM-only "Re-run This Cell
+        # Only", which stays inside _cellpose_group and is correctly gated
+        # by route). Gating this group on _active_layer()'s route suffix was
+        # wrong: _active_layer() only ever returns an Image layer (it falls
+        # back to the topmost one), so selecting the Labels layer itself —
+        # exactly what "Use selected" requires for Split/Join — could hide
+        # this whole group if the fallback Image layer's suffix didn't
+        # match either route. Same has_labels condition Statistics already
+        # uses below, since labels can persist even after switching the
+        # active layer.
         has_labels = any(isinstance(l, napari.layers.Labels) for l in self._viewer.layers)
+        self._downstream_label_tools.setVisible(has_labels)
+
+        # Statistics needs an actual Labels layer to operate on. The tab
+        # itself always stays visible (explain instead of hide, per explicit
+        # instruction) -- _update_stats_tab_content swaps its content for an
+        # explanatory hint instead.
         self._update_stats_tab_content(has_labels)
 
     # ------------------------------------------------------------------ #
