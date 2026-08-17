@@ -135,7 +135,7 @@ If you don't have a checkpoint yet, use the **Pixel Classifier** instead — it 
 
 1. Open a terminal and type `napari` to launch it.
 2. In the napari menu bar, click **Plugins**.
-3. Click **Main Panel (ZF-Microglia-AI)**.
+3. Click **ZF-Microglia-ToolKit (ZF-Microglia-AI)**.
 4. A panel appears on the right side with tabs: **Skin Remover**, **Create Labels**, **Statistics** (always visible — shows an explanatory hint in place of its controls until at least one Labels layer exists), **AI Tools** (always available — shows a disclaimer instead of hiding the tab if your GPU is missing or under the recommended 8GB, see [Section 8](#8-tab-4--ai-tools)), and **Sweeps & Utilities** (Section 9).
 
 ---
@@ -1375,7 +1375,7 @@ Any SMTP server that supports SSL on a fixed port works the same way — just ch
 
 ### Step 1 — Open your file
 
-1. Open the plugin (Plugins → Main Panel (ZF-Microglia-AI)) in napari.
+1. Open the plugin (Plugins → ZF-Microglia-ToolKit (ZF-Microglia-AI)) in napari.
 2. Click **Open TIF / IMS file** and select your confocal stack.
 3. All channels appear as layers.
 4. **Click the microglia channel** (usually ch1, green) in the Layers panel.

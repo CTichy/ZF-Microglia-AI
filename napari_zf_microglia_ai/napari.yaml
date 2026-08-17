@@ -10,7 +10,7 @@ contributions:
       title: Open confocal stack (TIF / IMS)
   widgets:
     - command: napari-zf-microglia-ai.zf_microglia_ai_widget
-      display_name: Main Panel
+      display_name: ZF-Microglia-ToolKit
   readers:
     - command: napari-zf-microglia-ai.get_reader
       filename_patterns:

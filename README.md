@@ -48,7 +48,7 @@ conda activate zf-microglia-ai
 napari
 ```
 
-Then: **Plugins → Main Panel (ZF-Microglia-AI)**
+Then: **Plugins → ZF-Microglia-ToolKit (ZF-Microglia-AI)**
 
 ---
 
