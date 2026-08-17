@@ -1585,6 +1585,9 @@ class ZFMicrogliaAIWidget(QWidget):
         self._cp_relabel_id_spin = QSpinBox()
         self._cp_relabel_id_spin.setRange(1, 1_000_000)
         cp_relabel_row.addWidget(self._cp_relabel_id_spin)
+        self._cp_relabel_use_sel_btn = QPushButton("Use selected")
+        self._cp_relabel_use_sel_btn.setFixedWidth(90)
+        cp_relabel_row.addWidget(self._cp_relabel_use_sel_btn)
         cpg.addLayout(cp_relabel_row)
 
         self._cp_relabel_btn = QPushButton("Re-run This Cell Only")
@@ -3355,6 +3358,7 @@ class ZFMicrogliaAIWidget(QWidget):
         self._cp_model_browse_btn.clicked.connect(self._on_browse_cp_model)
         self._cp_run_btn.clicked.connect(self._on_run_cellpose_seg)
         self._cp_relabel_btn.clicked.connect(self._on_rerun_single_cell)
+        self._cp_relabel_use_sel_btn.clicked.connect(self._on_use_selected_label_rerun)
         self._kr_img_browse_btn.clicked.connect(self._on_kr_browse_img)
         self._kr_gt_browse_btn.clicked.connect(self._on_kr_browse_gt)
         self._kr_run_btn.clicked.connect(self._on_kr_run_sweep)
@@ -5271,6 +5275,20 @@ class ZFMicrogliaAIWidget(QWidget):
             return
         self._split_label_spin.setValue(sel)
         self._split_status_lbl.setText(f"Target set to label {sel}.")
+
+    def _on_use_selected_label_rerun(self):
+        """Copy the currently selected label from the active Labels layer
+        into the Re-run This Cell Only target field."""
+        lyr = self._active_labels_layer()
+        if lyr is None:
+            self._cp_status_lbl.setText("No Labels layer selected.")
+            return
+        sel = int(lyr.selected_label)
+        if sel == 0:
+            self._cp_status_lbl.setText("Selected label is 0 (background).")
+            return
+        self._cp_relabel_id_spin.setValue(sel)
+        self._cp_status_lbl.setText(f"Re-run target set to label {sel}.")
 
     def _on_split_label(self):
         lyr = self._active_labels_layer()
