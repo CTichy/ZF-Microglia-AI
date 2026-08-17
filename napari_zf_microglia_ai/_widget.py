@@ -4380,42 +4380,47 @@ class ZFMicrogliaAIWidget(QWidget):
 
     def _update_labels_section_visibility(self):
         """
-        Show only the labeling tool that matches the active layer's
-        background-removal mode (by filename suffix, see _BG_SUFFIX):
-          _ExtRm    -> Cellpose-SAM Segmentation (this pipeline was always
-                       run on outside-brain-only-removed layers all session)
-          _NoBG     -> Pixel Classifier (globally background-removed —
-                       what the union-find tool was designed for)
-          _RndFill  -> neither (presentation/visualization output only,
-                       not meant to be labeled)
-          anything else (raw layer, no recognized suffix) -> neither,
-                       with a hint explaining what's needed
-        """
-        lyr = self._active_layer()
-        name = lyr.name if lyr is not None else ""
+        Show each route's labeling tool based on whether a layer with that
+        route's background-removal suffix exists anywhere in the viewer —
+        not just whether it's the single currently-active layer (see
+        _BG_SUFFIX):
+          _ExtRm present -> show Cellpose-SAM Segmentation
+          _NoBG  present -> show Pixel Classifier
+          both present   -> both shown together (e.g. comparing routes on
+                             the same fish)
+          neither        -> neither, with a hint explaining what's needed
 
-        if name.endswith("_ExtRm"):
-            self._cellpose_group.setVisible(True)
-            self._pixel_classifier_group.setVisible(False)
+        Existence-based rather than active-layer-based per explicit
+        instruction: the old logic only ever looked at _active_layer()
+        (which only returns Image layers, falling back to the topmost one),
+        so selecting the Labels layer itself -- or simply having both an
+        _ExtRm and a _NoBG layer loaded at once -- could hide a route's
+        tools even though a matching layer was right there in the viewer.
+        """
+        img_names = [
+            lyr.name for lyr in self._viewer.layers
+            if isinstance(lyr, napari.layers.Image)
+        ]
+        has_extrm = any(n.endswith("_ExtRm") for n in img_names)
+        has_nobg  = any(n.endswith("_NoBG") for n in img_names)
+
+        self._cellpose_group.setVisible(has_extrm)
+        self._pixel_classifier_group.setVisible(has_nobg)
+
+        if has_extrm and has_nobg:
             self._labels_mode_hint.setText(
-                f'Active layer "{name}" ends in _ExtRm → showing Cellpose-SAM Segmentation.'
+                "Both _ExtRm and _NoBG layers are present → showing "
+                "Cellpose-SAM Segmentation and Pixel Classifier."
             )
-        elif name.endswith("_NoBG"):
-            self._cellpose_group.setVisible(False)
-            self._pixel_classifier_group.setVisible(True)
+        elif has_extrm:
             self._labels_mode_hint.setText(
-                f'Active layer "{name}" ends in _NoBG → showing Pixel Classifier.'
+                "An _ExtRm layer is present → showing Cellpose-SAM Segmentation."
             )
-        elif name.endswith("_RndFill"):
-            self._cellpose_group.setVisible(False)
-            self._pixel_classifier_group.setVisible(False)
+        elif has_nobg:
             self._labels_mode_hint.setText(
-                f'Active layer "{name}" ends in _RndFill (presentation/visualization '
-                f"output only) — no labeling tool applies here."
+                "A _NoBG layer is present → showing Pixel Classifier."
             )
         else:
-            self._cellpose_group.setVisible(False)
-            self._pixel_classifier_group.setVisible(False)
             self._labels_mode_hint.setText(
                 "Select a brain_only layer from Tab 1 (_ExtRm or _NoBG) to see "
                 "labeling options here."
