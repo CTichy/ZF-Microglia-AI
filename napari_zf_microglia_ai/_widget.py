@@ -1448,12 +1448,17 @@ class ZFMicrogliaAIWidget(QWidget):
         cpniter_note = QLabel(
             "  Euler-integration steps each voxel's flow trajectory gets "
             "before instances are formed. 200 is Cellpose's own default. "
-            "Raise this if a cell comes out looking porous/\"pumice "
-            "stone\" in 3D (parallel banding per 2D slice) -- a sign "
-            "some voxels didn't fully converge within 200 steps, most "
-            "likely on structurally complex cells under this pipeline's "
-            "heavy Z-anisotropy stretch. See the Solidity warning below "
-            "after a run for which cells, if any, are affected."
+            "If a cell comes out looking porous/\"pumice stone\" in 3D "
+            "(parallel banding per 2D slice) -- see the Solidity warning "
+            "below after a run -- try raising Cellprob first (e.g. "
+            "toward -0.3): a faint cell's raw probability map is noisy "
+            "near a permissive threshold, letting marginal, unstable "
+            "voxels flicker in and out slice-by-slice before flow-"
+            "following even starts, which is the actual usual cause. "
+            "Raising Flow iterations alone rarely fixes it by itself "
+            "(confirmed empirically, 2026-08) -- worth trying together "
+            "with Cellprob on a Re-run This Cell Only pass, not instead "
+            "of it."
         )
         cpniter_note.setStyleSheet("color: #888; font-size: 10px;")
         cpniter_note.setWordWrap(True)
@@ -6352,8 +6357,10 @@ class ZFMicrogliaAIWidget(QWidget):
                 porous_note = (
                     f" WARNING: {len(porous)} cell(s) look porous/skeletonized "
                     f"(solidity < {sol_thr:.2f}): {ids_str} -- select these label "
-                    f"IDs in the layer to inspect; try raising Flow iterations "
-                    f"(niter) and re-running if confirmed."
+                    f"IDs in the layer to inspect. Try Re-run This Cell Only with "
+                    f"a stricter Cellprob (e.g. -0.3) first -- usually a faint "
+                    f"cell's noisy probability map, not a flow-convergence issue; "
+                    f"raising Flow iterations alone rarely fixes it by itself."
                 )
 
             self._cp_status_lbl.setText(
@@ -6521,7 +6528,8 @@ class ZFMicrogliaAIWidget(QWidget):
                 porous_note = (
                     f" Still porous after re-run: "
                     + ", ".join(f"#{lid} (solidity={sol:.2f})" for lid, sol in info["porous_cells"].items())
-                    + " -- try a higher niter."
+                    + " -- try a stricter Cellprob (e.g. -0.3) instead of/alongside "
+                    "a higher niter; usually the more effective lever for a faint cell."
                 )
             self._cp_status_lbl.setText(
                 f"Done — label {label_id} replaced with {info['n_new']} new label(s): "

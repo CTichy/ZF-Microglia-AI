@@ -215,13 +215,18 @@ def masks_from_flows(model, dP, cellprob, shape, cellprob_threshold, flow_thresh
 
     Raising niter above 200 gives each voxel's flow trajectory more
     Euler-integration steps to fully converge before follow_flows() bins
-    final positions into instances -- relevant for structurally complex
-    cells under this pipeline's heavy Z-anisotropy stretch, where some
-    voxels can fail to converge within 200 steps and get scattered into
-    inconsistent bins near their true instance, producing a porous/
-    "pumice stone" 3D shape (parallel banding on any given 2D slice) for
-    that one cell instead of a solid blob. See compute_porosity() below
-    for a way to detect this after the fact rather than guessing.
+    final positions into instances -- was the original hypothesis for
+    the porous/"pumice stone" 3D shape (parallel banding on any given 2D
+    slice) some cells show instead of a solid blob, but empirically
+    (2026-08) niter alone rarely fixes it. The actual usual cause is a
+    faint cell's raw cellprob map being noisy near cellprob_threshold --
+    inds (the pixels follow_flows() even considers) is computed from
+    that threshold *before* this function runs, so marginal, unstable
+    voxels flicker in and out slice-by-slice regardless of niter. A
+    stricter (higher) cellprob_threshold on that one cell (e.g. -0.3
+    instead of a permissive -2.5) is the more effective lever -- see
+    compute_porosity() below for a way to detect the symptom after the
+    fact rather than guessing which cells need it.
 
     min_hole_size : passed through to _make_capped_fill_holes() -- see
     that function's docstring. 0 (default) matches cellpose's own
@@ -494,16 +499,17 @@ def compute_porosity(masks, solidity_threshold=0.5):
 
     A solid blob sits close to 1.0. A "pumice stone"/skeletonized label
     -- voxels scattered inside a much larger convex envelope than they
-    actually fill -- sits well below it. This is the shape Cellpose's
-    do_3D flow-following produces when some voxels' trajectories fail
-    to fully converge within niter steps on a structurally complex cell
-    (see masks_from_flows()'s niter docstring) -- an algorithmic
-    convergence artifact, not something this pipeline's own merge/
-    cleanup stages can introduce or repair.
+    actually fill -- sits well below it. Usually a faint cell's raw
+    cellprob map being noisy near cellprob_threshold, not a niter/
+    flow-convergence issue as first suspected -- see
+    masks_from_flows()'s niter docstring for both the original
+    hypothesis and the empirical correction (2026-08). Not something
+    this pipeline's own merge/cleanup stages can introduce or repair.
 
     Returns {label_id: solidity, ...} for every label below
-    solidity_threshold -- a list of suspects to inspect/re-run (e.g. at
-    a higher niter), not an automatic fix. There is no safe way to
+    solidity_threshold -- a list of suspects to inspect/re-run (try a
+    stricter cellprob_threshold on that cell first, e.g. via Re-run
+    This Cell Only), not an automatic fix. There is no safe way to
     "repair" a label like this in place."""
     from skimage.measure import regionprops
     flagged = {}
