@@ -1854,6 +1854,7 @@ class ZFMicrogliaAIWidget(QWidget):
         self._sort_combo.addItem("Centroid Z", "centroid_z")
         self._sort_combo.addItem("Centroid Y", "centroid_y")
         self._sort_combo.addItem("Centroid X", "centroid_x")
+        self._sort_combo.addItem("Complexity", "complexity")
         sort_row.addWidget(self._sort_combo)
         dlt.addLayout(sort_row)
 

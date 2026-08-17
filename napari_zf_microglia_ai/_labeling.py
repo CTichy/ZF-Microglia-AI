@@ -284,10 +284,11 @@ def resort_labels(
     Parameters
     ----------
     labels   : (Z, Y, X) int32 ndarray — existing label volume (0 = background)
-    sort_by  : "size" | "centroid_z" | "centroid_y" | "centroid_x"
+    sort_by  : "size" | "centroid_z" | "centroid_y" | "centroid_x" | "complexity"
     reverse  : reverse the natural sort order
-                 size      — natural = descending (largest = label 1)
-                 centroid  — natural = ascending  (smallest coord = label 1)
+                 size        — natural = descending (largest = label 1)
+                 centroid    — natural = ascending  (smallest coord = label 1)
+                 complexity  — natural = descending (most branched = label 1)
 
     Returns
     -------
@@ -307,6 +308,32 @@ def resort_labels(
         counts = np.bincount(labels.ravel().astype(np.int64), minlength=max_lbl + 1)
         keyed  = [(int(counts[lbl]), int(lbl)) for lbl in label_list]
         # natural: descending (largest first → label 1)
+        keyed.sort(key=lambda t: t[0], reverse=not reverse)
+    elif sort_by == "complexity":
+        # "Complexity" = skeleton branch count, the same morphology proxy
+        # this project has used throughout (see microglia_cellpose.md) to
+        # find genuinely branched/ramified cells rather than just large
+        # ones. Branch *count* is scale-independent (pure topology), so a
+        # dummy (1,1,1) spacing is fine here -- unlike Statistics' own
+        # _skeleton_stats() use, no physical branch length is needed.
+        from scipy.ndimage import find_objects
+        from ._statistics import _skeleton_stats
+
+        slices = find_objects(labels, max_label=max_lbl)
+
+        def _branch_count(lbl):
+            sl = slices[lbl - 1]
+            if sl is None:
+                return lbl, 0
+            binary = labels[sl] == lbl
+            n_branches, *_ = _skeleton_stats(binary, (1.0, 1.0, 1.0))
+            return lbl, n_branches
+
+        with ThreadPoolExecutor(max_workers=max(1, (os.cpu_count() or 4) // 2)) as ex:
+            results = list(ex.map(_branch_count, label_list))
+        counts = dict(results)
+        keyed  = [(counts[lbl], int(lbl)) for lbl in label_list]
+        # natural: descending (most branched first → label 1)
         keyed.sort(key=lambda t: t[0], reverse=not reverse)
     else:
         axis_map = {"centroid_z": 0, "centroid_y": 1, "centroid_x": 2}
