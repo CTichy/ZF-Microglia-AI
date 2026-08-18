@@ -175,18 +175,55 @@ def run_krendl_sweep(volume, gt_labels, model_path, cellprobs, large_contacts,
     # ties by mean_iou then mean_dice picks the most precise segmentation
     # among equally-good-on-Score candidates, instead of just the first
     # one encountered in grid order.
+    #
+    # A point with tp==0 detects no real cells at all -- score_against_gt()
+    # then reports mean_iou=mean_dice=0.0 (nothing to average), which can
+    # still tie or even "win" against a genuinely-detecting point whose FPs
+    # made its own Score just as bad or worse. That's never a usable
+    # result, so exclude tp==0 points from the winner search entirely
+    # unless literally every grid point detected nothing (in which case
+    # there's no better answer to give).
+    non_degenerate = {k: v for k, v in results.items() if v["tp"] > 0}
+    candidates = non_degenerate if non_degenerate else results
     best_point = (
-        max(results, key=lambda k: (results[k]["score"], results[k]["mean_iou"], results[k]["mean_dice"]))
-        if results else None
+        max(candidates, key=lambda k: (results[k]["score"], results[k]["mean_iou"], results[k]["mean_dice"]))
+        if candidates else None
     )
 
     return dict(grid=grid, results=results, best_point=best_point,
                 gt_min_used=gt_min, min_hole_size_used=min_hole_size, cancelled=cancelled)
 
 
+def _grid_table(sweep, cellprobs, large_contacts, value_key, fmt, current_large_contact):
+    """Build one metric's 2D grid table (rows = large_contact, columns =
+    cellprob). Shared by Score/MeanIoU/MeanDice below so the three tables
+    stay in lockstep -- same column layout, same missing-point handling."""
+    header = f"{'LrgCnt':>8} | " + " | ".join(f"cp={c:>5} " for c in cellprobs)
+    lines = [header, "-" * len(header)]
+    for lc in large_contacts:
+        row = []
+        for cp in cellprobs:
+            point = (cp, lc)
+            if point in sweep["results"]:
+                row.append(fmt(sweep["results"][point][value_key]))
+            else:
+                row.append(f"{'--':>8}")
+        marker = "  <- current" if lc == current_large_contact else ""
+        lines.append(f"{lc:>8} | " + " | ".join(row) + marker)
+    lines.append("-" * len(header))
+    return lines
+
+
 def format_krendl_sweep_report(sweep, current_cellprob=None, current_large_contact=None):
     """Plain-text 2D grid report (rows = large_contact, columns = cellprob),
-    same spirit as the plugin's other sweep-tool reports."""
+    same spirit as the plugin's other sweep-tool reports.
+
+    Prints three grid tables -- Score, MeanIoU, MeanDice -- not just Score,
+    so the rise-peak-fall shape of cellprob's effect (too lenient -> noisy
+    FPs; sweet spot; too strict -> real signal gets excluded, IoU/Dice
+    collapse toward the TP=0 degenerate case) is directly visible in the
+    report instead of only inferable from where "Best" happens to land.
+    """
     grid = sweep["grid"]
     if not grid:
         return "No grid points completed."
@@ -206,17 +243,24 @@ def format_krendl_sweep_report(sweep, current_cellprob=None, current_large_conta
             f"(measured from this GT's own real holes)\n"
         )
 
-    header = f"{'LrgCnt':>8} | " + " | ".join(f"cp={c:>5} " for c in cellprobs)
-    lines = list(lines0) + [header, "-" * len(header)]
-    for lc in large_contacts:
-        row = []
-        for cp in cellprobs:
-            point = (cp, lc)
-            row.append(f"{sweep['results'][point]['score']:>+8.1f}" if point in sweep["results"] else f"{'--':>8}")
-        marker = "  <- current" if lc == current_large_contact else ""
-        lines.append(f"{lc:>8} | " + " | ".join(row) + marker)
-    lines.append("-" * len(header))
-    lines.append("(values are Score = TP - 0.5*(FP+FN))")
+    lines = list(lines0)
+    lines.append("Score = TP - 0.5*(FP+FN):")
+    lines += _grid_table(
+        sweep, cellprobs, large_contacts, "score",
+        lambda v: f"{v:>+8.1f}", current_large_contact,
+    )
+    lines.append("")
+    lines.append("Mean IoU % (matched cells only -- 0.0 at a fully degenerate/TP=0 point):")
+    lines += _grid_table(
+        sweep, cellprobs, large_contacts, "mean_iou",
+        lambda v: f"{v:>8.1f}", current_large_contact,
+    )
+    lines.append("")
+    lines.append("Mean Dice % (matched cells only -- 0.0 at a fully degenerate/TP=0 point):")
+    lines += _grid_table(
+        sweep, cellprobs, large_contacts, "mean_dice",
+        lambda v: f"{v:>8.1f}", current_large_contact,
+    )
 
     best = sweep["best_point"]
     if best is not None:
