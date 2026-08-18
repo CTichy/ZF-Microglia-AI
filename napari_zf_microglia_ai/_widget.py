@@ -31,6 +31,7 @@ from ._labeling import create_labels, resort_labels, split_label, join_labels, r
 from ._statistics import compute_stats
 from ._cellpose_seg import run_full_pipeline as _run_cellpose_pipeline
 from ._cellpose_seg import rerun_single_cell as _rerun_single_cell
+from ._cellpose_seg import masks_from_flows as _masks_from_flows
 from . import _pixel_sweep as _psw
 from . import _brain_sweep as _bsw
 from . import _gt_score as _gts
@@ -1594,18 +1595,24 @@ class ZFMicrogliaAIWidget(QWidget):
         cp_maxgap_note.setWordWrap(True)
         cp_maxgap_note.setStyleSheet("color: #888; font-size: 10px;")
         cpg.addWidget(cp_maxgap_note)
+        self._cp_maxgap_recommended_lbl = _add_recommended_label(
+            cpg, _root_cfg.get("cellpose_max_gap_um_recommended"), unit="µm", noun="Safe-merge max gap"
+        )
 
         cp_mincontact_row = QHBoxLayout()
         cp_mincontact_row.addWidget(QLabel("Safe-merge min contact (vox):"))
         self._cp_mincontact_slider = QLabeledSlider(Qt.Horizontal)
         self._cp_mincontact_slider.setMinimum(0)
         self._cp_mincontact_slider.setMaximum(200)
-        self._cp_mincontact_slider.setValue(10)
+        self._cp_mincontact_slider.setValue(_root_cfg.get("cellpose_min_contact_vox", 10))
         cp_mincontact_row.addWidget(self._cp_mincontact_slider)
         self._cp_mincontact_spin = _add_reliable_spinbox(
             cp_mincontact_row, self._cp_mincontact_slider, 0, 200, 1
         )
         cpg.addLayout(cp_mincontact_row)
+        self._cp_mincontact_recommended_lbl = _add_recommended_label(
+            cpg, _root_cfg.get("cellpose_min_contact_vox_recommended"), unit=" vox", noun="Safe-merge min contact"
+        )
 
         cp_gtmin_note = QLabel(
             "Safe-merge's \"already a whole cell\" floor is no longer a "
@@ -1693,31 +1700,52 @@ class ZFMicrogliaAIWidget(QWidget):
         self._cellpose_group = _make_collapsible(self._cellpose_group)
         t2.addWidget(self._cellpose_group)
 
-        # ── Verify Cellprob / Large-contact (GT sweep) — always visible, ──
-        # not gated by the active-layer auto-switch: works from explicit
-        # file paths. cellprob needs a real do_3D re-inference per value
-        # (GPU-preferred but falls back to CPU like the rest of Tab 2),
-        # large_contact is cheap post-processing swept on top of it.
-        krg = QGroupBox("Verify Cellprob / Large-contact (GT Sweep)")
+        # ── Calibrate Cellprob + Krendl Merge Parameters (GT sweep) ──────── #
+        # always visible, not gated by the active-layer auto-switch: works
+        # from explicit file paths.
+        #
+        # Deliberately does NOT sweep Large-contact (or max_gap/min_contact)
+        # alongside Cellprob -- scoring Cellprob against the FULLY corrected
+        # result (post GMM/Krendl/large-contact) entangles "best Cellprob"
+        # with whatever those merge parameters happen to be set to, circular
+        # if they haven't themselves been calibrated yet. Instead, one
+        # button does the whole correct-order chain in sequence, mirroring
+        # exactly what the 3-fish production validation run (2026-08-18)
+        # did by hand: (1) find the best Cellprob on raw voxel-level signal
+        # quality alone (binarized foreground vs. GT, instance identity
+        # ignored -- mirrors Tab 1's Verify MONAI Threshold/Erosion doing
+        # the identical thing for the brain mask), (2) generate raw cp_masks
+        # AT that winning Cellprob (reusing the same cached do_3D flows --
+        # zero extra network passes), (3) compare those cp_masks against GT
+        # to calibrate max_gap/min_contact (measure_merge_params_from_
+        # prediction()/recommend_merge_params()) -- GT labels which raw
+        # fragments are/aren't the same real cell, so the calibration comes
+        # from the network's own real fragmentation behaviour, not GT
+        # geometry alone (which has a real ambiguity: is the smallest gap
+        # between two GT cells actual biology, or just how the boundary
+        # happened to be drawn?).
+        krg = QGroupBox("Calibrate Cellprob + Krendl Merge Parameters (GT Sweep)")
         krl = QVBoxLayout()
         krl.setSpacing(6)
 
         kr_note = QLabel(
-            "Sweeps Cellprob x Large-contact merge against a full-fish GT "
-            "labels volume, scored with the same whole-fish Hungarian-"
-            "matched methodology as \"Score Against GT\" in Tab 3 (not a "
-            "handful of proxy cells). Uses this section's Safe-merge values "
-            "above — only Cellprob and Large-contact vary. do_3D's network "
-            "pass runs exactly ONCE for the whole sweep (~3h on a full-size "
-            "fish), not once per Cellprob value — Cellprob only feeds a "
-            "cheap re-thresholding step on the same predicted flow field, "
-            "so the grid costs roughly one do_3D call total regardless of "
-            "size. Flow threshold is not swept and has no user control "
-            "anywhere in this plugin: it has no effect under do_3D "
-            "(Cellpose only applies it in 2D/stitch mode), so it's fixed "
-            "internally purely to match do_3D's own call signature. "
-            "Safe-merge GT-min volume is also recalibrated automatically "
-            "from this GT's own smallest labeled cell."
+            "One button, three steps in the correct order: (1) sweeps "
+            "Cellprob against GT on raw voxel-level Dice/IoU (no GMM/"
+            "Krendl/large-contact run at all here -- avoids entangling "
+            "the Cellprob pick with not-yet-calibrated merge parameters); "
+            "(2) forms raw cp_masks at the winning Cellprob, reusing the "
+            "same cached do_3D flows from step 1 -- no extra network pass; "
+            "(3) compares those cp_masks against GT to jointly calibrate "
+            "max_gap/min_contact against Krendl safe-merge's real OR-"
+            "combined rule (gap<=max_gap OR contact>=min_contact), "
+            "minimizing total corrections (missed + false merges) rather "
+            "than avoiding one error type at any cost -- an over-merge is "
+            "fixable with Split Label, an under-merge with Join Labels. "
+            "do_3D's network pass runs exactly ONCE for the whole thing "
+            "(~3h on a full-size fish). Does NOT calibrate large_contact "
+            "(a separate, later merge stage operating on already-Krendl-"
+            "corrected data, not raw cp_masks) -- needs its own "
+            "measurement, not built yet."
         )
         kr_note.setWordWrap(True)
         kr_note.setStyleSheet("color: #888; font-size: 10px;")
@@ -1794,33 +1822,13 @@ class ZFMicrogliaAIWidget(QWidget):
             krl, "Cellprob", 1.0, 0.25, 0.5, 0.1
         )
 
-        kr_lc_row = QHBoxLayout()
-        kr_lc_row.addWidget(QLabel("Large-contact min:"))
-        self._kr_lcmin_spin = QSpinBox()
-        self._kr_lcmin_spin.setRange(1, 2000)
-        self._kr_lcmin_spin.setValue(10)
-        kr_lc_row.addWidget(self._kr_lcmin_spin)
-        krl.addLayout(kr_lc_row)
-        kr_lc_row2 = QHBoxLayout()
-        kr_lc_row2.addWidget(QLabel("max:"))
-        self._kr_lcmax_spin = QSpinBox()
-        self._kr_lcmax_spin.setRange(1, 2000)
-        self._kr_lcmax_spin.setValue(100)
-        kr_lc_row2.addWidget(self._kr_lcmax_spin)
-        kr_lc_row2.addWidget(QLabel("step:"))
-        self._kr_lcstep_spin = QSpinBox()
-        self._kr_lcstep_spin.setRange(1, 2000)
-        self._kr_lcstep_spin.setValue(30)
-        kr_lc_row2.addWidget(self._kr_lcstep_spin)
-        krl.addLayout(kr_lc_row2)
-
         self._kr_notify_cb = _make_notify_checkbox()
         krl.addWidget(self._kr_notify_cb)
 
         self._kr_is_gt_cb = _add_gt_checkbox(krl, "this sweep")
 
         kr_btn_row = QHBoxLayout()
-        self._kr_run_btn = QPushButton("Run Cellprob/LC Sweep")
+        self._kr_run_btn = QPushButton("Run Full Calibration")
         self._kr_run_btn.setStyleSheet("QPushButton { font-weight: bold; padding: 5px; }")
         kr_btn_row.addWidget(self._kr_run_btn)
         self._kr_stop_btn = QPushButton("Stop Sweep")
@@ -4849,6 +4857,23 @@ class ZFMicrogliaAIWidget(QWidget):
             return max(values)
         return sum(values) / len(values)
 
+    def _update_merge_stats_history(self, fish_key: str, merge_stats: dict) -> dict:
+        """Persist this fish's raw cp_masks-vs-GT merge_stats (the 4 gap/
+        contact sample lists from measure_merge_params_from_prediction)
+        and return a freshly-pooled recommend_merge_params() across every
+        fish calibrated so far.
+
+        Unlike _update_gt_history, each entry here is a dict of sample
+        lists, not a scalar -- max_gap/min_contact are jointly optimized
+        against the pooled OR-combined-rule sample set (see
+        recommend_merge_params), not averaged per-fish then combined.
+        """
+        history_key = "cellpose_merge_stats_history"
+        history = dict(self._state.get("config", {}).get(history_key, {}))
+        history[fish_key] = merge_stats
+        self._save_cfg(**{history_key: history})
+        return _ksw.recommend_merge_params(list(history.values()))
+
     def _on_browse_model(self):
         path_str, _ = QFileDialog.getOpenFileName(
             self,
@@ -6857,24 +6882,11 @@ class ZFMicrogliaAIWidget(QWidget):
             return
         cellprobs = list(np.round(np.arange(cp_min, cp_max + cp_step / 2, cp_step), 4))
 
-        lc_min = self._kr_lcmin_spin.value()
-        lc_max = self._kr_lcmax_spin.value()
-        lc_step = self._kr_lcstep_spin.value()
-        if lc_max < lc_min:
-            self._kr_status_lbl.setText("ERROR: Large-contact max must be >= min.")
-            return
-        large_contacts = list(range(lc_min, lc_max + 1, lc_step))
-
         anisotropy = self._kr_scalez_spin.value() / self._kr_scalexy_spin.value()
         scale_zyx = (self._kr_scalez_spin.value(), self._kr_scalexy_spin.value(), self._kr_scalexy_spin.value())
-        flow = _FLOW_THRESHOLD_FIXED
-        max_gap = self._cp_maxgap_slider.value()
-        min_contact = self._cp_mincontact_slider.value()
         min_size = self._cp_minsize_spin.value()
-        final_min_fraction = self._finalfrac_spin.value()
         gpu = torch.cuda.is_available()
         current_cellprob = self._cp_cellprob_slider.value()
-        current_large_contact = self._cp_largecontact_slider.value()
 
         sieve_on = self._kr_sieve_cb.isChecked()
         sieve_refine_steps = [
@@ -6895,23 +6907,28 @@ class ZFMicrogliaAIWidget(QWidget):
             try:
                 volume = tifffile.imread(img_path)
                 gt_labels = tifffile.imread(gt_path).astype(np.int32)
+                # min_hole_size measured from this GT's own real holes,
+                # same convention every other GT-sweep tool in this plugin
+                # uses -- not guessed, not left at masks_from_flows()'s own
+                # bare default.
+                min_hole_size = _psw.min_hole_size_from_gt(gt_labels)
+                _progress_cb(f"min_hole_size computed from this GT's own real holes: {min_hole_size} vox")
                 # do_3D's own progress is otherwise invisible for the ~3h
-                # this can take per Cellprob value -- see _live_progress.py.
+                # this can take -- see _live_progress.py.
                 with capture_live_output(_progress_cb):
                     if sieve_on:
                         precomputed_holder = [None]
 
                         def _run_stage(cp_values):
-                            sw = _ksw.run_krendl_sweep(
-                                volume, gt_labels, model_path, cp_values, large_contacts,
-                                flow=flow, anisotropy=anisotropy, max_gap=max_gap, min_contact=min_contact,
-                                min_size=min_size, final_min_fraction=final_min_fraction, scale_zyx=scale_zyx,
-                                gpu=gpu, progress_cb=_progress_cb, cancel_event=cancel_event,
+                            sw = _ksw.run_cellprob_voxel_sweep(
+                                volume, gt_labels, model_path, cp_values,
+                                anisotropy=anisotropy, gpu=gpu, min_size=min_size,
+                                min_hole_size=min_hole_size,
+                                progress_cb=_progress_cb, cancel_event=cancel_event,
                                 precomputed=precomputed_holder[0],
                             )
                             precomputed_holder[0] = sw["precomputed"]
-                            best_cp, _ = sw["best_point"] if sw["best_point"] else (None, None)
-                            return best_cp, sw
+                            return sw["best_cellprob"], sw
 
                         sieve = _sieve.run_sieve(
                             _run_stage, lo=cp_min, hi=cp_max, coarse_step=cp_step,
@@ -6921,11 +6938,40 @@ class ZFMicrogliaAIWidget(QWidget):
                         result["sweep"] = sieve["final_result"]
                         result["sieve_stages"] = sieve["stages"]
                     else:
-                        result["sweep"] = _ksw.run_krendl_sweep(
-                            volume, gt_labels, model_path, cellprobs, large_contacts,
-                            flow=flow, anisotropy=anisotropy, max_gap=max_gap, min_contact=min_contact,
-                            min_size=min_size, final_min_fraction=final_min_fraction, scale_zyx=scale_zyx,
-                            gpu=gpu, progress_cb=_progress_cb, cancel_event=cancel_event,
+                        result["sweep"] = _ksw.run_cellprob_voxel_sweep(
+                            volume, gt_labels, model_path, cellprobs,
+                            anisotropy=anisotropy, gpu=gpu, min_size=min_size,
+                            min_hole_size=min_hole_size,
+                            progress_cb=_progress_cb, cancel_event=cancel_event,
+                        )
+
+                    # Steps 2-3: at the now-fixed winning Cellprob, form raw
+                    # cp_masks reusing the SAME cached flows (zero extra
+                    # do_3D), then calibrate max_gap/min_contact against GT
+                    # from the network's own real fragmentation behaviour.
+                    # Skipped on cancellation/no-winner -- nothing to
+                    # calibrate against.
+                    sw = result["sweep"]
+                    if not sw.get("cancelled") and sw.get("best_cellprob") is not None:
+                        best_cp = sw["best_cellprob"]
+                        model, dP, cellprob_map, shape = sw["precomputed"]
+                        _progress_cb(f"Forming raw cp_masks at the winning cellprob={best_cp} "
+                                     f"(reusing cached flows, no re-inference)...")
+                        raw_cp_masks = _masks_from_flows(
+                            model, dP, cellprob_map, shape, best_cp, flow=0.4,
+                            min_size=min_size, min_hole_size=min_hole_size,
+                        )
+                        _progress_cb("Comparing raw cp_masks against GT to calibrate "
+                                     "max_gap/min_contact...")
+                        merge_stats = _ksw.measure_merge_params_from_prediction(
+                            raw_cp_masks, gt_labels, scale_zyx=scale_zyx,
+                        )
+                        result["merge_stats"] = merge_stats
+                        result["merge_recommendation"] = _ksw.recommend_merge_params([merge_stats])
+                        _progress_cb(
+                            f"Merge calibration: {merge_stats['n_gt_cells_fragmented']} GT cells "
+                            f"fragmented, {len(merge_stats['should_merge_gaps_um'])} should-merge / "
+                            f"{len(merge_stats['should_not_merge_gaps_um'])} should-not-merge samples."
                         )
             except Exception as exc:
                 result["error"] = f"{exc}\n{traceback.format_exc()}"
@@ -6937,22 +6983,22 @@ class ZFMicrogliaAIWidget(QWidget):
         self._krendl_sweep_job["progress"] = progress
         self._krendl_sweep_job["progress_lock"] = progress_lock
         self._krendl_sweep_job["current_cellprob"] = current_cellprob
-        self._krendl_sweep_job["current_large_contact"] = current_large_contact
         self._krendl_sweep_job["fish_key"] = Path(gt_path).stem
         self._kr_run_btn.setEnabled(False)
         self._kr_stop_btn.setEnabled(True)
         self._kr_report_view.clear()
         if sieve_on:
             self._kr_status_lbl.setText(
-                f"Sieve mode: stage 1 sweeps {len(cellprobs)} Cellprob x "
-                f"{len(large_contacts)} Large-contact values, then 2 more "
-                f"narrowing stages -- one do_3D pass reused throughout..."
+                f"Sieve mode: stage 1 sweeps {len(cellprobs)} Cellprob values "
+                f"(voxel-level Dice/IoU vs GT), then 2 more narrowing stages, "
+                f"then calibrates max_gap/min_contact from cp_masks at the "
+                f"winner -- one do_3D pass reused throughout..."
             )
         else:
             self._kr_status_lbl.setText(
-                f"Predicting flows once (do_3D, {'cuda' if gpu else 'cpu'}), then sweeping "
-                f"{len(cellprobs)} Cellprob x {len(large_contacts)} Large-contact values "
-                f"cheaply on top of it..."
+                f"Predicting flows once (do_3D, {'cuda' if gpu else 'cpu'}), sweeping "
+                f"{len(cellprobs)} Cellprob values (voxel-level Dice/IoU vs GT), then "
+                f"calibrating max_gap/min_contact from cp_masks at the winner..."
             )
         thread.start()
         self._start_krendl_sweep_polling()
@@ -6993,8 +7039,8 @@ class ZFMicrogliaAIWidget(QWidget):
                 self._kr_report_view.append("\n" + result["error"])
                 self._maybe_send_notify(
                     self._kr_notify_cb,
-                    "[ZF-Microglia-AI] Cellprob/Large-contact sweep failed",
-                    f"Verify Cellprob / Large-contact (GT Sweep) failed:\n\n{result['error']}",
+                    "[ZF-Microglia-AI] Cellprob sweep failed",
+                    f"Verify Cellprob (GT Sweep) failed:\n\n{result['error']}",
                 )
                 return
 
@@ -7004,97 +7050,88 @@ class ZFMicrogliaAIWidget(QWidget):
                 for i, st in enumerate(result["sieve_stages"], start=1):
                     parts.append(f"===== Sieve stage {i}/{len(result['sieve_stages'])} "
                                  f"(winner: cellprob={st['best_value']}) =====")
-                    parts.append(_ksw.format_krendl_sweep_report(
-                        st["result"], job["current_cellprob"], job["current_large_contact"]
+                    parts.append(_ksw.format_cellprob_voxel_sweep_report(
+                        st["result"], job["current_cellprob"]
                     ))
                 report = "\n\n".join(parts)
             else:
-                report = _ksw.format_krendl_sweep_report(sweep, job["current_cellprob"], job["current_large_contact"])
+                report = _ksw.format_cellprob_voxel_sweep_report(sweep, job["current_cellprob"])
+            merge_stats = result.get("merge_stats")
+            merge_rec = result.get("merge_recommendation")
+            if merge_stats is not None:
+                if merge_rec["max_gap_um"] is None:
+                    rec_line = "This fish alone has no fragmented GT cells to calibrate from."
+                else:
+                    rec_line = (
+                        f"This fish's own joint-optimal recommendation: "
+                        f"max_gap={merge_rec['max_gap_um']:.2f}µm, contact={merge_rec['contact_vox']}vox "
+                        f"(missed_merges={merge_rec['missed_merges']}, false_merges={merge_rec['false_merges']})"
+                    )
+                report += (
+                    "\n\n===== Krendl merge-parameter calibration (raw cp_masks vs GT) =====\n"
+                    f"GT cells fragmented by the network: {merge_stats['n_gt_cells_fragmented']}\n"
+                    f"Should-merge samples (real same-cell fragments): {len(merge_stats['should_merge_gaps_um'])}\n"
+                    f"Should-NOT-merge samples (different real cells / noise): {len(merge_stats['should_not_merge_gaps_um'])}\n"
+                    f"Fragments dropped as noise (too small to match any GT cell): {merge_stats['n_fragments_dropped_as_noise']}\n"
+                    f"{rec_line}"
+                )
             self._kr_report_view.setPlainText(report)
             if sweep.get("cancelled"):
                 self._kr_is_gt_cb.setChecked(False)
                 self._kr_status_lbl.setText("Sweep cancelled — partial results above.")
-            elif sweep["best_point"] is not None:
-                best_cp, best_lc = sweep["best_point"]
-                gt_min_used = sweep.get("gt_min_used")
-                min_hole_size_used = sweep.get("min_hole_size_used")
+            elif sweep["best_cellprob"] is not None:
+                best_cp = sweep["best_cellprob"]
                 fish_key = job["fish_key"]
                 # One-shot, same as Tab 3 Statistics.
                 is_gt = self._kr_is_gt_cb.isChecked()
                 self._kr_is_gt_cb.setChecked(False)
 
                 if is_gt:
-                    # Cellprob/Large-contact aren't safety floors -- each
-                    # fish's sweep just finds that fish's own local optimum,
-                    # so these are averaged across every fish swept so far,
-                    # same reasoning as BG Threshold/Erosion and Sigma XY/Z.
+                    # Cellprob isn't a safety floor -- each fish's sweep
+                    # just finds that fish's own local optimum, so it's
+                    # averaged across every fish swept so far, same
+                    # reasoning as BG Threshold/Erosion and Sigma XY/Z.
                     avg_cp = self._update_gt_history("cellpose_cellprob", fish_key, best_cp, mode="mean")
-                    avg_lc = self._update_gt_history("cellpose_large_contact", fish_key, best_lc, mode="mean")
                     self._cp_cellprob_slider.setValue(avg_cp)
-                    self._cp_largecontact_slider.setValue(round(avg_lc))
                     self._cp_cellprob_recommended_lbl.setText(f"  Recommended Cellprob threshold: {avg_cp:.3f}")
-                    self._cp_largecontact_recommended_lbl.setText(
-                        f"  Recommended Large-contact merge: {round(avg_lc)} vox"
-                    )
-                    cfg_kwargs = dict(
-                        cellpose_cellprob=avg_cp, cellpose_cellprob_recommended=avg_cp,
-                        cellpose_large_contact=round(avg_lc),
-                        cellpose_large_contact_recommended=round(avg_lc),
-                    )
-                    gt_min_note = ""
-                    if gt_min_used is not None:
-                        # gt_min IS a safety floor ("smallest volume trusted
-                        # as already a whole cell") -- and, since it's the
-                        # exact same measurement as the Pixel Classifier's
-                        # Min volume, it now shares that field's history
-                        # entirely rather than keeping its own separate one
-                        # (previously missing this never-rises treatment
-                        # altogether -- this sweep used to just overwrite it
-                        # with whatever this one run measured).
-                        recommended_gt_min = self._update_gt_history(
-                            "min_volume_vox", fish_key, gt_min_used, mode="min"
-                        )
-                        self._save_cfg(min_volume_recommended_vox=recommended_gt_min)
-                        self._area_value_lbl.setText(str(recommended_gt_min))
-                        cfg_kwargs["min_volume_vox"] = recommended_gt_min
-                        gt_min_note = (
-                            f", Min volume floor={recommended_gt_min} (this fish measured {gt_min_used})"
-                        )
-                    if min_hole_size_used is not None:
-                        # Same never-rising floor as the Pixel Classifier's
-                        # two GT sweeps already maintain for this exact
-                        # config key -- this route just hadn't measured its
-                        # own gt_labels for real holes before, always passing
-                        # through whatever the Min hole size slider already
-                        # held instead.
-                        recommended_hole = self._update_gt_history(
-                            "min_hole_size_vox", fish_key, min_hole_size_used, mode="min"
-                        )
-                        self._save_cfg(min_hole_size_recommended_vox=recommended_hole)
-                        if recommended_hole > self._hole_slider.maximum():
-                            self._hole_slider.setMaximum(recommended_hole)
-                            self._hole_spin.setMaximum(recommended_hole)
-                        self._hole_slider.setValue(recommended_hole)
-                        self._hole_recommended_lbl.setText(
-                            f"  Recommended floor (from GT sweeps so far): {recommended_hole} vox"
-                        )
-                        cfg_kwargs["min_hole_size_vox"] = recommended_hole
-                        gt_min_note += (
-                            f", Min hole size floor={recommended_hole} (this fish measured {min_hole_size_used})"
-                        )
-                    self._save_cfg(**cfg_kwargs)
-                    applied_note = (
-                        f" Applied average across all fish swept so far: cellprob={avg_cp:.3f}, "
-                        f"large_contact={avg_lc:.1f}{gt_min_note}. Saved."
-                    )
+                    self._save_cfg(cellpose_cellprob=avg_cp, cellpose_cellprob_recommended=avg_cp)
+                    applied_note = f" Applied average across all fish swept so far: cellprob={avg_cp:.3f}."
+
+                    if merge_stats is not None:
+                        # max_gap/min_contact are jointly optimized against
+                        # the pooled sample set across every fish
+                        # calibrated so far (recommend_merge_params), not
+                        # averaged per-fish then combined -- see
+                        # _update_merge_stats_history / [[feedback_plugin_ux]].
+                        pooled_rec = self._update_merge_stats_history(fish_key, merge_stats)
+                        if pooled_rec["max_gap_um"] is None:
+                            applied_note += (
+                                " No fragmented GT cells seen yet across any fish calibrated "
+                                "so far -- max_gap/min_contact left unchanged."
+                            )
+                        else:
+                            gap_val = pooled_rec["max_gap_um"]
+                            contact_val = int(round(pooled_rec["contact_vox"]))
+                            self._cp_maxgap_slider.setValue(gap_val)
+                            self._cp_maxgap_recommended_lbl.setText(f"  Recommended Safe-merge max gap: {gap_val:.2f}µm")
+                            self._save_cfg(cellpose_max_gap_um=gap_val, cellpose_max_gap_um_recommended=gap_val)
+                            self._cp_mincontact_slider.setValue(contact_val)
+                            self._cp_mincontact_recommended_lbl.setText(f"  Recommended Safe-merge min contact: {contact_val} vox")
+                            self._save_cfg(cellpose_min_contact_vox=contact_val, cellpose_min_contact_vox_recommended=contact_val)
+                            applied_note += (
+                                f" Merge params pooled across all fish calibrated so far: "
+                                f"max_gap={gap_val:.2f}µm, contact={contact_val}vox "
+                                f"(missed_merges={pooled_rec['missed_merges']}, false_merges={pooled_rec['false_merges']})."
+                            )
+                    applied_note += " Saved."
                 else:
                     applied_note = (
-                        " Not GT-verified — recommended values NOT updated "
+                        " Not GT-verified — recommended value(s) NOT updated "
                         "(tick \"This is verified ground truth\" before running to apply)."
                     )
                 self._kr_status_lbl.setText(
-                    f"This fish's best: cellprob={best_cp}, large_contact={best_lc} "
-                    f"(Score={sweep['results'][sweep['best_point']]['score']:+.1f})."
+                    f"This fish's best: cellprob={best_cp} "
+                    f"(Dice={sweep['results'][best_cp]['dice']:.1f}%)."
                     f"{applied_note}"
                 )
             else:
@@ -7103,8 +7140,8 @@ class ZFMicrogliaAIWidget(QWidget):
 
             self._maybe_send_notify(
                 self._kr_notify_cb,
-                "[ZF-Microglia-AI] Cellprob/Large-contact sweep done",
-                f"Verify Cellprob / Large-contact (GT Sweep) finished.\n\n{self._kr_status_lbl.text()}",
+                "[ZF-Microglia-AI] Cellprob sweep done",
+                f"Verify Cellprob (GT Sweep) finished.\n\n{self._kr_status_lbl.text()}",
             )
 
         timer.timeout.connect(_poll)

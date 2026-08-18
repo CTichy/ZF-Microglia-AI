@@ -167,6 +167,51 @@ def run_cellprob_voxel_sweep(volume, gt_labels, model_path, cellprobs,
                 precomputed=(model, dP, cellprob_map, shape))
 
 
+def format_cellprob_voxel_sweep_report(sweep, current_cellprob=None):
+    """Plain-text 1D report (one row per cellprob value) for
+    run_cellprob_voxel_sweep() -- single-axis, unlike
+    format_krendl_sweep_report()'s 2D grid, since this sweep has no
+    second parameter to grid against."""
+    results = sweep["results"]
+    if not results:
+        return "No grid points completed."
+
+    cellprobs = sorted(results.keys())
+    header = f"{'cellprob':>10} | {'Dice%':>8} | {'IoU%':>8} | {'Prec%':>8} | {'Recall%':>8}"
+    lines = [header, "-" * len(header)]
+    for cp in cellprobs:
+        r = results[cp]
+        marker = "  <- current" if current_cellprob is not None and cp == current_cellprob else ""
+        lines.append(
+            f"{cp:>10} | {r['dice']:>8.1f} | {r['iou']:>8.1f} | "
+            f"{r['precision']:>8.1f} | {r['recall']:>8.1f}{marker}"
+        )
+    lines.append("-" * len(header))
+    lines.append("(voxel-level Dice/IoU/precision/recall against binarized GT -- instance identity ignored)")
+
+    best = sweep.get("best_cellprob")
+    if best is not None:
+        r = results[best]
+        lines.append("")
+        lines.append(
+            f"Best: cellprob={best} (Dice={r['dice']:.1f}%, IoU={r['iou']:.1f}%, "
+            f"precision={r['precision']:.1f}%, recall={r['recall']:.1f}%)"
+        )
+        if current_cellprob is not None:
+            if current_cellprob in results and current_cellprob != best:
+                cr = results[current_cellprob]
+                lines.append(
+                    f"Current setting (cellprob={current_cellprob}): Dice={cr['dice']:.1f}% "
+                    f"-- the sweep found a better value above."
+                )
+            elif current_cellprob == best:
+                lines.append("Current setting matches the sweep's best -- confirmed.")
+
+    if sweep.get("cancelled"):
+        lines.append("\n(sweep was cancelled -- results above are partial.)")
+    return "\n".join(lines)
+
+
 def measure_merge_params_from_prediction(cp_masks, gt_labels, scale_zyx=(1.0, 0.174, 0.174),
                                           min_overlap_vox=5, search_pad_um=3.0):
     """
