@@ -40,7 +40,8 @@ def _dice_iou(pred_mask, gt_mask):
 
 
 def run_brain_sweep(volume_path, gt_brain_mask_path, model_path, device,
-                     thresholds, erosions, progress_cb=None, cancel_event=None):
+                     thresholds, erosions, progress_cb=None, cancel_event=None,
+                     precomputed=None):
     """
     Runs MONAI inference once, then sweeps every (threshold, erosion)
     combination cheaply on top of the resulting probability map, scoring
@@ -48,6 +49,14 @@ def run_brain_sweep(volume_path, gt_brain_mask_path, model_path, device,
 
     thresholds : list of MONAI Threshold values (0-1) to sweep
     erosions   : list of erosion radii (voxels) to sweep
+
+    precomputed: pass the pred_prob array returned in this call's own
+    result dict under 'precomputed' to skip predict_probability()
+    entirely and reuse an already-computed inference pass -- lets a
+    multi-stage coarse-to-fine sieve (see _sieve.py) against the same
+    volume+model share one inference call across every stage instead
+    of repeating it per stage. If None (default), predict_probability()
+    runs as before.
 
     progress_cb(str) / cancel_event: same contract as the other two
     sweep tools -- cancel_event is checked between threshold values;
@@ -58,16 +67,24 @@ def run_brain_sweep(volume_path, gt_brain_mask_path, model_path, device,
       'results': {(threshold, erosion): {dice, iou, precision, recall, pred_vox, gt_vox}},
       'best_point': (threshold, erosion) or None,   # highest Dice
       'cancelled': bool,
+      'precomputed': ndarray,   # pred_prob -- pass back in as precomputed=
+                                # on a later call against the same
+                                # volume+model to skip re-inference.
     }
     """
     volume = tifffile.imread(volume_path)
     gt_mask = tifffile.imread(gt_brain_mask_path).astype(bool)
 
-    if progress_cb:
-        progress_cb("running MONAI inference (once) ...")
-    pred_prob = predict_probability(volume, model_path, device)
-    if progress_cb:
-        progress_cb("inference done -- sweeping threshold/erosion (cheap from here) ...")
+    if precomputed is not None:
+        pred_prob = precomputed
+        if progress_cb:
+            progress_cb("reusing precomputed inference from an earlier call -- no re-inference ...")
+    else:
+        if progress_cb:
+            progress_cb("running MONAI inference (once) ...")
+        pred_prob = predict_probability(volume, model_path, device)
+        if progress_cb:
+            progress_cb("inference done -- sweeping threshold/erosion (cheap from here) ...")
 
     results = {}
     cancelled = False
@@ -96,7 +113,8 @@ def run_brain_sweep(volume_path, gt_brain_mask_path, model_path, device,
     grid = sorted(results.keys())
     best_point = max(results, key=lambda k: results[k]["dice"]) if results else None
 
-    return dict(grid=grid, results=results, best_point=best_point, cancelled=cancelled)
+    return dict(grid=grid, results=results, best_point=best_point, cancelled=cancelled,
+                precomputed=pred_prob)
 
 
 def format_brain_sweep_report(sweep, current_threshold=None, current_erosion=None):

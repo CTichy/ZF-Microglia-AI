@@ -124,6 +124,79 @@ def min_volume_from_gt(gt_labels):
     return int(counts.min())
 
 
+def min_intercell_gap_um(gt_labels, scale_zyx=(1.0, 0.174, 0.174), pad_um=15.0):
+    """Smallest real physical gap (surface-to-surface, microns) between
+    any two DISTINCT labeled cells in gt_labels.
+
+    This is the safety ceiling for Krendl safe-merge's max_gap
+    (_cellpose_seg.krendl_safe_merge): max_gap should never be set high
+    enough to bridge this distance, or it risks merging two genuinely
+    separate real cells into one -- the same never-rising-floor /
+    never-falling-ceiling reasoning this project already applies to
+    min_volume/gt_min (never DELETE something that could be a real
+    cell), just for gap distance instead of volume (never BRIDGE a gap
+    that could be two real cells).
+
+    Efficient by construction: crops to each cell's own bounding box
+    padded by pad_um (not a full-volume distance transform, which is
+    prohibitively slow on a full confocal stack -- a 2048x2048x101
+    volume timed out past 100s doing this naively). Only looks for
+    OTHER real cells within that padded crop; a cell whose true nearest
+    neighbor lies outside the padding is simply not captured for that
+    cell, which is fine for a MINIMUM -- genuinely close pairs (the ones
+    that matter here) are always well within a generous pad_um.
+
+    Returns dict: {
+      'min_gap_um': float or None (None if fewer than 2 real cells, or
+                    no pair ever falls within pad_um of each other),
+      'pair': (label_a, label_b) or None -- which two cells produced it,
+      'n_pairs_measured': int,
+    }
+    """
+    from scipy.ndimage import distance_transform_edt, find_objects
+
+    gt_labels = np.asarray(gt_labels)
+    label_ids = np.unique(gt_labels)
+    label_ids = label_ids[label_ids > 0]
+    if len(label_ids) < 2:
+        return dict(min_gap_um=None, pair=None, n_pairs_measured=0)
+
+    Z, Y, X = gt_labels.shape
+    pad_vox = tuple(int(np.ceil(pad_um / s)) for s in scale_zyx)
+    objs = find_objects(gt_labels, max_label=int(label_ids.max()))
+
+    best_gap = None
+    best_pair = None
+    n_measured = 0
+
+    for lbl in label_ids:
+        sl = objs[lbl - 1]
+        if sl is None:
+            continue
+        z0 = max(0, sl[0].start - pad_vox[0]); z1 = min(Z, sl[0].stop + pad_vox[0])
+        y0 = max(0, sl[1].start - pad_vox[1]); y1 = min(Y, sl[1].stop + pad_vox[1])
+        x0 = max(0, sl[2].start - pad_vox[2]); x1 = min(X, sl[2].stop + pad_vox[2])
+        crop = gt_labels[z0:z1, y0:y1, x0:x1]
+
+        this_mask = crop == lbl
+        other_mask = (crop > 0) & (crop != lbl)
+        if not other_mask.any():
+            continue
+
+        distmap = distance_transform_edt(~this_mask, sampling=scale_zyx)
+        other_labels_here = np.unique(crop[other_mask])
+        for other in other_labels_here:
+            if other <= lbl:
+                continue  # count each pair once
+            gap = float(distmap[crop == other].min())
+            n_measured += 1
+            if best_gap is None or gap < best_gap:
+                best_gap = gap
+                best_pair = (int(lbl), int(other))
+
+    return dict(min_gap_um=best_gap, pair=best_pair, n_pairs_measured=n_measured)
+
+
 def run_pixel_sweep(image_path, brain_mask_path, gt_labels_path,
                      bg_thresholds, erosions, scale_zyx,
                      sigma_xy=1.5, sigma_z=3.0, min_volume=None,

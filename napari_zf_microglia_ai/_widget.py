@@ -35,6 +35,7 @@ from . import _pixel_sweep as _psw
 from . import _brain_sweep as _bsw
 from . import _gt_score as _gts
 from . import _krendl_sweep as _ksw
+from . import _sieve
 from . import _gt_package as _gtp
 from ._gpu_check import GPU_HAS_CUDA, GPU_VRAM_GB, GPU_MEETS_RECOMMENDED, GPU_NAME, GPU_MSG
 from . import _gt_annotation as _gt
@@ -207,6 +208,72 @@ def _add_gt_checkbox(layout, hint):
     note.setStyleSheet("color: #888; font-size: 10px;")
     layout.addWidget(note)
     return cb
+
+
+def _add_sieve_controls(layout, axis_name, default_w2, default_s2, default_w3, default_s3):
+    """Shared "Sieve" opt-in for a sweep tool's primary continuous axis --
+    same idea across all four sweep tools that have one (MONAI Threshold,
+    BG Threshold, Smooth sigma XY, Cellprob): when ticked, the tool's own
+    min/max/step fields become stage 1 (the coarse full-range pass), then
+    two more narrowing stages run automatically, each centered on the
+    previous stage's winner and clipped to the axis's own min/max bounds
+    -- e.g. stage1 -6..6 step 1.0 -> stage2 winner+-1.0 step 0.25 ->
+    stage3 winner+-0.5 step 0.1, the exact narrowing validated by hand on
+    real GT data before this control existed. Only the primary axis given
+    here is narrowed across stages -- any secondary axis (e.g.
+    Large-contact, Erosion, sigma Z) keeps using its own single min/max/
+    step grid unchanged at every stage, same as it does today.
+
+    Returns (sieve_checkbox, stage2_width_spin, stage2_step_spin,
+             stage3_width_spin, stage3_step_spin).
+    """
+    cb = QCheckBox(f"Sieve: auto-narrow {axis_name} coarse -> fine (3 stages)")
+    cb.setChecked(False)
+    layout.addWidget(cb)
+
+    row2 = QHBoxLayout()
+    row2.addWidget(QLabel("  Stage 2 +/-:"))
+    w2 = QDoubleSpinBox()
+    w2.setDecimals(3)
+    w2.setRange(0.001, 1000.0)
+    w2.setValue(default_w2)
+    row2.addWidget(w2)
+    row2.addWidget(QLabel("step:"))
+    s2 = QDoubleSpinBox()
+    s2.setDecimals(3)
+    s2.setRange(0.001, 1000.0)
+    s2.setValue(default_s2)
+    row2.addWidget(s2)
+    layout.addLayout(row2)
+
+    row3 = QHBoxLayout()
+    row3.addWidget(QLabel("  Stage 3 +/-:"))
+    w3 = QDoubleSpinBox()
+    w3.setDecimals(3)
+    w3.setRange(0.001, 1000.0)
+    w3.setValue(default_w3)
+    row3.addWidget(w3)
+    row3.addWidget(QLabel("step:"))
+    s3 = QDoubleSpinBox()
+    s3.setDecimals(3)
+    s3.setRange(0.001, 1000.0)
+    s3.setValue(default_s3)
+    row3.addWidget(s3)
+    layout.addLayout(row3)
+
+    note = QLabel(
+        f"  Off by default. When ticked, {axis_name} min/max/step above "
+        "become stage 1 (the coarse pass); stages 2 and 3 each narrow "
+        "around the previous stage's winner using the widths/steps here, "
+        "clipped to stage 1's own min/max. The one expensive computation "
+        "(inference/do_3D, where applicable) still runs only once and is "
+        "reused across all 3 stages."
+    )
+    note.setWordWrap(True)
+    note.setStyleSheet("color: #888; font-size: 10px;")
+    layout.addWidget(note)
+
+    return cb, w2, s2, w3, s3
 
 
 def _is_valid_cellpose_checkpoint(path) -> bool:
@@ -778,6 +845,11 @@ class ZFMicrogliaAIWidget(QWidget):
         bs_er_row2.addWidget(self._bs_erstep_spin)
         bsl.addLayout(bs_er_row2)
 
+        (self._bs_sieve_cb, self._bs_sieve2_w_spin, self._bs_sieve2_s_spin,
+         self._bs_sieve3_w_spin, self._bs_sieve3_s_spin) = _add_sieve_controls(
+            bsl, "MONAI Threshold", 0.05, 0.01, 0.02, 0.005
+        )
+
         self._bs_is_gt_cb = _add_gt_checkbox(bsl, "this sweep")
 
         bs_btn_row = QHBoxLayout()
@@ -1129,6 +1201,11 @@ class ZFMicrogliaAIWidget(QWidget):
         ps_bg_row2.addWidget(self._ps_bgstep_spin)
         psl.addLayout(ps_bg_row2)
 
+        (self._ps_sieve_cb, self._ps_sieve2_w_spin, self._ps_sieve2_s_spin,
+         self._ps_sieve3_w_spin, self._ps_sieve3_s_spin) = _add_sieve_controls(
+            psl, "BG Threshold", 0.2, 0.05, 0.05, 0.01
+        )
+
         ps_er_row = QHBoxLayout()
         ps_er_row.addWidget(QLabel("Signal Erosion min:"))
         self._ps_ermin_spin = QSpinBox()
@@ -1315,6 +1392,11 @@ class ZFMicrogliaAIWidget(QWidget):
         sg_sxy_row2.addWidget(self._sg_sxystep_spin)
         sgl.addLayout(sg_sxy_row2)
 
+        (self._sg_sieve_cb, self._sg_sieve2_w_spin, self._sg_sieve2_s_spin,
+         self._sg_sieve3_w_spin, self._sg_sieve3_s_spin) = _add_sieve_controls(
+            sgl, "sigma XY", 0.5, 0.1, 0.2, 0.05
+        )
+
         sg_sz_row = QHBoxLayout()
         sg_sz_row.addWidget(QLabel("sigma Z min:"))
         self._sg_szmin_spin = QDoubleSpinBox()
@@ -1488,16 +1570,30 @@ class ZFMicrogliaAIWidget(QWidget):
         # trap and was removed rather than merely documented.
 
         cp_maxgap_row = QHBoxLayout()
-        cp_maxgap_row.addWidget(QLabel("Safe-merge max gap (vox):"))
-        self._cp_maxgap_slider = QLabeledSlider(Qt.Horizontal)
-        self._cp_maxgap_slider.setMinimum(0)
-        self._cp_maxgap_slider.setMaximum(20)
-        self._cp_maxgap_slider.setValue(2)
+        cp_maxgap_row.addWidget(QLabel("Safe-merge max gap (µm):"))
+        self._cp_maxgap_slider = QLabeledDoubleSlider(Qt.Horizontal)
+        self._cp_maxgap_slider.setDecimals(2)
+        self._cp_maxgap_slider.setMinimum(0.0)
+        self._cp_maxgap_slider.setMaximum(5.0)
+        self._cp_maxgap_slider.setSingleStep(0.05)
+        self._cp_maxgap_slider.setValue(_root_cfg.get("cellpose_max_gap_um", 1.0))
         cp_maxgap_row.addWidget(self._cp_maxgap_slider)
         self._cp_maxgap_spin = _add_reliable_spinbox(
-            cp_maxgap_row, self._cp_maxgap_slider, 0, 20, 1
+            cp_maxgap_row, self._cp_maxgap_slider, 0.0, 5.0, 0.05, decimals=2
         )
         cpg.addLayout(cp_maxgap_row)
+        cp_maxgap_note = QLabel(
+            "  Physical distance now (not voxels) -- previously this "
+            "slider's value was compared against a distance transform "
+            "computed with no voxel-scale correction, so \"2\" meant "
+            "2.0µm along Z but only 0.35µm in-plane (Z=1.0µm/vox, "
+            "XY=0.174µm/vox), a ~5.7x inconsistency purely from which "
+            "direction a fragment happened to break. Old voxel-based "
+            "values don't carry over -- needs recalibrating."
+        )
+        cp_maxgap_note.setWordWrap(True)
+        cp_maxgap_note.setStyleSheet("color: #888; font-size: 10px;")
+        cpg.addWidget(cp_maxgap_note)
 
         cp_mincontact_row = QHBoxLayout()
         cp_mincontact_row.addWidget(QLabel("Safe-merge min contact (vox):"))
@@ -1692,6 +1788,11 @@ class ZFMicrogliaAIWidget(QWidget):
         self._kr_cpstep_spin.setValue(0.25)
         kr_cp_row2.addWidget(self._kr_cpstep_spin)
         krl.addLayout(kr_cp_row2)
+
+        (self._kr_sieve_cb, self._kr_sieve2_w_spin, self._kr_sieve2_s_spin,
+         self._kr_sieve3_w_spin, self._kr_sieve3_s_spin) = _add_sieve_controls(
+            krl, "Cellprob", 1.0, 0.25, 0.5, 0.1
+        )
 
         kr_lc_row = QHBoxLayout()
         kr_lc_row.addWidget(QLabel("Large-contact min:"))
@@ -5039,6 +5140,12 @@ class ZFMicrogliaAIWidget(QWidget):
         current_threshold = self._thresh_slider.value()
         current_erosion = self._erosion_slider.value()
 
+        sieve_on = self._bs_sieve_cb.isChecked()
+        sieve_refine_steps = [
+            (self._bs_sieve2_w_spin.value(), self._bs_sieve2_s_spin.value()),
+            (self._bs_sieve3_w_spin.value(), self._bs_sieve3_s_spin.value()),
+        ]
+
         cancel_event = threading.Event()
         result = {}
         progress = {"lines": []}
@@ -5053,11 +5160,31 @@ class ZFMicrogliaAIWidget(QWidget):
                 # MONAI's sliding-window progress is otherwise invisible --
                 # see _live_progress.py.
                 with capture_live_output(_progress_cb):
-                    sweep = _bsw.run_brain_sweep(
-                        img_path, gt_path, model_path, device, thresholds, erosions,
-                        progress_cb=_progress_cb, cancel_event=cancel_event,
-                    )
-                result["sweep"] = sweep
+                    if sieve_on:
+                        precomputed_holder = [None]
+
+                        def _run_stage(th_values):
+                            sw = _bsw.run_brain_sweep(
+                                img_path, gt_path, model_path, device, th_values, erosions,
+                                progress_cb=_progress_cb, cancel_event=cancel_event,
+                                precomputed=precomputed_holder[0],
+                            )
+                            precomputed_holder[0] = sw["precomputed"]
+                            best_th, _ = sw["best_point"] if sw["best_point"] else (None, None)
+                            return best_th, sw
+
+                        sieve = _sieve.run_sieve(
+                            _run_stage, lo=th_min, hi=th_max, coarse_step=th_step,
+                            refine_steps=sieve_refine_steps, progress_cb=_progress_cb,
+                            cancel_check=cancel_event.is_set,
+                        )
+                        result["sweep"] = sieve["final_result"]
+                        result["sieve_stages"] = sieve["stages"]
+                    else:
+                        result["sweep"] = _bsw.run_brain_sweep(
+                            img_path, gt_path, model_path, device, thresholds, erosions,
+                            progress_cb=_progress_cb, cancel_event=cancel_event,
+                        )
             except Exception as exc:
                 result["error"] = f"{exc}\n{traceback.format_exc()}"
 
@@ -5073,10 +5200,17 @@ class ZFMicrogliaAIWidget(QWidget):
         self._bs_run_btn.setEnabled(False)
         self._bs_stop_btn.setEnabled(True)
         self._bs_report_view.clear()
-        self._bs_status_lbl.setText(
-            f"Running MONAI inference once, then sweeping {len(thresholds)} Threshold x "
-            f"{len(erosions)} Erosion values on {device} ..."
-        )
+        if sieve_on:
+            self._bs_status_lbl.setText(
+                f"Sieve mode: stage 1 sweeps {len(thresholds)} Threshold x "
+                f"{len(erosions)} Erosion values, then 2 more narrowing "
+                f"stages -- one inference pass reused throughout..."
+            )
+        else:
+            self._bs_status_lbl.setText(
+                f"Running MONAI inference once, then sweeping {len(thresholds)} Threshold x "
+                f"{len(erosions)} Erosion values on {device} ..."
+            )
         thread.start()
         self._start_brain_sweep_polling()
 
@@ -5117,7 +5251,17 @@ class ZFMicrogliaAIWidget(QWidget):
                 return
 
             sweep = result["sweep"]
-            report = _bsw.format_brain_sweep_report(sweep, job["current_threshold"], job["current_erosion"])
+            if "sieve_stages" in result:
+                parts = []
+                for i, st in enumerate(result["sieve_stages"], start=1):
+                    parts.append(f"===== Sieve stage {i}/{len(result['sieve_stages'])} "
+                                 f"(winner: threshold={st['best_value']}) =====")
+                    parts.append(_bsw.format_brain_sweep_report(
+                        st["result"], job["current_threshold"], job["current_erosion"]
+                    ))
+                report = "\n\n".join(parts)
+            else:
+                report = _bsw.format_brain_sweep_report(sweep, job["current_threshold"], job["current_erosion"])
             self._bs_report_view.setPlainText(report)
             if sweep.get("cancelled"):
                 self._bs_is_gt_cb.setChecked(False)
@@ -5869,6 +6013,12 @@ class ZFMicrogliaAIWidget(QWidget):
         current_erosion = self._sig_erosion_slider.value()
         final_min_fraction = self._finalfrac_spin.value()
 
+        sieve_on = self._ps_sieve_cb.isChecked()
+        sieve_refine_steps = [
+            (self._ps_sieve2_w_spin.value(), self._ps_sieve2_s_spin.value()),
+            (self._ps_sieve3_w_spin.value(), self._ps_sieve3_s_spin.value()),
+        ]
+
         cancel_event = threading.Event()
         result = {}
         progress = {"lines": []}
@@ -5880,14 +6030,33 @@ class ZFMicrogliaAIWidget(QWidget):
 
         def _worker():
             try:
-                sweep = _psw.run_pixel_sweep(
-                    img_path, mask_path, lbl_path, bg_thresholds, erosions, scale_zyx,
-                    sigma_xy=sigma_xy, sigma_z=sigma_z, min_volume=None, min_hole_size=None,
-                    final_min_fraction=final_min_fraction,
-                    n_cells=n_cells, pad_z=pad_z, pad_xy=pad_xy,
-                    progress_cb=_progress_cb, cancel_event=cancel_event,
-                )
-                result["sweep"] = sweep
+                if sieve_on:
+                    def _run_stage(bg_values):
+                        sw = _psw.run_pixel_sweep(
+                            img_path, mask_path, lbl_path, bg_values, erosions, scale_zyx,
+                            sigma_xy=sigma_xy, sigma_z=sigma_z, min_volume=None, min_hole_size=None,
+                            final_min_fraction=final_min_fraction,
+                            n_cells=n_cells, pad_z=pad_z, pad_xy=pad_xy,
+                            progress_cb=_progress_cb, cancel_event=cancel_event,
+                        )
+                        best_bg, _ = sw["best_point"] if sw["best_point"] else (None, None)
+                        return best_bg, sw
+
+                    sieve = _sieve.run_sieve(
+                        _run_stage, lo=bg_min, hi=bg_max, coarse_step=bg_step,
+                        refine_steps=sieve_refine_steps, progress_cb=_progress_cb,
+                        cancel_check=cancel_event.is_set,
+                    )
+                    result["sweep"] = sieve["final_result"]
+                    result["sieve_stages"] = sieve["stages"]
+                else:
+                    result["sweep"] = _psw.run_pixel_sweep(
+                        img_path, mask_path, lbl_path, bg_thresholds, erosions, scale_zyx,
+                        sigma_xy=sigma_xy, sigma_z=sigma_z, min_volume=None, min_hole_size=None,
+                        final_min_fraction=final_min_fraction,
+                        n_cells=n_cells, pad_z=pad_z, pad_xy=pad_xy,
+                        progress_cb=_progress_cb, cancel_event=cancel_event,
+                    )
             except Exception as exc:
                 result["error"] = f"{exc}\n{traceback.format_exc()}"
 
@@ -5903,10 +6072,17 @@ class ZFMicrogliaAIWidget(QWidget):
         self._ps_run_btn.setEnabled(False)
         self._ps_stop_btn.setEnabled(True)
         self._ps_report_view.clear()
-        self._ps_status_lbl.setText(
-            f"Sweeping {len(bg_thresholds)} BG Threshold x {len(erosions)} Signal Erosion "
-            f"values across up to {n_cells} cells ..."
-        )
+        if sieve_on:
+            self._ps_status_lbl.setText(
+                f"Sieve mode: stage 1 sweeps {len(bg_thresholds)} BG Threshold x "
+                f"{len(erosions)} Signal Erosion values across up to {n_cells} cells, "
+                f"then 2 more narrowing stages..."
+            )
+        else:
+            self._ps_status_lbl.setText(
+                f"Sweeping {len(bg_thresholds)} BG Threshold x {len(erosions)} Signal Erosion "
+                f"values across up to {n_cells} cells ..."
+            )
         thread.start()
         self._start_pixel_sweep_polling()
 
@@ -5947,7 +6123,17 @@ class ZFMicrogliaAIWidget(QWidget):
                 return
 
             sweep = result["sweep"]
-            report = _psw.format_pixel_sweep_report(sweep, job["current_bg"], job["current_erosion"])
+            if "sieve_stages" in result:
+                parts = []
+                for i, st in enumerate(result["sieve_stages"], start=1):
+                    parts.append(f"===== Sieve stage {i}/{len(result['sieve_stages'])} "
+                                 f"(winner: BG threshold={st['best_value']}) =====")
+                    parts.append(_psw.format_pixel_sweep_report(
+                        st["result"], job["current_bg"], job["current_erosion"]
+                    ))
+                report = "\n\n".join(parts)
+            else:
+                report = _psw.format_pixel_sweep_report(sweep, job["current_bg"], job["current_erosion"])
             self._ps_report_view.setPlainText(report)
             if sweep.get("cancelled"):
                 self._ps_is_gt_cb.setChecked(False)
@@ -6103,6 +6289,12 @@ class ZFMicrogliaAIWidget(QWidget):
         current_sz = self._sz_slider.value()
         final_min_fraction = self._finalfrac_spin.value()
 
+        sieve_on = self._sg_sieve_cb.isChecked()
+        sieve_refine_steps = [
+            (self._sg_sieve2_w_spin.value(), self._sg_sieve2_s_spin.value()),
+            (self._sg_sieve3_w_spin.value(), self._sg_sieve3_s_spin.value()),
+        ]
+
         cancel_event = threading.Event()
         result = {}
         progress = {"lines": []}
@@ -6114,14 +6306,33 @@ class ZFMicrogliaAIWidget(QWidget):
 
         def _worker():
             try:
-                sweep = _psw.run_sigma_sweep(
-                    img_path, mask_path, lbl_path, sigma_xy_values, sigma_z_values, scale_zyx,
-                    bg_threshold, erosion, min_volume=None, min_hole_size=None,
-                    final_min_fraction=final_min_fraction,
-                    n_cells=n_cells, pad_z=pad_z, pad_xy=pad_xy,
-                    progress_cb=_progress_cb, cancel_event=cancel_event,
-                )
-                result["sweep"] = sweep
+                if sieve_on:
+                    def _run_stage(sxy_values):
+                        sw = _psw.run_sigma_sweep(
+                            img_path, mask_path, lbl_path, sxy_values, sigma_z_values, scale_zyx,
+                            bg_threshold, erosion, min_volume=None, min_hole_size=None,
+                            final_min_fraction=final_min_fraction,
+                            n_cells=n_cells, pad_z=pad_z, pad_xy=pad_xy,
+                            progress_cb=_progress_cb, cancel_event=cancel_event,
+                        )
+                        best_sxy, _ = sw["best_point"] if sw["best_point"] else (None, None)
+                        return best_sxy, sw
+
+                    sieve = _sieve.run_sieve(
+                        _run_stage, lo=sxy_min, hi=sxy_max, coarse_step=sxy_step,
+                        refine_steps=sieve_refine_steps, progress_cb=_progress_cb,
+                        cancel_check=cancel_event.is_set,
+                    )
+                    result["sweep"] = sieve["final_result"]
+                    result["sieve_stages"] = sieve["stages"]
+                else:
+                    result["sweep"] = _psw.run_sigma_sweep(
+                        img_path, mask_path, lbl_path, sigma_xy_values, sigma_z_values, scale_zyx,
+                        bg_threshold, erosion, min_volume=None, min_hole_size=None,
+                        final_min_fraction=final_min_fraction,
+                        n_cells=n_cells, pad_z=pad_z, pad_xy=pad_xy,
+                        progress_cb=_progress_cb, cancel_event=cancel_event,
+                    )
             except Exception as exc:
                 result["error"] = f"{exc}\n{traceback.format_exc()}"
 
@@ -6137,11 +6348,18 @@ class ZFMicrogliaAIWidget(QWidget):
         self._sg_run_btn.setEnabled(False)
         self._sg_stop_btn.setEnabled(True)
         self._sg_report_view.clear()
-        self._sg_status_lbl.setText(
-            f"Sweeping {len(sigma_xy_values)} sigma XY x {len(sigma_z_values)} sigma Z "
-            f"values across up to {n_cells} cells (BG Threshold={bg_threshold}, "
-            f"Signal Erosion={erosion} held fixed) ..."
-        )
+        if sieve_on:
+            self._sg_status_lbl.setText(
+                f"Sieve mode: stage 1 sweeps {len(sigma_xy_values)} sigma XY x "
+                f"{len(sigma_z_values)} sigma Z values across up to {n_cells} cells, "
+                f"then 2 more narrowing stages..."
+            )
+        else:
+            self._sg_status_lbl.setText(
+                f"Sweeping {len(sigma_xy_values)} sigma XY x {len(sigma_z_values)} sigma Z "
+                f"values across up to {n_cells} cells (BG Threshold={bg_threshold}, "
+                f"Signal Erosion={erosion} held fixed) ..."
+            )
         thread.start()
         self._start_sigma_sweep_polling()
 
@@ -6182,7 +6400,17 @@ class ZFMicrogliaAIWidget(QWidget):
                 return
 
             sweep = result["sweep"]
-            report = _psw.format_sigma_sweep_report(sweep, job["current_sxy"], job["current_sz"])
+            if "sieve_stages" in result:
+                parts = []
+                for i, st in enumerate(result["sieve_stages"], start=1):
+                    parts.append(f"===== Sieve stage {i}/{len(result['sieve_stages'])} "
+                                 f"(winner: sigma XY={st['best_value']}) =====")
+                    parts.append(_psw.format_sigma_sweep_report(
+                        st["result"], job["current_sxy"], job["current_sz"]
+                    ))
+                report = "\n\n".join(parts)
+            else:
+                report = _psw.format_sigma_sweep_report(sweep, job["current_sxy"], job["current_sz"])
             self._sg_report_view.setPlainText(report)
             if sweep.get("cancelled"):
                 self._sg_is_gt_cb.setChecked(False)
@@ -6329,7 +6557,7 @@ class ZFMicrogliaAIWidget(QWidget):
                         cellprob=cellprob, flow=flow, anisotropy=anisotropy,
                         max_gap=max_gap, min_contact=min_contact, gt_min=gt_min,
                         large_contact=large_contact, min_hole_size=min_hole_size, min_size=min_size,
-                        final_min_fraction=final_min_fraction, niter=niter,
+                        final_min_fraction=final_min_fraction, niter=niter, scale_zyx=scale,
                         gpu=gpu, progress_cb=_progress,
                     )
                 result["labels"] = labels
@@ -6372,6 +6600,19 @@ class ZFMicrogliaAIWidget(QWidget):
             stats  = result["stats"]
             lname  = f"{stem}_cellpose_labels"
 
+            # Always saved, no checkbox -- raw pre-GMM/pre-Krendl cp_masks
+            # and the final Krendl-corrected result, every single run, not
+            # just when manually building a GT-correction package (see
+            # _gt_package.py, which used to be the only place these two
+            # ever got written to disk). Same naming convention as that
+            # package's own cp_masks_3D.tif/masks_corrected.tif so a fish
+            # processed through either path looks the same on disk.
+            out_dir = self._output_dir()
+            cp_masks_path = out_dir / f"{stem}_cp_masks.tif"
+            cp_masks_corrected_path = out_dir / f"{stem}_cp_masks_corrected.tif"
+            tifffile.imwrite(str(cp_masks_path), stats["raw_masks"].astype(np.int32))
+            tifffile.imwrite(str(cp_masks_corrected_path), labels.astype(np.int32))
+
             if lname in self._viewer.layers:
                 self._viewer.layers.remove(lname)
             self._viewer.add_labels(labels, name=lname, scale=scale)
@@ -6396,7 +6637,8 @@ class ZFMicrogliaAIWidget(QWidget):
             self._cp_status_lbl.setText(
                 f"Done — {stats['n_final']} cells "
                 f"(raw={stats['n_raw']} -> gmm={stats['n_after_gmm']} -> "
-                f"safe={stats['n_after_safe_merge']} -> large={stats['n_after_large_contact']})."
+                f"safe={stats['n_after_safe_merge']} -> large={stats['n_after_large_contact']}). "
+                f"Saved {cp_masks_path.name} and {cp_masks_corrected_path.name}."
                 f"{porous_note}"
             )
             self._cp_run_btn.setEnabled(True)
@@ -6522,7 +6764,7 @@ class ZFMicrogliaAIWidget(QWidget):
                     cellprob=cellprob, flow=flow, anisotropy=anisotropy,
                     max_gap=max_gap, min_contact=min_contact, large_contact=large_contact,
                     gt_min=gt_min, gpu=gpu, min_hole_size=min_hole_size, min_size=min_size,
-                    final_min_fraction=final_min_fraction, niter=niter,
+                    final_min_fraction=final_min_fraction, niter=niter, scale_zyx=scale,
                     progress_cb=_progress,
                 )
                 result["new_labels"] = new_labels
@@ -6624,6 +6866,7 @@ class ZFMicrogliaAIWidget(QWidget):
         large_contacts = list(range(lc_min, lc_max + 1, lc_step))
 
         anisotropy = self._kr_scalez_spin.value() / self._kr_scalexy_spin.value()
+        scale_zyx = (self._kr_scalez_spin.value(), self._kr_scalexy_spin.value(), self._kr_scalexy_spin.value())
         flow = _FLOW_THRESHOLD_FIXED
         max_gap = self._cp_maxgap_slider.value()
         min_contact = self._cp_mincontact_slider.value()
@@ -6632,6 +6875,12 @@ class ZFMicrogliaAIWidget(QWidget):
         gpu = torch.cuda.is_available()
         current_cellprob = self._cp_cellprob_slider.value()
         current_large_contact = self._cp_largecontact_slider.value()
+
+        sieve_on = self._kr_sieve_cb.isChecked()
+        sieve_refine_steps = [
+            (self._kr_sieve2_w_spin.value(), self._kr_sieve2_s_spin.value()),
+            (self._kr_sieve3_w_spin.value(), self._kr_sieve3_s_spin.value()),
+        ]
 
         cancel_event = threading.Event()
         result = {}
@@ -6649,13 +6898,35 @@ class ZFMicrogliaAIWidget(QWidget):
                 # do_3D's own progress is otherwise invisible for the ~3h
                 # this can take per Cellprob value -- see _live_progress.py.
                 with capture_live_output(_progress_cb):
-                    sweep = _ksw.run_krendl_sweep(
-                        volume, gt_labels, model_path, cellprobs, large_contacts,
-                        flow=flow, anisotropy=anisotropy, max_gap=max_gap, min_contact=min_contact,
-                        min_size=min_size, final_min_fraction=final_min_fraction,
-                        gpu=gpu, progress_cb=_progress_cb, cancel_event=cancel_event,
-                    )
-                result["sweep"] = sweep
+                    if sieve_on:
+                        precomputed_holder = [None]
+
+                        def _run_stage(cp_values):
+                            sw = _ksw.run_krendl_sweep(
+                                volume, gt_labels, model_path, cp_values, large_contacts,
+                                flow=flow, anisotropy=anisotropy, max_gap=max_gap, min_contact=min_contact,
+                                min_size=min_size, final_min_fraction=final_min_fraction, scale_zyx=scale_zyx,
+                                gpu=gpu, progress_cb=_progress_cb, cancel_event=cancel_event,
+                                precomputed=precomputed_holder[0],
+                            )
+                            precomputed_holder[0] = sw["precomputed"]
+                            best_cp, _ = sw["best_point"] if sw["best_point"] else (None, None)
+                            return best_cp, sw
+
+                        sieve = _sieve.run_sieve(
+                            _run_stage, lo=cp_min, hi=cp_max, coarse_step=cp_step,
+                            refine_steps=sieve_refine_steps, progress_cb=_progress_cb,
+                            cancel_check=cancel_event.is_set,
+                        )
+                        result["sweep"] = sieve["final_result"]
+                        result["sieve_stages"] = sieve["stages"]
+                    else:
+                        result["sweep"] = _ksw.run_krendl_sweep(
+                            volume, gt_labels, model_path, cellprobs, large_contacts,
+                            flow=flow, anisotropy=anisotropy, max_gap=max_gap, min_contact=min_contact,
+                            min_size=min_size, final_min_fraction=final_min_fraction, scale_zyx=scale_zyx,
+                            gpu=gpu, progress_cb=_progress_cb, cancel_event=cancel_event,
+                        )
             except Exception as exc:
                 result["error"] = f"{exc}\n{traceback.format_exc()}"
 
@@ -6671,11 +6942,18 @@ class ZFMicrogliaAIWidget(QWidget):
         self._kr_run_btn.setEnabled(False)
         self._kr_stop_btn.setEnabled(True)
         self._kr_report_view.clear()
-        self._kr_status_lbl.setText(
-            f"Predicting flows once (do_3D, {'cuda' if gpu else 'cpu'}), then sweeping "
-            f"{len(cellprobs)} Cellprob x {len(large_contacts)} Large-contact values "
-            f"cheaply on top of it..."
-        )
+        if sieve_on:
+            self._kr_status_lbl.setText(
+                f"Sieve mode: stage 1 sweeps {len(cellprobs)} Cellprob x "
+                f"{len(large_contacts)} Large-contact values, then 2 more "
+                f"narrowing stages -- one do_3D pass reused throughout..."
+            )
+        else:
+            self._kr_status_lbl.setText(
+                f"Predicting flows once (do_3D, {'cuda' if gpu else 'cpu'}), then sweeping "
+                f"{len(cellprobs)} Cellprob x {len(large_contacts)} Large-contact values "
+                f"cheaply on top of it..."
+            )
         thread.start()
         self._start_krendl_sweep_polling()
 
@@ -6721,7 +6999,17 @@ class ZFMicrogliaAIWidget(QWidget):
                 return
 
             sweep = result["sweep"]
-            report = _ksw.format_krendl_sweep_report(sweep, job["current_cellprob"], job["current_large_contact"])
+            if "sieve_stages" in result:
+                parts = []
+                for i, st in enumerate(result["sieve_stages"], start=1):
+                    parts.append(f"===== Sieve stage {i}/{len(result['sieve_stages'])} "
+                                 f"(winner: cellprob={st['best_value']}) =====")
+                    parts.append(_ksw.format_krendl_sweep_report(
+                        st["result"], job["current_cellprob"], job["current_large_contact"]
+                    ))
+                report = "\n\n".join(parts)
+            else:
+                report = _ksw.format_krendl_sweep_report(sweep, job["current_cellprob"], job["current_large_contact"])
             self._kr_report_view.setPlainText(report)
             if sweep.get("cancelled"):
                 self._kr_is_gt_cb.setChecked(False)

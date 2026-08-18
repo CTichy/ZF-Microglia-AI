@@ -31,7 +31,7 @@ def _load_model(model_path, device):
     ckpt = torch.load(str(model_path), map_location=device)
     model.load_state_dict(ckpt["model_state_dict"])
     model.eval()
-    print(f"   Model loaded from epoch {ckpt.get('epoch', '?')}: {model_path.name}")
+    print(f"   Model loaded from epoch {ckpt.get('epoch', '?')}: {Path(model_path).name}")
     return model
 
 

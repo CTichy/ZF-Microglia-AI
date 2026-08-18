@@ -326,12 +326,45 @@ def gmm_cleanup(masks):
     return masks, cutoff, removed
 
 
-def krendl_safe_merge(masks, max_gap=2, min_contact=10, gt_min=GT_MIN):
+def krendl_safe_merge(masks, max_gap=1.0, min_contact=10, gt_min=GT_MIN,
+                       scale_zyx=(1.0, 0.174, 0.174)):
     """Merge only sub-gt_min fragments into their nearest larger neighbour,
     when either close enough (<=max_gap) or touching with enough contact
-    area (>=min_contact). Returns (masks, n_merges)."""
+    area (>=min_contact). Returns (masks, n_merges).
+
+    max_gap is in PHYSICAL MICRONS, not voxels. Before this fix,
+    distance_transform_edt() was called with no sampling= argument, so it
+    measured pure voxel-index distance uniformly across Z/Y/X -- but this
+    project's voxels are anisotropic (Z=1.0um, XY=0.174um typical), so a
+    "2 voxel" gap meant 2.0um along Z but only 0.35um in-plane, a ~5.7x
+    inconsistency purely from which direction a fragment happened to
+    break. scale_zyx (Z, Y, X um/voxel) is now passed as EDT's sampling=,
+    so max_gap means the same physical distance regardless of
+    orientation. Old voxel-based max_gap values (e.g. 2) do NOT carry
+    over -- this needs recalibrating against real GT, e.g. via
+    _pixel_sweep.min_intercell_gap_um() as a safety ceiling (max_gap
+    should never be set high enough to bridge the smallest real gap
+    between two genuinely distinct GT cells).
+
+    min_contact is still a raw voxel COUNT (not yet anisotropy-corrected
+    to a physical area) -- see krendl_safe_merge's own callers/sweep
+    tools for why this matters far less in practice: at any max_gap
+    covering the smallest possible touching-pair distance (the smallest
+    single voxel face, ~0.174um in-plane), every directly-touching pair
+    already satisfies the max_gap check first, so min_contact's fallback
+    branch below is only ever reached when max_gap is set stricter than
+    that -- a narrow, deliberate edge case, not the common path.
+    """
     masks = masks.copy()
     total_merges = 0
+    # Bbox-proximity pre-filter still works in voxel index space (cheap,
+    # coarse -- just skips pairs that plainly can't be within max_gap
+    # before paying for an EDT). Convert the physical max_gap to a voxel
+    # margin using the SMALLEST voxel dimension so the same scalar margin
+    # is never too tight on the finer axes -- a generous pre-filter is
+    # safe (worst case: a few extra EDT calls), a too-tight one would
+    # silently reject genuinely-close pairs before the real check runs.
+    bbox_margin_vox = max_gap / min(scale_zyx) + 2
 
     for _ in range(200):
         info = _get_info(masks)
@@ -348,7 +381,7 @@ def krendl_safe_merge(masks, max_gap=2, min_contact=10, gt_min=GT_MIN):
             for tid, tdata in info.items():
                 if tid == fid or tdata["vol"] <= fvol:
                     continue
-                if not _bboxes_close(fbbox, tdata["bbox"], margin=max_gap + 2):
+                if not _bboxes_close(fbbox, tdata["bbox"], margin=bbox_margin_vox):
                     continue
                 d = float(np.linalg.norm(tdata["centroid"] - fcent))
                 if d < best_dist:
@@ -363,7 +396,7 @@ def krendl_safe_merge(masks, max_gap=2, min_contact=10, gt_min=GT_MIN):
             fmask = (region == fid); tmask = (region == best_tid)
             if not fmask.any() or not tmask.any():
                 continue
-            distmap = distance_transform_edt(~fmask)
+            distmap = distance_transform_edt(~fmask, sampling=scale_zyx)
             do_merge = float(distmap[tmask].min()) <= max_gap
             if not do_merge:
                 dilated = binary_dilation(fmask, structure=_touch_struct)
@@ -524,10 +557,10 @@ def compute_porosity(masks, solidity_threshold=0.5):
 
 
 def run_full_pipeline(volume, model_path, cellprob=-2.5, flow=0.4, anisotropy=5.747,
-                       max_gap=2, min_contact=10, large_contact=20, gt_min=GT_MIN,
+                       max_gap=1.0, min_contact=10, large_contact=20, gt_min=GT_MIN,
                        gpu=True, progress_cb=None, precomputed_flows=None,
                        min_hole_size=0, min_size=15, final_min_fraction=0.618,
-                       niter=None, solidity_threshold=0.5):
+                       niter=None, solidity_threshold=0.5, scale_zyx=(1.0, 0.174, 0.174)):
     """
     Full do_3D + 3-GMM + Krendl safe merge + large-contact merge + final
     min-size safety net pipeline — identical math to krendl_do3d.py plus
@@ -542,6 +575,11 @@ def run_full_pipeline(volume, model_path, cellprob=-2.5, flow=0.4, anisotropy=5.
     expensive network pass entirely and goes straight to mask formation.
     Used by the Cellprob/Large-contact sweep to call this once per Cellprob
     value without re-running do_3D's network forward pass each time.
+
+    max_gap, scale_zyx : passed through to krendl_safe_merge() -- max_gap
+    is in PHYSICAL MICRONS (not voxels), scale_zyx is (Z, Y, X) um/voxel.
+    See krendl_safe_merge()'s own docstring for why this matters
+    (anisotropic voxels, previously un-scaled EDT).
 
     min_hole_size : passed through to masks_from_flows() -- see
     _make_capped_fill_holes()'s docstring. 0 (default) matches Cellpose's
@@ -583,13 +621,14 @@ def run_full_pipeline(volume, model_path, cellprob=-2.5, flow=0.4, anisotropy=5.
                                     min_hole_size=min_hole_size, min_size=min_size, niter=niter,
                                     progress_cb=_report)
     n0 = len(np.unique(masks[masks > 0]))
+    raw_masks = masks.copy()  # pre-GMM, pre-Krendl -- see stats['raw_masks']
 
     _report(f"{n0} raw cells — 3-component GMM cleanup...")
     masks, gmm_cutoff, gmm_removed = gmm_cleanup(masks)
     n1 = len(np.unique(masks[masks > 0]))
 
     _report(f"{n1} cells — Krendl safe merge...")
-    masks, safe_merges = krendl_safe_merge(masks, max_gap, min_contact, gt_min)
+    masks, safe_merges = krendl_safe_merge(masks, max_gap, min_contact, gt_min, scale_zyx=scale_zyx)
     n2 = len(np.unique(masks[masks > 0]))
 
     _report(f"{n2} cells — large-contact merge...")
@@ -622,15 +661,16 @@ def run_full_pipeline(volume, model_path, cellprob=-2.5, flow=0.4, anisotropy=5.
         "final_min_removed":   final_removed,
         "porous_cells":        porous_cells,
         "solidity_threshold":  solidity_threshold,
+        "raw_masks":           raw_masks,
     }
     return masks, stats
 
 
 def rerun_single_cell(volume, labels, label_id, model_path, cellprob=-2.5, flow=0.4,
-                       anisotropy=5.747, max_gap=2, min_contact=10, large_contact=20,
+                       anisotropy=5.747, max_gap=1.0, min_contact=10, large_contact=20,
                        gt_min=GT_MIN, gpu=True, min_hole_size=0, min_size=15,
                        final_min_fraction=0.618, niter=None, solidity_threshold=0.5,
-                       pad_z=15, pad_xy=40, progress_cb=None):
+                       pad_z=15, pad_xy=40, progress_cb=None, scale_zyx=(1.0, 0.174, 0.174)):
     """
     Re-run do_3D inference (+ the same GMM/Krendl-safe-merge/large-
     contact-merge/final-min-size cleanup as run_full_pipeline) on just
@@ -704,7 +744,7 @@ def rerun_single_cell(volume, labels, label_id, model_path, cellprob=-2.5, flow=
         vol_crop, model_path, cellprob=cellprob, flow=flow, anisotropy=anisotropy,
         max_gap=max_gap, min_contact=min_contact, large_contact=large_contact,
         gt_min=gt_min, gpu=gpu, min_hole_size=min_hole_size, min_size=min_size,
-        final_min_fraction=final_min_fraction, niter=niter,
+        final_min_fraction=final_min_fraction, niter=niter, scale_zyx=scale_zyx,
         solidity_threshold=solidity_threshold, progress_cb=progress_cb,
     )
 
