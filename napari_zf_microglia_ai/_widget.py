@@ -48,6 +48,7 @@ from . import _epoch_sweep as _esw
 from . import _branch_calibration as _bcal
 from ._live_progress import capture_live_output
 from . import _secrets
+from . import _gt_toolkit as _gtk
 
 _CONFIG_PATH = Path.home() / ".config" / "napari-zf-microglia-ai" / "config.json"
 
@@ -182,29 +183,44 @@ def _add_reliable_spinbox(row_layout, slider, minimum, maximum, step,
     return spin
 
 
-def _add_gt_checkbox(layout, hint):
+def _add_gt_checkbox(layout, hint, visible=True):
     """Shared "This is verified ground truth" opt-in, one per sweep tool
-    -- same one-shot pattern as Tab 3 Statistics: off by default, only
-    ticking it lets that specific run move any never-rising/never-
-    falling recommended value the sweep tracks. A sweep with a bad or
-    unverified GT input can still be run and read for its own report
-    (best point / score), it just can't corrupt a shared floor/ceiling
-    unless this box is explicitly ticked for that run. Callers must
+    -- same one-shot pattern as Tab 3 Statistics used to: off by
+    default, only ticking it lets that specific run move any never-
+    rising/never-falling recommended value the sweep tracks. A sweep
+    with a bad or unverified GT input can still be run and read for its
+    own report (best point / score), it just can't corrupt a shared
+    floor/ceiling unless this box is ticked for that run. Callers must
     un-tick it again after each run completes (see _finish_gt_sweep
     below) -- this helper only builds the widget.
+
+    visible=False keeps the checkbox fully functional (still exists,
+    still gates the apply logic exactly the same way) but hides it from
+    this tool's own layout -- used by the 4 sweeps folded into the GT
+    Toolkit Tuning Tool (Tab 5), so tuning can ONLY ever be triggered
+    from that one place: the checkbox is only ever ticked programmatically
+    by the Tuning Tool's own orchestrator right before it calls this
+    tool's run handler, never by a user clicking it directly here.
 
     Returns the checkbox."""
     cb = QCheckBox("This is verified ground truth")
     cb.setChecked(False)
-    layout.addWidget(cb)
-    note = QLabel(
+    if visible:
+        layout.addWidget(cb)
+    note_text = (
         f"  Off by default. Only tick when the GT labels used for {hint} "
         "have actually been manually corrected/verified as real ground "
         "truth -- an unverified/uncorrected prediction can never move a "
         "recommended value this way. Un-ticks itself automatically once "
         "the run finishes, so it must be re-ticked deliberately every "
         "time you want this specific run to count."
+        if visible else
+        "  GT-verified auto-apply for this sweep now only ever happens "
+        "via the GT Toolkit Tuning Tool (Tab 5, top) -- running it here "
+        "directly always produces a preview report only, never moves a "
+        "shared recommended value."
     )
+    note = QLabel(note_text)
     note.setWordWrap(True)
     note.setStyleSheet("color: #888; font-size: 10px;")
     layout.addWidget(note)
@@ -562,6 +578,116 @@ class ZFMicrogliaAIWidget(QWidget):
         # of this session.
         _root_cfg = self._state.get("config", {})
 
+        # ── GT Toolkit Tuning Tool — one button tunes the whole plugin ── #
+        # Every GT-driven auto-apply in this plugin (Min/Max volume, Min
+        # hole size, MONAI Threshold/Erosion, BG Threshold/Signal
+        # Erosion, Sigma XY/Z, Cellprob + Krendl merge params) now
+        # happens ONLY from here. The individual sweep tools below still
+        # work standalone for a quick preview/report, but their own
+        # "This is verified ground truth" checkboxes are hidden (see
+        # _add_gt_checkbox(..., visible=False)) so nothing except this
+        # orchestrator can move a shared recommended value -- same for
+        # Tab 3 Statistics, whose own GT checkbox was removed outright.
+        # Reuses every folded-in tool's own tested worker code
+        # unchanged: this only auto-discovers one fish's files from its
+        # canonical folder (_gt_toolkit.py), fills them in, and runs
+        # each applicable step in sequence, one at a time.
+        gtkg = QGroupBox("GT Toolkit Tuning Tool")
+        gtkl = QVBoxLayout()
+        gtkl.setSpacing(6)
+
+        gtk_note = QLabel(
+            "One button: point this at a fish's original file (or its "
+            "already-created output folder) and it tunes the whole plugin "
+            "against that fish's GROUND_TRUTH in one shot -- Min/Max volume "
+            "+ Min hole size (instant), then whichever of MONAI Threshold/"
+            "Erosion, BG Threshold/Signal Erosion, Sigma XY/Z, and Cellprob "
+            "+ Krendl merge params this fish's discovered files support, "
+            "run in that order. Skips any step whose required file isn't "
+            "found -- see the discovery report after scanning."
+        )
+        gtk_note.setWordWrap(True)
+        gtk_note.setStyleSheet("color: #888; font-size: 10px;")
+        gtkl.addWidget(gtk_note)
+
+        gtk_path_row = QHBoxLayout()
+        gtk_path_row.addWidget(QLabel("Fish original file or folder:"))
+        self._gtk_path_edit = QLineEdit(_root_cfg.get("gtk_last_path", ""))
+        gtk_path_row.addWidget(self._gtk_path_edit)
+        self._gtk_browse_file_btn = QPushButton("File...")
+        self._gtk_browse_file_btn.setFixedWidth(52)
+        gtk_path_row.addWidget(self._gtk_browse_file_btn)
+        self._gtk_browse_folder_btn = QPushButton("Folder...")
+        self._gtk_browse_folder_btn.setFixedWidth(60)
+        gtk_path_row.addWidget(self._gtk_browse_folder_btn)
+        gtkl.addLayout(gtk_path_row)
+        gtk_path_note = QLabel(
+            "  Established convention: <parent>/<stem>/<stem>_<artifact>.tif "
+            "for every derived file (ExtRm/NoBG/RndFill, brain_mask, "
+            "cp_masks, cp_masks_corrected, GROUND_TRUTH, statistics.csv) -- "
+            "the same folder \"Build GT-Correction Package\" below delivers "
+            "into too. Point here at either the raw source file (its "
+            "sibling folder is found automatically) or the folder itself."
+        )
+        gtk_path_note.setStyleSheet("color: #aaa; font-size: 10px;")
+        gtk_path_note.setWordWrap(True)
+        gtkl.addWidget(gtk_path_note)
+
+        self._gtk_scan_btn = QPushButton("Scan Folder")
+        gtkl.addWidget(self._gtk_scan_btn)
+
+        self._gtk_discovery_view = QTextEdit()
+        self._gtk_discovery_view.setReadOnly(True)
+        self._gtk_discovery_view.setStyleSheet("font-family: monospace; font-size: 9px;")
+        self._gtk_discovery_view.setFixedHeight(140)
+        gtkl.addWidget(self._gtk_discovery_view)
+
+        self._gtk_notify_cb = _make_notify_checkbox()
+        gtkl.addWidget(self._gtk_notify_cb)
+
+        self._gtk_is_gt_cb = QCheckBox("This is verified ground truth")
+        self._gtk_is_gt_cb.setChecked(False)
+        gtkl.addWidget(self._gtk_is_gt_cb)
+        gtk_is_gt_note = QLabel(
+            "  Off by default. Only tick when <stem>_GROUND_TRUTH.tif (and "
+            "brain_mask.tif, for the MONAI step) have actually been "
+            "manually corrected/verified -- this is the only switch left "
+            "anywhere in the plugin that can move a shared recommended "
+            "value; every step below still runs and reports without it, "
+            "it just can't apply anything. Un-ticks itself once the whole "
+            "run finishes."
+        )
+        gtk_is_gt_note.setWordWrap(True)
+        gtk_is_gt_note.setStyleSheet("color: #888; font-size: 10px;")
+        gtkl.addWidget(gtk_is_gt_note)
+
+        gtk_btn_row = QHBoxLayout()
+        self._gtk_run_btn = QPushButton("Run Full GT Toolkit Tuning")
+        self._gtk_run_btn.setStyleSheet("QPushButton { font-weight: bold; padding: 5px; }")
+        gtk_btn_row.addWidget(self._gtk_run_btn)
+        self._gtk_stop_btn = QPushButton("Stop")
+        self._gtk_stop_btn.setEnabled(False)
+        gtk_btn_row.addWidget(self._gtk_stop_btn)
+        gtkl.addLayout(gtk_btn_row)
+
+        self._gtk_status_lbl = QLabel("")
+        self._gtk_status_lbl.setWordWrap(True)
+        gtkl.addWidget(self._gtk_status_lbl)
+
+        self._gtk_report_view = QTextEdit()
+        self._gtk_report_view.setReadOnly(True)
+        self._gtk_report_view.setStyleSheet("font-family: monospace; font-size: 9px;")
+        self._gtk_report_view.setFixedHeight(220)
+        gtkl.addWidget(self._gtk_report_view)
+
+        gtkg.setLayout(gtkl)
+        gtkg = _make_collapsible(gtkg)
+        t5.addWidget(gtkg)
+        t5.addWidget(_sep())
+        self._t5_category_groups.setdefault("general", []).append(gtkg)
+
+        self._gtk_job = {"queue": [], "step_index": 0, "timer": None, "running": False}
+
         # ============================================================ #
         # TAB 1 — Skin Remover
         # ============================================================ #
@@ -851,7 +977,7 @@ class ZFMicrogliaAIWidget(QWidget):
             bsl, "MONAI Threshold", 0.05, 0.01, 0.02, 0.005
         )
 
-        self._bs_is_gt_cb = _add_gt_checkbox(bsl, "this sweep")
+        self._bs_is_gt_cb = _add_gt_checkbox(bsl, "this sweep", visible=False)
 
         bs_btn_row = QHBoxLayout()
         self._bs_run_btn = QPushButton("Run Threshold/Erosion Sweep")
@@ -1262,7 +1388,7 @@ class ZFMicrogliaAIWidget(QWidget):
         ps_scale_row.addWidget(self._ps_scalexy_spin)
         psl.addLayout(ps_scale_row)
 
-        self._ps_is_gt_cb = _add_gt_checkbox(psl, "this sweep")
+        self._ps_is_gt_cb = _add_gt_checkbox(psl, "this sweep", visible=False)
 
         ps_btn_row = QHBoxLayout()
         self._ps_run_btn = QPushButton("Run BG Threshold/Erosion Sweep")
@@ -1441,7 +1567,7 @@ class ZFMicrogliaAIWidget(QWidget):
         sg_cells_row2.addWidget(self._sg_padxy_spin)
         sgl.addLayout(sg_cells_row2)
 
-        self._sg_is_gt_cb = _add_gt_checkbox(sgl, "this sweep")
+        self._sg_is_gt_cb = _add_gt_checkbox(sgl, "this sweep", visible=False)
 
         sg_btn_row = QHBoxLayout()
         self._sg_run_btn = QPushButton("Run Sigma Sweep")
@@ -1825,7 +1951,7 @@ class ZFMicrogliaAIWidget(QWidget):
         self._kr_notify_cb = _make_notify_checkbox()
         krl.addWidget(self._kr_notify_cb)
 
-        self._kr_is_gt_cb = _add_gt_checkbox(krl, "this sweep")
+        self._kr_is_gt_cb = _add_gt_checkbox(krl, "this sweep", visible=False)
 
         kr_btn_row = QHBoxLayout()
         self._kr_run_btn = QPushButton("Run Full Calibration")
@@ -2343,22 +2469,12 @@ class ZFMicrogliaAIWidget(QWidget):
 
         t3.addWidget(_sep())
 
-        self._stats_is_gt_cb = QCheckBox("This is verified ground truth")
-        self._stats_is_gt_cb.setChecked(False)
-        t3.addWidget(self._stats_is_gt_cb)
         stats_is_gt_note = QLabel(
-            "  Off by default. The Labels layer being measured could be "
-            "anything -- a raw, uncorrected prediction as easily as a "
-            "hand-verified fish -- and only real GT should ever be allowed "
-            "to move the two bounds is_volume_outlier (below) is checked "
-            "against: the never-rising Min volume floor Tab 5's sweeps "
-            "also maintain (Min volume / Safe-merge \"already a whole "
-            "cell\"), and a never-falling largest-cell ceiling tracked "
-            "only here. Tick this only when the layer you're about to "
-            "measure has actually been manually corrected/verified; when "
-            "ticked, this run's smallest AND largest measured cell "
-            "volumes feed those two GT-tracked bounds, exactly like "
-            "running a Tab 5 sweep would."
+            "  is_volume_outlier below is checked against the never-rising "
+            "Min volume floor and never-falling largest-cell ceiling -- "
+            "both are tuned exclusively by the GT Toolkit Tuning Tool "
+            "(Tab 5), never from here. Statistics only ever reads them, "
+            "purely for reporting."
         )
         stats_is_gt_note.setWordWrap(True)
         stats_is_gt_note.setStyleSheet("color: #888; font-size: 10px;")
@@ -2368,9 +2484,9 @@ class ZFMicrogliaAIWidget(QWidget):
             f"  is_volume_outlier ceiling (largest confirmed GT cell so far): {init_max_volume} vox "
             "-- the floor side reuses Min volume above."
             if init_max_volume is not None else
-            "  is_volume_outlier ceiling: not yet measured — tick the box above and "
-            "run this against a verified GT fish at least once. The floor side "
-            "reuses Min volume above."
+            "  is_volume_outlier ceiling: not yet measured -- run the GT "
+            "Toolkit Tuning Tool (Tab 5) against a verified GT fish at "
+            "least once. The floor side reuses Min volume above."
         )
         self._maxvol_ceiling_lbl.setStyleSheet("color: #aaa; font-size: 10px;")
         self._maxvol_ceiling_lbl.setWordWrap(True)
@@ -3449,6 +3565,11 @@ class ZFMicrogliaAIWidget(QWidget):
         self._model_browse_btn.clicked.connect(self._on_browse_model)
         self._bg_group.buttonClicked.connect(self._on_bg_mode_changed)
         self._run_btn.clicked.connect(self._on_run)
+        self._gtk_browse_file_btn.clicked.connect(self._on_gtk_browse_file)
+        self._gtk_browse_folder_btn.clicked.connect(self._on_gtk_browse_folder)
+        self._gtk_scan_btn.clicked.connect(self._on_gtk_scan)
+        self._gtk_run_btn.clicked.connect(self._on_gtk_run)
+        self._gtk_stop_btn.clicked.connect(self._on_gtk_stop)
         self._bs_img_browse_btn.clicked.connect(self._on_bs_browse_img)
         self._bs_gt_browse_btn.clicked.connect(self._on_bs_browse_gt)
         self._bs_run_btn.clicked.connect(self._on_bs_run_sweep)
@@ -4874,6 +4995,248 @@ class ZFMicrogliaAIWidget(QWidget):
         self._save_cfg(**{history_key: history})
         return _ksw.recommend_merge_params(list(history.values()))
 
+    # ---------------------------------------------------------------- #
+    # GT Toolkit Tuning Tool
+    # ---------------------------------------------------------------- #
+
+    def _on_gtk_browse_file(self):
+        path_str, _ = QFileDialog.getOpenFileName(self, "Select fish original file", "", "All files (*)")
+        if path_str:
+            self._gtk_path_edit.setText(path_str)
+
+    def _on_gtk_browse_folder(self):
+        path_str = QFileDialog.getExistingDirectory(self, "Select fish folder")
+        if path_str:
+            self._gtk_path_edit.setText(path_str)
+
+    def _on_gtk_scan(self):
+        """Discover this fish's files and fill every folded-in tool's own
+        path fields from them -- a preview step on its own (safe to run
+        repeatedly), and also the first thing _on_gtk_run() does."""
+        path_str = self._gtk_path_edit.text().strip()
+        if not path_str:
+            self._gtk_status_lbl.setText("ERROR: set a fish original file or folder path first.")
+            return None
+        p = Path(path_str)
+        if not p.exists():
+            self._gtk_status_lbl.setText(f"ERROR: path not found: {path_str}")
+            return None
+        folder, stem, found = _gtk.discover_fish_files(p)
+        self._gtk_discovery_view.setPlainText(_gtk.format_discovery_report(folder, stem, found))
+        self._gtk_autofill(folder, stem, found)
+        self._save_cfg(gtk_last_path=path_str)
+        return folder, stem, found
+
+    def _gtk_autofill(self, folder, stem, found):
+        """Fill every folded-in tool's own path fields from one
+        discovery pass -- keeps each usable individually afterward too
+        (e.g. to re-run just one step's grid with a tweaked range),
+        already pointed at the right files."""
+        original = found["original"]
+        ext_rm = found["ext_rm"]
+        brain_mask = found["brain_mask"]
+        gt = found["ground_truth"]
+        raw_or_ext = original or ext_rm
+
+        if original is not None:
+            self._bs_img_edit.setText(str(original))
+        if brain_mask is not None:
+            self._bs_gt_edit.setText(str(brain_mask))
+
+        if raw_or_ext is not None:
+            self._ps_img_edit.setText(str(raw_or_ext))
+            self._sg_img_edit.setText(str(raw_or_ext))
+        if brain_mask is not None:
+            self._ps_mask_edit.setText(str(brain_mask))
+            self._sg_mask_edit.setText(str(brain_mask))
+        if gt is not None:
+            self._ps_lbl_edit.setText(str(gt))
+            self._sg_lbl_edit.setText(str(gt))
+
+        if ext_rm is not None:
+            self._kr_img_edit.setText(str(ext_rm))
+        if gt is not None:
+            self._kr_gt_edit.setText(str(gt))
+
+        self._gtp_stem_edit.setText(stem)
+        if ext_rm is not None:
+            self._gtp_img_edit.setText(str(ext_rm))
+        if found["cp_masks_corrected"] is not None:
+            self._gtp_masks_edit.setText(str(found["cp_masks_corrected"]))
+        if found["cp_masks"] is not None:
+            self._gtp_raw_edit.setText(str(found["cp_masks"]))
+        self._gtp_out_edit.setText(str(folder))
+
+    def _on_gtk_run(self):
+        if self._gtk_job.get("running"):
+            self._gtk_status_lbl.setText("The GT Toolkit is already running.")
+            return
+        scan = self._on_gtk_scan()
+        if scan is None:
+            return
+        folder, stem, found = scan
+        reasons = _gtk.step_preconditions(found)
+        is_gt = self._gtk_is_gt_cb.isChecked()
+        self._gtk_is_gt_cb.setChecked(False)
+
+        report_lines = [_gtk.format_discovery_report(folder, stem, found), ""]
+
+        # Step 0: Min/Max volume + Min hole size, straight from GT labels
+        # -- instant, no thread needed. Sole surviving source of these
+        # three values now that Tab 3 Statistics's own GT checkbox has
+        # been removed -- see [[feedback_plugin_ux]] "only the tuning
+        # tool tunes values".
+        if found["ground_truth"] is not None:
+            try:
+                gt_labels = tifffile.imread(str(found["ground_truth"])).astype(np.int32)
+                _, counts = np.unique(gt_labels[gt_labels > 0], return_counts=True)
+                if len(counts):
+                    measured_min = int(counts.min())
+                    measured_max = int(counts.max())
+                    measured_hole = _psw.min_hole_size_from_gt(gt_labels)
+                    if is_gt:
+                        recommended_min = self._update_gt_history("min_volume_vox", stem, measured_min, mode="min")
+                        self._save_cfg(min_volume_recommended_vox=recommended_min, min_volume_vox=recommended_min)
+                        self._area_value_lbl.setText(str(recommended_min))
+
+                        recommended_max = self._update_gt_history("max_volume_vox", stem, measured_max, mode="max")
+                        self._save_cfg(max_volume_recommended_vox=recommended_max)
+                        self._maxvol_ceiling_lbl.setText(
+                            f"  is_volume_outlier ceiling (largest confirmed GT cell so far): "
+                            f"{recommended_max} vox -- the floor side reuses Min volume above."
+                        )
+                        self._maxvol_value_lbl.setText(str(recommended_max))
+
+                        recommended_hole = self._update_gt_history("min_hole_size_vox", stem, measured_hole, mode="min")
+                        self._save_cfg(min_hole_size_recommended_vox=recommended_hole, min_hole_size_vox=recommended_hole)
+                        if recommended_hole > self._hole_slider.maximum():
+                            self._hole_slider.setMaximum(recommended_hole)
+                            self._hole_spin.setMaximum(recommended_hole)
+                        self._hole_slider.setValue(recommended_hole)
+                        self._hole_recommended_lbl.setText(
+                            f"  Recommended floor (from GT sweeps so far): {recommended_hole} vox"
+                        )
+                        report_lines.append(
+                            f"[Min/Max volume + Min hole size] this fish measured "
+                            f"min={measured_min}, max={measured_max}, hole={measured_hole} vox -- "
+                            f"applied: Min volume floor={recommended_min}, outlier ceiling={recommended_max}, "
+                            f"Min hole size floor={recommended_hole}."
+                        )
+                    else:
+                        report_lines.append(
+                            f"[Min/Max volume + Min hole size] this fish measured "
+                            f"min={measured_min}, max={measured_max}, hole={measured_hole} vox -- "
+                            f"not applied (not GT-verified)."
+                        )
+            except Exception as exc:
+                report_lines.append(f"[Min/Max volume + Min hole size] ERROR: {exc}")
+        else:
+            report_lines.append("[Min/Max volume + Min hole size] skipped: no GROUND_TRUTH.tif found.")
+
+        self._gtk_report_view.setPlainText("\n".join(report_lines))
+
+        steps = [
+            ("monai", "MONAI Threshold/Erosion", self._bs_is_gt_cb, self._on_bs_run_sweep,
+             self._brain_sweep_job, self._bs_status_lbl, self._on_bs_stop_sweep),
+            ("bg", "BG Threshold/Signal Erosion", self._ps_is_gt_cb, self._on_ps_run_sweep,
+             self._pixel_sweep_job, self._ps_status_lbl, self._on_ps_stop_sweep),
+            ("sigma", "Smooth sigma XY/Z", self._sg_is_gt_cb, self._on_sg_run_sweep,
+             self._sigma_sweep_job, self._sg_status_lbl, self._on_sg_stop_sweep),
+            ("cellprob", "Cellprob + Krendl merge params", self._kr_is_gt_cb, self._on_kr_run_sweep,
+             self._krendl_sweep_job, self._kr_status_lbl, self._on_kr_stop_sweep),
+        ]
+        queue = []
+        for key, label, cb, trigger, job, status_lbl, stop_fn in steps:
+            ok, reason = reasons[key]
+            if ok:
+                queue.append((key, label, cb, trigger, job, status_lbl, stop_fn))
+            else:
+                self._gtk_report_view.append(f"\n[{label}] skipped: {reason}")
+
+        if not queue:
+            self._gtk_status_lbl.setText(
+                "Nothing more to run -- no folded-in sweep's required files were found."
+            )
+            self._maybe_send_notify(
+                self._gtk_notify_cb, "[ZF-Microglia-AI] GT Toolkit Tuning finished",
+                f"GT Toolkit Tuning finished for {stem}.\n\n{self._gtk_report_view.toPlainText()}",
+            )
+            return
+
+        self._gtk_job["queue"] = queue
+        self._gtk_job["step_index"] = 0
+        self._gtk_job["is_gt"] = is_gt
+        self._gtk_job["stem"] = stem
+        self._gtk_job["running"] = True
+        self._gtk_run_btn.setEnabled(False)
+        self._gtk_stop_btn.setEnabled(True)
+        self._gtk_status_lbl.setText(f"Running step 1/{len(queue)}: {queue[0][1]}...")
+        self._gtk_launch_step(queue[0], is_gt)
+
+        timer = QTimer(self)
+        timer.timeout.connect(self._gtk_poll)
+        timer.start(500)
+        self._gtk_job["timer"] = timer
+
+    def _gtk_launch_step(self, step, is_gt):
+        _key, _label, cb, trigger, _job, _status_lbl, _stop_fn = step
+        # The only place in the plugin allowed to tick one of these
+        # hidden checkboxes -- see _add_gt_checkbox(..., visible=False).
+        cb.setChecked(is_gt)
+        trigger()
+
+    def _gtk_poll(self):
+        job = self._gtk_job
+        queue = job["queue"]
+        idx = job["step_index"]
+        _key, label, _cb, _trigger, step_job, status_lbl, _stop_fn = queue[idx]
+        thread = step_job.get("thread")
+        if thread is not None and thread.is_alive():
+            return
+        # thread has ended, but this step's OWN poll timer (500ms, same
+        # cadence) still needs one more tick to finish applying/un-
+        # ticking before its status label reflects the final outcome.
+        if step_job.get("timer") is not None:
+            return
+
+        self._gtk_report_view.append(f"\n===== {label} =====\n{status_lbl.text()}\n")
+
+        idx += 1
+        if idx >= len(queue):
+            job["timer"].stop()
+            job["timer"] = None
+            job["running"] = False
+            self._gtk_run_btn.setEnabled(True)
+            self._gtk_stop_btn.setEnabled(False)
+            self._gtk_status_lbl.setText(
+                f"GT Toolkit Tuning finished for {job['stem']} -- {len(queue)} step(s) run."
+            )
+            self._maybe_send_notify(
+                self._gtk_notify_cb, "[ZF-Microglia-AI] GT Toolkit Tuning finished",
+                f"GT Toolkit Tuning finished for {job['stem']}.\n\n{self._gtk_report_view.toPlainText()}",
+            )
+            return
+
+        job["step_index"] = idx
+        self._gtk_status_lbl.setText(f"Running step {idx + 1}/{len(queue)}: {queue[idx][1]}...")
+        self._gtk_launch_step(queue[idx], job["is_gt"])
+
+    def _on_gtk_stop(self):
+        job = self._gtk_job
+        if not job.get("running"):
+            return
+        idx = job["step_index"]
+        _key, label, _cb, _trigger, _step_job, _status_lbl, stop_fn = job["queue"][idx]
+        stop_fn()
+        self._gtk_status_lbl.setText(
+            f"Cancelling {label} -- will stop after this step, not run the rest of the queue..."
+        )
+        # Truncate the queue so _gtk_poll's completion path fires once
+        # this current step's own cancellation finishes, instead of
+        # moving on to the next step.
+        job["queue"] = job["queue"][: idx + 1]
+        self._gtk_stop_btn.setEnabled(False)
+
     def _on_browse_model(self):
         path_str, _ = QFileDialog.getOpenFileName(
             self,
@@ -5705,7 +6068,6 @@ class ZFMicrogliaAIWidget(QWidget):
         out_dir   = self._output_dir()
         stem      = self._state["last_file_path"].stem if self._state.get("last_file_path") else lyr.name
         out_csv   = out_dir / f"{stem}_statistics.csv"
-        is_gt     = self._stats_is_gt_cb.isChecked()
 
         self._stats_btn.setEnabled(False)
         self._stats_status_lbl.setText("Computing statistics…")
@@ -5741,82 +6103,14 @@ class ZFMicrogliaAIWidget(QWidget):
                 return
             df = result["df"]
 
-            # Outlier bounds. Upper: the largest cell volume ever confirmed
-            # real in GT -- not user-editable (no slider), only ever grows,
-            # and only from verified-GT runs, exactly like min_volume_vox
-            # only ever shrinks from them. Lower: the same never-rising
-            # Min volume floor Common Settings/Krendl safe-merge already
-            # use -- anything smaller than the smallest cell any fish has
-            # ever proven real is worth a human's attention, even though
-            # it's above the golden-ratio deletion threshold (Common
-            # Settings' "Final min-size fraction") and so wasn't small
-            # enough for the Cellpose-SAM pipeline to remove it outright.
-            # Read both here first so an exploratory (non-GT) run still
-            # gets flagged against the latest known bounds even though it
-            # can't move either one.
+            # Outlier bounds. Purely read here -- Statistics used to also
+            # WRITE min_volume_vox/max_volume_vox/min_hole_size_vox from
+            # its own "This is verified ground truth" checkbox, but every
+            # GT-tuned value in this plugin is now applied exclusively by
+            # the GT Toolkit Tuning Tool (Tab 5), never from individual
+            # tools like this one -- see _on_gtk_run().
             max_ceiling = self._state.get("config", {}).get("max_volume_recommended_vox")
             min_floor = self._state.get("config", {}).get("min_volume_recommended_vox")
-
-            gt_floor_note = ""
-            if is_gt and "volume_vox" in df.columns and len(df) > 0:
-                # Same never-rising floor as the Tab 5 sweeps and Krendl
-                # safe-merge -- Generate Statistics is just another way
-                # of measuring a fish's smallest real cell, gated behind
-                # the "This is verified ground truth" checkbox so an
-                # unverified/uncorrected prediction can never corrupt it.
-                measured_min = int(df["volume_vox"].min())
-                recommended_min = self._update_gt_history(
-                    "min_volume_vox", stem, measured_min, mode="min"
-                )
-                self._save_cfg(min_volume_recommended_vox=recommended_min)
-                self._area_value_lbl.setText(str(recommended_min))
-                self._save_cfg(min_volume_vox=recommended_min)
-                min_floor = recommended_min
-
-                # Never-falling ceiling counterpart to the floor above --
-                # a new fish can only push this up (prove an even bigger
-                # real cell exists), never down, mirroring mode="max"'s
-                # use for branch_radius. Unlike Min volume, this has no
-                # slider: it exists purely to flag is_volume_outlier
-                # below, not to drive any pipeline stage.
-                measured_max = int(df["volume_vox"].max())
-                max_ceiling = self._update_gt_history(
-                    "max_volume_vox", stem, measured_max, mode="max"
-                )
-                self._save_cfg(max_volume_recommended_vox=max_ceiling)
-                self._maxvol_ceiling_lbl.setText(
-                    f"  is_volume_outlier ceiling (largest confirmed GT cell so far): "
-                    f"{max_ceiling} vox -- the floor side reuses Min volume above."
-                )
-                self._maxvol_value_lbl.setText(str(max_ceiling))
-
-                # Same never-rising floor the Pixel Classifier's two GT
-                # sweeps and the Cellprob/Large-contact sweep already
-                # measure -- Generate Statistics has the full 3D labels
-                # array right here too, so it can measure this fish's own
-                # real holes exactly the same way instead of leaving Min
-                # hole size stuck at whatever it last was.
-                measured_hole = _psw.min_hole_size_from_gt(labels)
-                recommended_hole = self._update_gt_history(
-                    "min_hole_size_vox", stem, measured_hole, mode="min"
-                )
-                self._save_cfg(min_hole_size_recommended_vox=recommended_hole,
-                                min_hole_size_vox=recommended_hole)
-                if recommended_hole > self._hole_slider.maximum():
-                    self._hole_slider.setMaximum(recommended_hole)
-                    self._hole_spin.setMaximum(recommended_hole)
-                self._hole_slider.setValue(recommended_hole)
-                self._hole_recommended_lbl.setText(
-                    f"  Recommended floor (from GT sweeps so far): {recommended_hole} vox"
-                )
-
-                gt_floor_note = (
-                    f" GT-verified: this fish's smallest/largest cells measured "
-                    f"{measured_min}/{measured_max} vox; Min volume floor now "
-                    f"{recommended_min} vox, outlier ceiling now {max_ceiling} vox, "
-                    f"min hole size floor now {recommended_hole} vox "
-                    f"(this fish measured {measured_hole})."
-                )
 
             if "volume_vox" in df.columns:
                 too_big = df["volume_vox"] > max_ceiling if max_ceiling is not None else False
@@ -5832,17 +6126,9 @@ class ZFMicrogliaAIWidget(QWidget):
             df = df[[c for c in df.columns if c in selected]]
             df.to_csv(str(out_csv), index=False)
             self._stats_status_lbl.setText(
-                f"Done — {len(df)} labels. Saved: {out_csv.name}.{gt_floor_note}"
+                f"Done — {len(df)} labels. Saved: {out_csv.name}."
             )
             print(f"Statistics saved: {out_csv}")
-            # One-shot: never leaves the checkbox armed for the next run.
-            # A user re-running Generate Statistics on a different (maybe
-            # unverified) layer right after a GT-verified run must
-            # explicitly re-tick it each time -- otherwise a later
-            # exploratory run could silently contribute to the same
-            # never-rising/never-falling GT bounds without the user
-            # noticing the checkbox was still ticked from before.
-            self._stats_is_gt_cb.setChecked(False)
             self._stats_btn.setEnabled(True)
 
         timer.timeout.connect(_poll)
