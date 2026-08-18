@@ -97,8 +97,9 @@ def format_discovery_report(folder, stem, found) -> str:
 
 
 def step_preconditions(found):
-    """Which of the 4 folded-in GT-sweep steps can run against this
-    fish's discovered files, and why not for the ones that can't.
+    """Which of the 5 folded-in GT-sweep/calibration steps can run
+    against this fish's discovered files, and why not for the ones that
+    can't.
 
     Returns {step_key: (ok: bool, reason: str)}. reason is always
     populated (not just on failure) so the caller can show it either
@@ -134,5 +135,10 @@ def step_preconditions(found):
             have_ext_rm and have_gt,
             "needs <stem>_brain_only_ExtRm.tif + <stem>_GROUND_TRUTH.tif "
             "(the Cellpose-SAM route)."
+        ),
+        "branch_radius": (
+            have_gt,
+            "needs <stem>_GROUND_TRUTH.tif (measures branch thickness "
+            "directly from the labeled cells, no image needed)."
         ),
     }

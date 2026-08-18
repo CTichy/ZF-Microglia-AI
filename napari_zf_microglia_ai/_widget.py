@@ -581,13 +581,20 @@ class ZFMicrogliaAIWidget(QWidget):
         # ── GT Toolkit Tuning Tool — one button tunes the whole plugin ── #
         # Every GT-driven auto-apply in this plugin (Min/Max volume, Min
         # hole size, MONAI Threshold/Erosion, BG Threshold/Signal
-        # Erosion, Sigma XY/Z, Cellprob + Krendl merge params) now
-        # happens ONLY from here. The individual sweep tools below still
-        # work standalone for a quick preview/report, but their own
-        # "This is verified ground truth" checkboxes are hidden (see
-        # _add_gt_checkbox(..., visible=False)) so nothing except this
-        # orchestrator can move a shared recommended value -- same for
-        # Tab 3 Statistics, whose own GT checkbox was removed outright.
+        # Erosion, Sigma XY/Z, Cellprob + Krendl merge params,
+        # branch_radius) now happens ONLY from here -- explicit
+        # principle: "anything that changes recommended values should be
+        # included in the tuning tool." Every one of the 5 folded-in
+        # tools below still works standalone for a quick preview/report
+        # (informational, all fields/buttons/reports fully usable), but
+        # each one's own "This is verified ground truth" checkbox is
+        # hidden (see _add_gt_checkbox(..., visible=False)) so nothing
+        # except this orchestrator can actually move a shared
+        # recommended value -- same reasoning Tab 3 Statistics's own GT
+        # checkbox was removed outright for. "Verify Best Epoch" is
+        # deliberately NOT folded in here at all -- it selects a
+        # training checkpoint, not a GT-tuned pipeline parameter, a
+        # different category of tool entirely, explicitly kept separate.
         # Reuses every folded-in tool's own tested worker code
         # unchanged: this only auto-discovers one fish's files from its
         # canonical folder (_gt_toolkit.py), fills them in, and runs
@@ -601,10 +608,11 @@ class ZFMicrogliaAIWidget(QWidget):
             "already-created output folder) and it tunes the whole plugin "
             "against that fish's GROUND_TRUTH in one shot -- Min/Max volume "
             "+ Min hole size (instant), then whichever of MONAI Threshold/"
-            "Erosion, BG Threshold/Signal Erosion, Sigma XY/Z, and Cellprob "
-            "+ Krendl merge params this fish's discovered files support, "
-            "run in that order. Skips any step whose required file isn't "
-            "found -- see the discovery report after scanning."
+            "Erosion, BG Threshold/Signal Erosion, Sigma XY/Z, Cellprob + "
+            "Krendl merge params, and branch_radius this fish's discovered "
+            "files support, run in that order. Skips any step whose "
+            "required file isn't found -- see the discovery report after "
+            "scanning."
         )
         gtk_note.setWordWrap(True)
         gtk_note.setStyleSheet("color: #888; font-size: 10px;")
@@ -3278,14 +3286,15 @@ class ZFMicrogliaAIWidget(QWidget):
         self._ct_calib_scalexy_spin.setValue(0.174)
         ct_calib_scale_row.addWidget(self._ct_calib_scalexy_spin)
         ctl.addLayout(ct_calib_scale_row)
-        self._ct_calib_is_gt_cb = _add_gt_checkbox(ctl, "this calibration")
+        self._ct_calib_is_gt_cb = _add_gt_checkbox(ctl, "this calibration", visible=False)
         self._ct_calib_run_btn = QPushButton("Calibrate branch_radius")
         ctl.addWidget(self._ct_calib_run_btn)
         ct_calib_note = QLabel(
             "  Measures real branch thickness (3D skeleton + distance transform) from a "
             "GT labels volume and sets branch_radius above to the thinnest-quartile "
             "(distal branch tip) radius in pixels — recalibrated from actual morphology "
-            "instead of a guessed value. Applied and saved automatically."
+            "instead of a guessed value. GT-verified auto-apply now only happens via the "
+            "GT Toolkit Tuning Tool (Tab 5, top); running it here directly is preview-only."
         )
         ct_calib_note.setStyleSheet("color: #aaa; font-size: 10px;")
         ct_calib_note.setWordWrap(True)
@@ -3525,7 +3534,7 @@ class ZFMicrogliaAIWidget(QWidget):
         self._on_t5_filter_changed()
 
         self._epoch_sweep_job = {"thread": None, "cancel_event": None, "timer": None}
-        self._branch_calib_job = {"thread": None}
+        self._branch_calib_job = {"thread": None, "timer": None}
 
         self._cellpose_job = {"pid": None, "log_path": None, "timer": None}
 
@@ -4042,6 +4051,7 @@ class ZFMicrogliaAIWidget(QWidget):
             if thread.is_alive():
                 return
             timer.stop()
+            self._branch_calib_job["timer"] = None
             self._ct_calib_run_btn.setEnabled(True)
 
             # One-shot, same as Tab 3 Statistics.
@@ -4087,6 +4097,7 @@ class ZFMicrogliaAIWidget(QWidget):
 
         timer.timeout.connect(_poll)
         timer.start(500)
+        self._branch_calib_job["timer"] = timer
 
     def _write_cellpose_best_pointer(self, job, best_epoch):
         """Write the best-checkpoint pointer file (see
@@ -5058,6 +5069,9 @@ class ZFMicrogliaAIWidget(QWidget):
         if gt is not None:
             self._kr_gt_edit.setText(str(gt))
 
+        if gt is not None:
+            self._ct_calib_gt_edit.setText(str(gt))
+
         self._gtp_stem_edit.setText(stem)
         if ext_rm is not None:
             self._gtp_img_edit.setText(str(ext_rm))
@@ -5144,6 +5158,13 @@ class ZFMicrogliaAIWidget(QWidget):
              self._sigma_sweep_job, self._sg_status_lbl, self._on_sg_stop_sweep),
             ("cellprob", "Cellprob + Krendl merge params", self._kr_is_gt_cb, self._on_kr_run_sweep,
              self._krendl_sweep_job, self._kr_status_lbl, self._on_kr_stop_sweep),
+            # No Stop button/handler exists for this one -- it's a fast
+            # CPU-only skeleton+distance-transform measurement, not a
+            # multi-hour GPU sweep, so cancellation was never built for
+            # it; a no-op stop_fn is fine since it finishes almost
+            # immediately regardless.
+            ("branch_radius", "Calibrate branch_radius", self._ct_calib_is_gt_cb, self._on_ct_calib_run,
+             self._branch_calib_job, self._ct_calib_status_lbl, lambda: None),
         ]
         queue = []
         for key, label, cb, trigger, job, status_lbl, stop_fn in steps:
