@@ -6858,6 +6858,14 @@ class ZFMicrogliaAIWidget(QWidget):
 
         gpu = torch.cuda.is_available()
 
+        # Recoverable-crash cache -- see save_flow_cache()/load_flow_cache()
+        # in _cellpose_seg.py. Lives in this fish's own output folder, one
+        # cache file per stem; only ever survives on disk if mask-formation
+        # (the step right after the expensive network pass) itself crashes
+        # (e.g. a GPU OOM from another concurrent job) -- a normal run
+        # deletes it automatically once that step succeeds.
+        flow_cache_path = self._output_dir() / f"{stem}_cp_flow_cache.npz"
+
         self._cp_run_btn.setEnabled(False)
         self._cp_status_lbl.setText(f"Starting (device={'cuda' if gpu else 'cpu'})...")
         self._cp_log_view.clear()
@@ -6890,7 +6898,7 @@ class ZFMicrogliaAIWidget(QWidget):
                         max_gap=max_gap, min_contact=min_contact, gt_min=gt_min,
                         large_contact=large_contact, min_hole_size=min_hole_size, min_size=min_size,
                         final_min_fraction=final_min_fraction, niter=niter, scale_zyx=scale,
-                        gpu=gpu, progress_cb=_progress,
+                        gpu=gpu, progress_cb=_progress, flow_cache_path=flow_cache_path,
                     )
                 result["labels"] = labels
                 result["stats"]  = stats

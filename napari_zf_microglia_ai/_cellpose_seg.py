@@ -9,6 +9,8 @@ stays a CLI/research workflow; this produces a clean, sequentially-labeled
 instance mask ready for manual correction or export.
 """
 
+from pathlib import Path
+
 import numpy as np
 from scipy.ndimage import find_objects, distance_transform_edt, binary_dilation
 
@@ -103,6 +105,50 @@ def predict_flows(volume, model_path, anisotropy, gpu=True):
     )
     dP, cellprob = flows[1], flows[2]
     return model, dP, cellprob, volume.shape
+
+
+def save_flow_cache(path, dP, cellprob_map, shape, model_path, anisotropy, volume_dtype):
+    """Persist predict_flows()'s expensive network-pass output to disk,
+    plus enough fingerprint metadata (model checkpoint, anisotropy,
+    volume shape/dtype) to detect a stale/mismatched cache on reload.
+
+    Built in response to a real crash (2026-08-19/20): masks_from_flows()
+    -- specifically cellpose's own internal follow_flows() re-run inside
+    _compute_masks() -- needs its own separate chunk of GPU memory, and
+    can CUDA-OOM even after predict_flows()'s multi-hour network pass
+    already succeeded, especially with another GPU job running
+    concurrently. Without this, that OOM loses the entire network pass:
+    dP/cellprob_map only ever lived in the crashed process's own memory,
+    with no persistence anywhere -- confirmed by reading _widget.py's own
+    exception handler, which keeps only str(exc), nothing else, and
+    Python's own automatic `del`-on-except-exit behaviour destroys every
+    local variable the traceback was holding onto (including dP/
+    cellprob_map, many GB) the moment the except block finishes.
+
+    See run_full_pipeline()'s flow_cache_path parameter for how this gets
+    used -- saved right after the network pass, deleted automatically
+    once masks_from_flows() succeeds afterward. Only ever survives on
+    disk if that specific step crashes."""
+    np.savez_compressed(
+        path, dP=dP, cellprob_map=cellprob_map, shape=np.asarray(shape),
+        model_path=str(model_path), anisotropy=np.float64(anisotropy),
+        volume_dtype=str(volume_dtype),
+    )
+
+
+def load_flow_cache(path, model_path, anisotropy, volume_shape, volume_dtype):
+    """Inverse of save_flow_cache(). Returns (dP, cellprob_map, shape) if
+    the cache's fingerprint (model checkpoint, anisotropy, volume shape/
+    dtype) matches the current call, else None -- a stale cache (e.g.
+    left over from a different fish, or a changed model/anisotropy since
+    the crash) is never silently reused."""
+    with np.load(path, allow_pickle=False) as f:
+        if (str(f["model_path"]) != str(model_path)
+                or not np.isclose(float(f["anisotropy"]), float(anisotropy))
+                or tuple(int(v) for v in f["shape"]) != tuple(volume_shape)
+                or str(f["volume_dtype"]) != str(volume_dtype)):
+            return None
+        return f["dP"], f["cellprob_map"], tuple(int(v) for v in f["shape"])
 
 
 def _make_capped_fill_holes(min_hole_size):
@@ -560,7 +606,8 @@ def run_full_pipeline(volume, model_path, cellprob=-2.5, flow=0.4, anisotropy=5.
                        max_gap=1.0, min_contact=10, large_contact=20, gt_min=GT_MIN,
                        gpu=True, progress_cb=None, precomputed_flows=None,
                        min_hole_size=0, min_size=15, final_min_fraction=0.618,
-                       niter=None, solidity_threshold=0.5, scale_zyx=(1.0, 0.174, 0.174)):
+                       niter=None, solidity_threshold=0.5, scale_zyx=(1.0, 0.174, 0.174),
+                       flow_cache_path=None):
     """
     Full do_3D + 3-GMM + Krendl safe merge + large-contact merge + final
     min-size safety net pipeline — identical math to krendl_do3d.py plus
@@ -604,6 +651,20 @@ def run_full_pipeline(volume, model_path, cellprob=-2.5, flow=0.4, anisotropy=5.
     calibrated GT-verified value (unlike this project's other
     thresholds) -- there is no GT for "is this shape porous" to
     calibrate against.
+
+    flow_cache_path : optional path to persist predict_flows()'s
+    expensive network-pass output to disk right before mask-formation
+    runs -- see save_flow_cache()'s docstring for why (masks_from_flows()
+    needs its own separate GPU memory and can CUDA-OOM even after the
+    network pass itself already succeeded). If a cache already exists at
+    this path and its fingerprint (model checkpoint, anisotropy, volume
+    shape/dtype) matches this call, the network pass is skipped entirely
+    and mask-formation resumes straight from the cached flows -- a stale/
+    mismatched cache is detected and ignored, never silently reused. The
+    cache file is deleted automatically once masks_from_flows() succeeds;
+    it only survives a crash in that specific step. Ignored when
+    precomputed_flows is already given (that already skips the network
+    pass via a different, in-memory-only mechanism, for the sweep tools).
     """
     def _report(msg):
         if progress_cb:
@@ -616,10 +677,36 @@ def run_full_pipeline(volume, model_path, cellprob=-2.5, flow=0.4, anisotropy=5.
                                   min_size=min_size, min_hole_size=min_hole_size, niter=niter,
                                   progress_cb=_report)
     else:
-        _report("Running do_3D inference...")
-        masks = run_do3d_inference(volume, model_path, cellprob, flow, anisotropy, gpu=gpu,
-                                    min_hole_size=min_hole_size, min_size=min_size, niter=niter,
-                                    progress_cb=_report)
+        cached = None
+        if flow_cache_path is not None and Path(flow_cache_path).exists():
+            cached = load_flow_cache(flow_cache_path, model_path, anisotropy,
+                                      volume.shape, volume.dtype)
+            if cached is None:
+                _report(f"Found a flow cache at {flow_cache_path} but it doesn't match "
+                         f"this image/model/anisotropy -- ignoring it, running fresh inference.")
+
+        if cached is not None:
+            _report(f"Reusing cached flows from a prior run's network pass "
+                     f"({Path(flow_cache_path).name}) -- no re-inference needed...")
+            from cellpose import models as cp_models
+            model = cp_models.CellposeModel(pretrained_model=str(model_path), gpu=gpu)
+            dP, cellprob_map, shape = cached
+        else:
+            _report("Running do_3D inference (network pass)...")
+            model, dP, cellprob_map, shape = predict_flows(volume, model_path, anisotropy, gpu=gpu)
+            if flow_cache_path is not None:
+                _report(f"Network pass complete -- caching flows to "
+                         f"{Path(flow_cache_path).name} before mask formation "
+                         f"(recoverable from here if that next step runs out of memory)...")
+                save_flow_cache(flow_cache_path, dP, cellprob_map, shape,
+                                 model_path, anisotropy, volume.dtype)
+
+        masks = masks_from_flows(model, dP, cellprob_map, shape, cellprob, flow,
+                                  min_size=min_size, min_hole_size=min_hole_size, niter=niter,
+                                  progress_cb=_report)
+
+        if flow_cache_path is not None and Path(flow_cache_path).exists():
+            Path(flow_cache_path).unlink()
     n0 = len(np.unique(masks[masks > 0]))
     raw_masks = masks.copy()  # pre-GMM, pre-Krendl -- see stats['raw_masks']
 
