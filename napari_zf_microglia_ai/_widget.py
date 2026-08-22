@@ -7004,7 +7004,31 @@ class ZFMicrogliaAIWidget(QWidget):
         timer2.start(500)
 
     def _on_rerun_single_cell(self):
-        target = self._active_layer()
+        # _active_layer() only ever returns an Image layer -- if the
+        # currently *selected* layer is instead the segmented Labels
+        # layer itself (the normal state right after a full run, since
+        # napari auto-selects the layer add_labels() just created), it
+        # silently falls back to "topmost Image layer", which is wrong
+        # whenever more than one Image layer is loaded (e.g. ch0+ch1 from
+        # multi-channel loading) -- previously surfaced as a false
+        # "no '<stem>_cellpose_labels' layer found" error even though the
+        # user was looking straight at it. Resolve the stem from the
+        # active Labels layer's own name first, when that's what's
+        # actually selected, instead of ignoring the selection outright.
+        active = self._viewer.layers.selection.active
+        target = None
+        lname = None
+        if (isinstance(active, napari.layers.Labels)
+                and active.name.endswith("_cellpose_labels")):
+            stem_candidate = active.name[: -len("_cellpose_labels")]
+            if stem_candidate in self._viewer.layers:
+                cand_layer = self._viewer.layers[stem_candidate]
+                if isinstance(cand_layer, napari.layers.Image):
+                    target = cand_layer
+                    lname = active.name
+
+        if target is None:
+            target = self._active_layer()
         if target is None:
             self._cp_status_lbl.setText(
                 "Select the brain_only layer first (the same one Cellpose-SAM "
@@ -7017,7 +7041,8 @@ class ZFMicrogliaAIWidget(QWidget):
             return
 
         stem = target.name
-        lname = f"{stem}_cellpose_labels"
+        if lname is None:
+            lname = f"{stem}_cellpose_labels"
         if lname not in self._viewer.layers:
             self._cp_status_lbl.setText(
                 f"ERROR: no '{lname}' layer found — run Cellpose-SAM Segmentation "
