@@ -645,6 +645,97 @@ def join_labels(labels: np.ndarray, label_a: int, label_b: int) -> np.ndarray:
     return new_labels
 
 
+def correct_label_from_intensity(
+    labels: np.ndarray,
+    image: np.ndarray,
+    label_id: int,
+    z: int,
+    lo: float,
+    hi: float,
+    pad: int = 15,
+) -> np.ndarray:
+    """
+    Regenerate one label's shape on one Z-slice from a raw-signal
+    intensity window, instead of hand-painting it -- for the case
+    where a particular contrast window (read straight from the signal
+    image layer's own contrast_limits) happens to trace the cell's
+    true silhouette better than the existing segmentation does on
+    that slice.
+
+    labels    : (Z, Y, X) label volume
+    image     : (Z, Y, X) raw signal volume, same shape as labels
+    label_id  : the label being corrected
+    z         : slice index to correct -- only this slice is touched
+    lo, hi    : inclusive intensity window -- pixels with
+                lo <= image <= hi are candidate foreground
+    pad       : bounding-box padding in pixels around the label's
+                existing footprint on this slice, XY only (matches
+                extract_cellpose_crops.py's own convention)
+
+    A naive threshold within the padded bounding box would happily
+    pick up a neighboring cell that happens to fall inside the same
+    box -- two real problems, not one: (a) a bright neighbor sitting
+    fully inside the crop but never touching label_id at all, and (b)
+    a neighbor whose thresholded pixels touch label_id's own
+    candidate pixels, which a plain connected-component pass would
+    then fuse into one blob. Both are handled the same way: any pixel
+    already claimed by a DIFFERENT existing label is excluded from
+    the candidate mask outright, before connected components ever
+    run -- so a foreign label can never be grown into, merged in, or
+    even present in the corrected shape, regardless of how the
+    intensity window or connectivity falls.
+
+    Returns new_labels (same shape, same dtype) with only that one
+    slice's label_id footprint changed. Raises ValueError if label_id
+    isn't present on slice z, or if the intensity window leaves
+    nothing connected to the label's own existing footprint (a wrong
+    contrast window would otherwise silently erase the label instead
+    of correcting it).
+    """
+    if not (0 <= z < labels.shape[0]):
+        raise ValueError(f"slice {z} out of range for a {labels.shape[0]}-slice volume")
+    if labels.shape != image.shape:
+        raise ValueError(f"labels shape {labels.shape} != image shape {image.shape}")
+
+    labels_z = labels[z]
+    image_z  = image[z]
+    existing = labels_z == label_id
+    if not np.any(existing):
+        raise ValueError(f"label {label_id} not found on slice {z}")
+
+    ys, xs = np.nonzero(existing)
+    y0 = max(int(ys.min()) - pad, 0)
+    y1 = min(int(ys.max()) + pad + 1, labels_z.shape[0])
+    x0 = max(int(xs.min()) - pad, 0)
+    x1 = min(int(xs.max()) + pad + 1, labels_z.shape[1])
+
+    crop_labels   = labels_z[y0:y1, x0:x1]
+    crop_image    = image_z[y0:y1, x0:x1]
+    crop_existing = existing[y0:y1, x0:x1]
+
+    candidate = (crop_image >= lo) & (crop_image <= hi)
+    foreign = (crop_labels != 0) & (crop_labels != label_id)
+    candidate &= ~foreign  # never claim another label's territory
+
+    cc, _ = cpu_label(candidate)
+    keep_ids = set(np.unique(cc[crop_existing & (cc > 0)]))
+    keep_ids.discard(0)
+    if not keep_ids:
+        raise ValueError(
+            f"intensity window [{lo}, {hi}] leaves nothing connected to "
+            f"label {label_id}'s existing footprint on slice {z} -- "
+            f"refusing to erase the label; adjust the contrast window "
+            f"and try again."
+        )
+    corrected = np.isin(cc, list(keep_ids))
+
+    new_labels = labels.copy()
+    crop = new_labels[z, y0:y1, x0:x1]
+    crop[crop_existing] = 0
+    crop[corrected] = label_id
+    return new_labels
+
+
 def create_labels(
     volume: np.ndarray,
     sigma_xy: float = 1.0,

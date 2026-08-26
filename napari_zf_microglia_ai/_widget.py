@@ -27,7 +27,10 @@ from superqt import QLabeledSlider, QLabeledDoubleSlider
 from ._io import load_file
 from ._inference import DEFAULT_MODEL, _SKIN_SEG_DIR, run_inference
 from ._background import remove_outside_brain, remove_global, fill_outside_brain_random
-from ._labeling import create_labels, resort_labels, split_label, join_labels, remove_debris
+from ._labeling import (
+    create_labels, resort_labels, split_label, join_labels, remove_debris,
+    correct_label_from_intensity,
+)
 from ._statistics import compute_stats
 from ._cellpose_seg import run_full_pipeline as _run_cellpose_pipeline
 from ._cellpose_seg import rerun_single_cell as _rerun_single_cell
@@ -2241,6 +2244,54 @@ class ZFMicrogliaAIWidget(QWidget):
 
         dlt.addWidget(_sep())
 
+        correct_note = QLabel(
+            "  Correct Label — regenerates one label's shape on the "
+            "CURRENT slice only, from the signal layer's own current "
+            "contrast limits (whatever intensity window it's displayed "
+            "with right now). A neighboring label's own pixels are "
+            "never touched, even if they fall inside the padded box."
+        )
+        correct_note.setWordWrap(True)
+        correct_note.setStyleSheet("color: #888; font-size: 10px;")
+        dlt.addWidget(correct_note)
+
+        correct_signal_row = QHBoxLayout()
+        correct_signal_row.addWidget(QLabel("Signal layer:"))
+        self._correct_signal_combo = QComboBox()
+        correct_signal_row.addWidget(self._correct_signal_combo)
+        dlt.addLayout(correct_signal_row)
+
+        correct_label_row = QHBoxLayout()
+        correct_label_row.addWidget(QLabel("Label to correct:"))
+        self._correct_label_spin = QSpinBox()
+        self._correct_label_spin.setMinimum(1)
+        self._correct_label_spin.setMaximum(99999)
+        self._correct_label_spin.setValue(1)
+        correct_label_row.addWidget(self._correct_label_spin)
+        self._correct_use_sel_btn = QPushButton("Use selected")
+        self._correct_use_sel_btn.setFixedWidth(90)
+        correct_label_row.addWidget(self._correct_use_sel_btn)
+        dlt.addLayout(correct_label_row)
+
+        correct_pad_row = QHBoxLayout()
+        correct_pad_row.addWidget(QLabel("Bbox padding (px):"))
+        self._correct_pad_spin = QSpinBox()
+        self._correct_pad_spin.setMinimum(0)
+        self._correct_pad_spin.setMaximum(500)
+        self._correct_pad_spin.setValue(15)
+        correct_pad_row.addWidget(self._correct_pad_spin)
+        dlt.addLayout(correct_pad_row)
+
+        self._correct_btn = QPushButton("Correct Label")
+        self._correct_btn.setStyleSheet("QPushButton { padding: 5px; }")
+        dlt.addWidget(self._correct_btn)
+
+        self._correct_status_lbl = QLabel("")
+        self._correct_status_lbl.setWordWrap(True)
+        dlt.addWidget(self._correct_status_lbl)
+
+        dlt.addWidget(_sep())
+
         self._save_labels_btn = QPushButton("Save Labels")
         self._save_labels_btn.setStyleSheet("QPushButton { padding: 5px; }")
         dlt.addWidget(self._save_labels_btn)
@@ -3616,6 +3667,8 @@ class ZFMicrogliaAIWidget(QWidget):
         self._join_a_use_sel_btn.clicked.connect(self._on_use_selected_label_join_a)
         self._join_b_use_sel_btn.clicked.connect(self._on_use_selected_label_join_b)
         self._join_btn.clicked.connect(self._on_join_labels)
+        self._correct_use_sel_btn.clicked.connect(self._on_use_selected_label_correct)
+        self._correct_btn.clicked.connect(self._on_correct_label)
         self._save_labels_btn.clicked.connect(self._on_save_labels)
         self._stats_backend_combo.currentIndexChanged.connect(self._on_stats_backend_changed)
         self._stats_btn.clicked.connect(self._on_generate_stats)
@@ -4568,9 +4621,13 @@ class ZFMicrogliaAIWidget(QWidget):
         """Repopulate image and shapes layer combos in the Statistics tab."""
         # Image layers
         cur_img = self._stats_image_combo.currentData()
+        cur_correct_img = self._correct_signal_combo.currentData()
         self._stats_image_combo.blockSignals(True)
         self._stats_image_combo.clear()
         self._stats_image_combo.addItem("None", None)
+        self._correct_signal_combo.blockSignals(True)
+        self._correct_signal_combo.clear()
+        self._correct_signal_combo.addItem("None", None)
         for lyr in self._viewer.layers:
             if isinstance(lyr, napari.layers.Image):
                 self._stats_image_combo.addItem(lyr.name, lyr.name)
@@ -4578,7 +4635,13 @@ class ZFMicrogliaAIWidget(QWidget):
                     self._stats_image_combo.setCurrentIndex(
                         self._stats_image_combo.count() - 1
                     )
+                self._correct_signal_combo.addItem(lyr.name, lyr.name)
+                if lyr.name == cur_correct_img:
+                    self._correct_signal_combo.setCurrentIndex(
+                        self._correct_signal_combo.count() - 1
+                    )
         self._stats_image_combo.blockSignals(False)
+        self._correct_signal_combo.blockSignals(False)
 
         # Shapes layers
         cur_shp = self._stats_shapes_combo.currentData()
@@ -5975,6 +6038,90 @@ class ZFMicrogliaAIWidget(QWidget):
                 f"Label {label_b} no longer exists."
             )
             self._join_btn.setEnabled(True)
+
+        timer.timeout.connect(_poll)
+        timer.start(200)
+
+    def _on_use_selected_label_correct(self):
+        """Copy the currently selected label from the active Labels layer
+        into Correct Label's target field."""
+        lyr = self._active_labels_layer()
+        if lyr is None:
+            self._correct_status_lbl.setText("No Labels layer selected.")
+            return
+        sel = int(lyr.selected_label)
+        if sel == 0:
+            self._correct_status_lbl.setText("Selected label is 0 (background).")
+            return
+        self._correct_label_spin.setValue(sel)
+        self._correct_status_lbl.setText(f"Label to correct set to {sel}.")
+
+    def _on_correct_label(self):
+        lyr = self._active_labels_layer()
+        if lyr is None:
+            self._correct_status_lbl.setText("No Labels layer selected.")
+            return
+
+        signal_name = self._correct_signal_combo.currentData()
+        if not signal_name or signal_name not in self._viewer.layers:
+            self._correct_status_lbl.setText("ERROR: pick a signal layer first.")
+            return
+        signal_lyr = self._viewer.layers[signal_name]
+
+        labels = np.asarray(lyr.data)
+        image = np.asarray(signal_lyr.data)
+        if labels.shape != image.shape:
+            self._correct_status_lbl.setText(
+                f"ERROR: labels shape {labels.shape} != signal shape "
+                f"{image.shape} -- pick the matching signal layer for "
+                f"this labels layer."
+            )
+            return
+
+        label_id = self._correct_label_spin.value()
+        pad = self._correct_pad_spin.value()
+        # Read the current on-screen contrast window directly -- this
+        # is the whole point: whatever window the user has dialed in by
+        # eye becomes the correction threshold, not a fixed value.
+        lo, hi = (float(v) for v in signal_lyr.contrast_limits)
+        z = int(self._viewer.dims.current_step[0])
+
+        self._correct_btn.setEnabled(False)
+        self._correct_status_lbl.setText(
+            f"Correcting label {label_id} on slice {z} from '{signal_name}' "
+            f"intensity window [{lo:.3g}, {hi:.3g}]…"
+        )
+
+        result = {}
+
+        def _worker():
+            try:
+                result["labels"] = correct_label_from_intensity(
+                    labels, image, label_id, z, lo, hi, pad=pad
+                )
+            except Exception as exc:
+                traceback.print_exc()
+                result["error"] = str(exc)
+
+        thread = threading.Thread(target=_worker, daemon=True)
+        thread.start()
+
+        timer = QTimer(self)
+
+        def _poll():
+            if thread.is_alive():
+                return
+            timer.stop()
+            if "error" in result:
+                self._correct_status_lbl.setText(f"ERROR: {result['error']}")
+                self._correct_btn.setEnabled(True)
+                return
+            lyr.data = result["labels"]
+            self._correct_status_lbl.setText(
+                f"Done — label {label_id} regenerated on slice {z} from "
+                f"[{lo:.3g}, {hi:.3g}]."
+            )
+            self._correct_btn.setEnabled(True)
 
         timer.timeout.connect(_poll)
         timer.start(200)
