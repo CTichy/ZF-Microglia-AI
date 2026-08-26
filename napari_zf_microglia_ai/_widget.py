@@ -29,7 +29,7 @@ from ._inference import DEFAULT_MODEL, _SKIN_SEG_DIR, run_inference
 from ._background import remove_outside_brain, remove_global, fill_outside_brain_random
 from ._labeling import (
     create_labels, resort_labels, split_label, join_labels, remove_debris,
-    correct_label_from_intensity,
+    correct_label_from_intensity, copy_label_to_adjacent_slice,
 )
 from ._statistics import compute_stats
 from ._cellpose_seg import run_full_pipeline as _run_cellpose_pipeline
@@ -2292,6 +2292,49 @@ class ZFMicrogliaAIWidget(QWidget):
 
         dlt.addWidget(_sep())
 
+        copyslice_note = QLabel(
+            "  Copy Label to Adjacent Slice — copies this label's shape "
+            "from the CURRENT slice onto the next or previous slice, "
+            "e.g. to patch a slice where its cross-section is missing "
+            "or broken. The label's own old shape on the target slice "
+            "is replaced; a neighboring label's pixels are never "
+            "touched, even where the copied shape would otherwise land "
+            "on top of them."
+        )
+        copyslice_note.setWordWrap(True)
+        copyslice_note.setStyleSheet("color: #888; font-size: 10px;")
+        dlt.addWidget(copyslice_note)
+
+        copyslice_label_row = QHBoxLayout()
+        copyslice_label_row.addWidget(QLabel("Label to copy:"))
+        self._copyslice_label_spin = QSpinBox()
+        self._copyslice_label_spin.setMinimum(1)
+        self._copyslice_label_spin.setMaximum(99999)
+        self._copyslice_label_spin.setValue(1)
+        copyslice_label_row.addWidget(self._copyslice_label_spin)
+        self._copyslice_use_sel_btn = QPushButton("Use selected")
+        self._copyslice_use_sel_btn.setFixedWidth(90)
+        copyslice_label_row.addWidget(self._copyslice_use_sel_btn)
+        dlt.addLayout(copyslice_label_row)
+
+        copyslice_dir_row = QHBoxLayout()
+        copyslice_dir_row.addWidget(QLabel("Copy to:"))
+        self._copyslice_dir_combo = QComboBox()
+        self._copyslice_dir_combo.addItem("Next slice (Z+1)", 1)
+        self._copyslice_dir_combo.addItem("Previous slice (Z-1)", -1)
+        copyslice_dir_row.addWidget(self._copyslice_dir_combo)
+        dlt.addLayout(copyslice_dir_row)
+
+        self._copyslice_btn = QPushButton("Copy Label to Adjacent Slice")
+        self._copyslice_btn.setStyleSheet("QPushButton { padding: 5px; }")
+        dlt.addWidget(self._copyslice_btn)
+
+        self._copyslice_status_lbl = QLabel("")
+        self._copyslice_status_lbl.setWordWrap(True)
+        dlt.addWidget(self._copyslice_status_lbl)
+
+        dlt.addWidget(_sep())
+
         self._save_labels_btn = QPushButton("Save Labels")
         self._save_labels_btn.setStyleSheet("QPushButton { padding: 5px; }")
         dlt.addWidget(self._save_labels_btn)
@@ -3669,6 +3712,8 @@ class ZFMicrogliaAIWidget(QWidget):
         self._join_btn.clicked.connect(self._on_join_labels)
         self._correct_use_sel_btn.clicked.connect(self._on_use_selected_label_correct)
         self._correct_btn.clicked.connect(self._on_correct_label)
+        self._copyslice_use_sel_btn.clicked.connect(self._on_use_selected_label_copyslice)
+        self._copyslice_btn.clicked.connect(self._on_copy_label_to_adjacent_slice)
         self._save_labels_btn.clicked.connect(self._on_save_labels)
         self._stats_backend_combo.currentIndexChanged.connect(self._on_stats_backend_changed)
         self._stats_btn.clicked.connect(self._on_generate_stats)
@@ -6128,6 +6173,79 @@ class ZFMicrogliaAIWidget(QWidget):
                 f"(signal = intensity >= {lo:.3g})."
             )
             self._correct_btn.setEnabled(True)
+
+        timer.timeout.connect(_poll)
+        timer.start(200)
+
+    def _on_use_selected_label_copyslice(self):
+        """Copy the currently selected label from the active Labels layer
+        into Copy Label to Adjacent Slice's target field."""
+        lyr = self._active_labels_layer()
+        if lyr is None:
+            self._copyslice_status_lbl.setText("No Labels layer selected.")
+            return
+        sel = int(lyr.selected_label)
+        if sel == 0:
+            self._copyslice_status_lbl.setText("Selected label is 0 (background).")
+            return
+        self._copyslice_label_spin.setValue(sel)
+        self._copyslice_status_lbl.setText(f"Label to copy set to {sel}.")
+
+    def _on_copy_label_to_adjacent_slice(self):
+        lyr = self._active_labels_layer()
+        if lyr is None:
+            self._copyslice_status_lbl.setText("No Labels layer selected.")
+            return
+
+        label_id = self._copyslice_label_spin.value()
+        direction = self._copyslice_dir_combo.currentData()
+        z_src = int(self._viewer.dims.current_step[0])
+        z_dst = z_src + direction
+        dir_word = "next" if direction > 0 else "previous"
+
+        labels = np.asarray(lyr.data)
+
+        self._copyslice_btn.setEnabled(False)
+        self._copyslice_status_lbl.setText(
+            f"Copying label {label_id} from slice {z_src} to the {dir_word} "
+            f"slice ({z_dst})…"
+        )
+
+        result = {}
+
+        def _worker():
+            try:
+                result["labels"], result["n_excluded"] = copy_label_to_adjacent_slice(
+                    labels, label_id, z_src, direction
+                )
+            except Exception as exc:
+                traceback.print_exc()
+                result["error"] = str(exc)
+
+        thread = threading.Thread(target=_worker, daemon=True)
+        thread.start()
+
+        timer = QTimer(self)
+
+        def _poll():
+            if thread.is_alive():
+                return
+            timer.stop()
+            if "error" in result:
+                self._copyslice_status_lbl.setText(f"ERROR: {result['error']}")
+                self._copyslice_btn.setEnabled(True)
+                return
+            lyr.data = result["labels"]
+            n_excluded = result["n_excluded"]
+            excl_note = (
+                f" ({n_excluded} px skipped -- landed on a different label)"
+                if n_excluded > 0 else ""
+            )
+            self._copyslice_status_lbl.setText(
+                f"Done — label {label_id} copied from slice {z_src} to "
+                f"slice {z_dst}{excl_note}."
+            )
+            self._copyslice_btn.setEnabled(True)
 
         timer.timeout.connect(_poll)
         timer.start(200)

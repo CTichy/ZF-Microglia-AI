@@ -749,6 +749,79 @@ def correct_label_from_intensity(
     return new_labels
 
 
+def copy_label_to_adjacent_slice(
+    labels: np.ndarray,
+    label_id: int,
+    z_src: int,
+    direction: int,
+) -> "tuple[np.ndarray, int]":
+    """
+    Copy label_id's 2D footprint from slice z_src onto the adjacent
+    slice z_src + direction -- e.g. to patch a slice where this cell's
+    cross-section is missing or broken by reusing a good neighboring
+    slice's shape.
+
+    labels    : (Z, Y, X) label volume
+    label_id  : the label whose shape is being copied
+    z_src     : source slice index (the currently-viewed slice)
+    direction : +1 (copy to the next slice) or -1 (copy to the
+                previous slice)
+
+    label_id's own OLD footprint on the target slice is cleared first,
+    then the copied shape is painted in -- re-running this doesn't
+    leave a stale double outline behind. Any pixel on the target slice
+    already claimed by a DIFFERENT existing label is excluded from the
+    copy outright and left completely untouched (same foreign-label
+    protection principle as correct_label_from_intensity() and
+    rerun_single_cell()'s crop-splice guard) -- natural shape drift
+    between slices means the copied footprint can land partly on a
+    neighboring cell's territory on the target slice, and that
+    territory must never be overwritten.
+
+    Returns (new_labels, n_excluded_px) -- new_labels is the same
+    shape/dtype with only the target slice's label_id footprint
+    changed; n_excluded_px is how many of the source shape's pixels
+    were dropped because they landed on a foreign label (0 for a
+    clean copy), so the caller can report a partial-overlap copy
+    honestly instead of silently pretending it was exact. Raises
+    ValueError if direction isn't +-1, if the source or target slice
+    is out of range, if label_id isn't present on z_src, or if every
+    pixel would be dropped to foreign-label territory (refuses to
+    paste nothing).
+    """
+    if direction not in (-1, 1):
+        raise ValueError(f"direction must be -1 or +1, got {direction}")
+    if not (0 <= z_src < labels.shape[0]):
+        raise ValueError(f"slice {z_src} out of range for a {labels.shape[0]}-slice volume")
+    z_dst = z_src + direction
+    if not (0 <= z_dst < labels.shape[0]):
+        raise ValueError(
+            f"target slice {z_dst} out of range for a {labels.shape[0]}-slice volume "
+            f"-- there is no {'next' if direction > 0 else 'previous'} slice"
+        )
+
+    src_mask = labels[z_src] == label_id
+    if not np.any(src_mask):
+        raise ValueError(f"label {label_id} not found on slice {z_src}")
+
+    dst_slice = labels[z_dst]
+    foreign = (dst_slice != 0) & (dst_slice != label_id)
+    paint_mask = src_mask & ~foreign  # never claim another label's territory
+    n_excluded_px = int(np.sum(src_mask & foreign))
+
+    if not np.any(paint_mask):
+        raise ValueError(
+            f"every pixel of label {label_id}'s shape on slice {z_src} lands on "
+            f"a different label on slice {z_dst} -- refusing to paste nothing."
+        )
+
+    new_labels = labels.copy()
+    new_dst = new_labels[z_dst]
+    new_dst[new_dst == label_id] = 0  # clear this label's own old footprint on the target slice
+    new_dst[paint_mask] = label_id
+    return new_labels, n_excluded_px
+
+
 def create_labels(
     volume: np.ndarray,
     sigma_xy: float = 1.0,
