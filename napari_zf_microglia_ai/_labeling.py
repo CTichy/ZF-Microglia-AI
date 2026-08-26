@@ -666,8 +666,21 @@ def correct_label_from_intensity(
     image     : (Z, Y, X) raw signal volume, same shape as labels
     label_id  : the label being corrected
     z         : slice index to correct -- only this slice is touched
-    lo, hi    : inclusive intensity window -- pixels with
-                lo <= image <= hi are candidate foreground
+    lo, hi    : the signal layer's own contrast_limits. Only lo is
+                actually used as the foreground cutoff (candidate =
+                image >= lo) -- hi is napari's display SATURATION
+                ceiling, not an upper bound on what still counts as
+                real signal. A band threshold (lo <= image <= hi) was
+                tried first and got this backwards: with a narrow
+                window like [100, 101] chosen specifically to make
+                the display saturate into a clean silhouette, a
+                cell's true bright interior sits well ABOVE hi (it's
+                just displayed as solid white, i.e. saturated) --
+                excluding it as "not candidate" emptied the label,
+                while scattered background pixels that happened to
+                fall inside the narrow band got pulled in instead.
+                hi is still accepted (and shown in status messages)
+                for context, but never restricts the mask.
     pad       : bounding-box padding in pixels around the label's
                 existing footprint on this slice, XY only (matches
                 extract_cellpose_crops.py's own convention)
@@ -713,7 +726,7 @@ def correct_label_from_intensity(
     crop_image    = image_z[y0:y1, x0:x1]
     crop_existing = existing[y0:y1, x0:x1]
 
-    candidate = (crop_image >= lo) & (crop_image <= hi)
+    candidate = crop_image >= lo  # one-sided: signal is "at/above lo", not a narrow band
     foreign = (crop_labels != 0) & (crop_labels != label_id)
     candidate &= ~foreign  # never claim another label's territory
 
@@ -722,7 +735,7 @@ def correct_label_from_intensity(
     keep_ids.discard(0)
     if not keep_ids:
         raise ValueError(
-            f"intensity window [{lo}, {hi}] leaves nothing connected to "
+            f"threshold >= {lo} leaves nothing connected to "
             f"label {label_id}'s existing footprint on slice {z} -- "
             f"refusing to erase the label; adjust the contrast window "
             f"and try again."

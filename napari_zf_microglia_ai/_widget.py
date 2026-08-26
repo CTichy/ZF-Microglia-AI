@@ -6080,16 +6080,22 @@ class ZFMicrogliaAIWidget(QWidget):
 
         label_id = self._correct_label_spin.value()
         pad = self._correct_pad_spin.value()
-        # Read the current on-screen contrast window directly -- this
-        # is the whole point: whatever window the user has dialed in by
-        # eye becomes the correction threshold, not a fixed value.
+        # Read the current on-screen contrast lower limit directly --
+        # the whole point is that whatever value the user has dialed
+        # in by eye becomes the correction threshold. Only lo is used
+        # as the foreground cutoff (signal = image >= lo); hi is
+        # napari's display saturation ceiling, not an upper bound on
+        # what still counts as real signal -- see
+        # correct_label_from_intensity()'s docstring for why a band
+        # threshold got this backwards (emptied the label, kept the
+        # surrounding background instead).
         lo, hi = (float(v) for v in signal_lyr.contrast_limits)
         z = int(self._viewer.dims.current_step[0])
 
         self._correct_btn.setEnabled(False)
         self._correct_status_lbl.setText(
             f"Correcting label {label_id} on slice {z} from '{signal_name}' "
-            f"intensity window [{lo:.3g}, {hi:.3g}]…"
+            f"-- signal = intensity >= {lo:.3g}…"
         )
 
         result = {}
@@ -6118,8 +6124,8 @@ class ZFMicrogliaAIWidget(QWidget):
                 return
             lyr.data = result["labels"]
             self._correct_status_lbl.setText(
-                f"Done — label {label_id} regenerated on slice {z} from "
-                f"[{lo:.3g}, {hi:.3g}]."
+                f"Done — label {label_id} regenerated on slice {z} "
+                f"(signal = intensity >= {lo:.3g})."
             )
             self._correct_btn.setEnabled(True)
 
