@@ -176,7 +176,7 @@ Select a `brain_only` layer produced by Tab 1. The tab shows exactly one of the 
 | `_RndFill` | neither (presentation/visualization output only) |
 | anything else | neither, with a hint on what to select |
 
-The **Resort Labels / Split Label / Save Labels** tools below only appear once one of the two sections above is showing. **Tab 3 — Statistics** stays visible regardless, showing an explanatory hint instead of its controls until at least one Labels layer exists in the viewer.
+The **Resort Labels / Remove Debris / Split Label / Join Labels / Correct Label / Copy Label to Adjacent Slice / Save Labels** tools below only appear once one of the two sections above is showing. **Tab 3 — Statistics** stays visible regardless, showing an explanatory hint instead of its controls until at least one Labels layer exists in the viewer.
 
 ### Pixel Classifier — Union-Find Labels
 
@@ -207,10 +207,16 @@ Requires a **Cellpose-SAM checkpoint** — this is a project-specific fine-tuned
 
 **Verify Cellprob / Large-contact (GT Sweep)** and **Build GT-Correction Package** — both moved to **Tab 5 — Sweeps & Utilities**.
 
+**Re-run This Cell Only** — fixes one label without redoing the whole fish: crops to that label's own padded bounding box, re-runs `do_3D` + the same GMM/Krendl/large-contact/final-min-size cleanup on just the crop, then splices the result back in place of the old label. Only crop pieces that overlap the original label survive the splice.
+
 ### Additional tools
 
 - **Resort Labels** — renumber 1…N by size, centroid Z/Y/X
+- **Remove Debris** — sweeps the active layer for anything below the golden-ratio-relaxed volume floor, per connected fragment (not per label ID)
 - **Split Label** — watershed split of a merged blob into N parts
+- **Join Labels** — the inverse of Split: merges Label B into Label A
+- **Correct Label** — regenerates a label's shape on the current slice from the signal layer's own live contrast window (signal = intensity at/above the lower contrast limit)
+- **Copy Label to Adjacent Slice** — copies a label's shape from the current slice onto the next/previous slice, e.g. to patch a broken/missing cross-section
 - **Save Labels** — explicit file dialog (edit labels in napari before saving)
 
 ---

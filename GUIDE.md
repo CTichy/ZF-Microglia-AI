@@ -338,7 +338,7 @@ Tab 2 shows **exactly one** of the two labelling methods below, chosen automatic
 
 So the choice is really made back in **Tab 1, Step 5**: pick **Option 1** if you plan to segment with Cellpose-SAM, or **Option 2** if you plan to use the Pixel Classifier.
 
-The **Sort by / Resort Labels**, **Remove Debris**, **Split Label**, and **Save Labels** tools (Section 6, further down) only appear once one of the two sections above is showing — with no `_ExtRm`/`_NoBG` layer selected, there's nothing yet to sort, clean up, split, or save. **Tab 3 — Statistics** takes a different approach: it stays visible regardless, showing an explanatory hint in place of its controls until at least one Labels layer exists in the viewer, so a first-time user can still discover the tab is there.
+The **Sort by / Resort Labels**, **Remove Debris**, **Split Label**, **Join Labels**, **Correct Label**, **Copy Label to Adjacent Slice**, and **Save Labels** tools (Section 6, further down) only appear once one of the two sections above is showing — with no `_ExtRm`/`_NoBG` layer selected, there's nothing yet to sort, clean up, split, or save. **Tab 3 — Statistics** takes a different approach: it stays visible regardless, showing an explanatory hint in place of its controls until at least one Labels layer exists in the viewer, so a first-time user can still discover the tab is there.
 
 ---
 
@@ -540,6 +540,18 @@ Click to start. `do_3D` inference is slow — it can take **hours** for a full-s
 
 > If this button errors with `No module named 'cellpose'`, install it in your environment: `pip install cellpose` (already listed in `environment.yml`/`environment-mac.yml` for fresh installs — see Section 15).
 
+#### Re-run This Cell Only
+
+Fixes one specific label without redoing the whole fish. Crops to that label's own bounding box (+ padding), re-runs `do_3D` plus the same GMM cleanup / Krendl safe-merge / large-contact merge / final-min-size safety net used by a full run — using this section's current settings, so nudge Cellprob or Flow iterations first if that's what needs to change for this cell — then splices the result back into the full label array in place of the old label. Requires the matching `<image>_cellpose_labels` layer to already exist (run the full segmentation once first).
+
+Only crop-result pieces that actually overlap the original label's own footprint are kept — a neighboring cell caught by the padding and independently re-detected is discarded, not duplicated. If the re-run reveals more than one real cell in that crop, all of them are kept as new label IDs rather than forced back into one.
+
+**Label ID to re-run** — type it directly, or click the cell in the viewer and use the **Use selected** button next to it.
+
+Typical use: after a full run flags a porous/skeletonized cell (see the warning that appears after Run Cellpose-SAM Segmentation above), re-run just that one label at a stricter Cellprob (e.g. -0.3) instead of raising the setting for the whole fish — a fish-wide stricter threshold can clip real boundary pixels off cells that already segment fine, just to fix the minority that don't.
+
+> **Tip:** select the volume layer (the `_ExtRm` image, not the labels layer) before clicking, if napari has auto-selected the labels layer from a previous action — the tool resolves the correct volume either way, but re-selecting the image layer directly is the more obvious path.
+
 ---
 
 **Verify Cellprob / Large-contact (GT Sweep)** — moved to [Section 9c](#9c-verify-cellprob--large-contact-gt-sweep), Tab 5 — Sweeps & Utilities. Also recalibrates the shared Min volume field (Common Settings, 6a) from GT — Safe-merge's floor and Min volume are the same number now, not two separately-tracked copies of it.
@@ -633,6 +645,44 @@ Click to run. The original blob is replaced in-place:
 The cut is **interface-only**: exactly the voxels at the boundary between parts are removed, creating a 1-voxel gap. The outer surface of each part is not touched — thin protrusions are preserved.
 
 If the algorithm cannot find N distinct sub-volumes, an error message is shown. Try reducing Smooth σ or Min distance.
+
+---
+
+### Join Labels
+
+The inverse of Split Label: merges Label B into Label A when one cell was wrongly cut into two pieces (e.g. a thin process fooled the segmenter into treating it as a neck). A single, fast, whole-volume operation — no bounding-box crop or GPU path needed, since nothing here depends on shape or geometry.
+
+**Label A (keep)** / **Label B (merge into A)** — type each label number directly, or click the corresponding fragment in the viewer and use that field's own **Use selected** button (click one fragment, grab it into A; click the other, grab it into B).
+
+Click **Join Labels**. Every voxel currently carrying Label B becomes Label A instead; Label A's ID survives, Label B's ID disappears entirely. Works on labels from either route.
+
+---
+
+### Correct Label
+
+Regenerates one label's shape on the **current slice only**, from the raw signal layer's own live contrast display — useful when a particular contrast window traces a cell's true silhouette more accurately than the existing label does on that slice.
+
+**How it works:** dial the signal (`_ExtRm`/`_NoBG`/raw channel) Image layer's contrast limits in napari until the cell's outline looks right by eye — a narrow window (e.g. displaying only values from ~100 up) usually works best, since it saturates the display into a clean silhouette rather than showing a soft gradient. Then, without changing anything else, run this tool: it reads that same contrast window straight off the layer and uses everything **at or above** the lower limit as signal — the upper limit is just napari's own display-saturation ceiling, not a boundary on what still counts as real signal, so it isn't used to exclude anything.
+
+**Signal layer** — pick the Image layer whose current contrast window should be used (populated automatically from whatever Image layers are open).
+
+**Label to correct** — type it directly, or click the label in the viewer and use **Use selected**.
+
+**Bbox padding (px)** — default 15, matching the padding convention used elsewhere in this plugin (e.g. crop extraction). The correction only looks within this label's own bounding box (+ padding) on the current slice, not the whole image.
+
+Click **Correct Label**. A neighboring label's own pixels are never touched, absorbed, or grown into — even if they sit inside the same padded box and share the exact same intensity range as the label being corrected. If the chosen contrast window doesn't overlap the label's existing shape at all, the tool refuses to apply rather than silently emptying the label — adjust the window and try again.
+
+---
+
+### Copy Label to Adjacent Slice
+
+Copies one label's 2D shape from the currently-viewed slice onto the next or previous slice — useful for patching a slice where a cell's cross-section is missing or broken, by reusing a clean neighboring slice's shape instead of hand-painting it.
+
+**Label to copy** — type it directly, or click the label in the viewer and use **Use selected**.
+
+**Copy to** — choose **Next slice (Z+1)** or **Previous slice (Z-1)**.
+
+Click **Copy Label to Adjacent Slice**. The label's own old shape on the target slice is cleared first, then the copied shape is painted in — running this again on the same pair of slices replaces the previous copy cleanly rather than leaving a stale double outline. As with Correct Label, a neighboring label's pixels on the target slice are never touched: any part of the copied shape that would land on a different label is silently dropped, and the status message reports how many pixels were skipped that way so a partial-overlap copy is never mistaken for an exact one.
 
 ---
 
@@ -1730,6 +1780,7 @@ Shown automatically based on active layer suffix — `_ExtRm` → Cellpose-SAM, 
 | Safe-merge min contact | 10 vox | Min touching surface required to merge |
 | Large-contact merge | 20 vox | Second merge pass for thick-junction splits |
 | Email me when done | Unchecked | Uses Tab 5's shared Email notification credentials (Section 9h) — do_3D can run hours on a full-size fish |
+| Re-run This Cell Only | — | Fixes one label without redoing the whole fish — crops, re-runs do_3D + cleanup on just that label, splices the result back in |
 
 **Both methods (once labels exist)**
 
@@ -1737,6 +1788,9 @@ Shown automatically based on active layer suffix — `_ExtRm` → Cellpose-SAM, 
 |---------|-------------|--------------|
 | Split σ | 1.0 | Smoothness for watershed split |
 | Min distance | 5 | Peak separation for split detection |
+| Join Labels | — | Merges Label B into Label A — the inverse of Split Label |
+| Correct Label | — | Regenerates a label's shape on the current slice from the signal layer's live contrast window |
+| Copy Label to Adjacent Slice | — | Copies a label's shape from the current slice onto the next/previous slice |
 
 ### Tab 3 — Statistics
 
