@@ -5870,7 +5870,17 @@ class ZFMicrogliaAIWidget(QWidget):
                 self._resort_status_lbl.setText(f"ERROR: {result['error']}")
                 self._resort_btn.setEnabled(True)
                 return
-            lyr.data = result["labels"]
+            # In-place mutation + refresh(), not a wholesale lyr.data =
+            # reassignment -- see copy_label_to_adjacent_slice's memory
+            # entry: reassigning .data on a large, already-displayed
+            # Labels layer can race napari's own async thumbnail update
+            # (napari/layers/labels/labels.py's _update_thumbnail(), a
+            # confirmed napari-internal bug, own "ASYNC_TODO" comment)
+            # and OOM-crash napari. Same array identity -> no data-changed
+            # event, no race; refresh() with async slicing off (this
+            # env's default) is fully synchronous.
+            lyr.data[:] = result["labels"]
+            lyr.refresh()
             n = int(result["labels"].max())
             sort_label = self._sort_combo.currentText()
             rev_str    = " (reversed)" if reverse else ""
@@ -5918,7 +5928,8 @@ class ZFMicrogliaAIWidget(QWidget):
                 self._debris_status_lbl.setText(f"ERROR: {result['error']}")
                 self._debris_btn.setEnabled(True)
                 return
-            lyr.data = result["labels"]
+            lyr.data[:] = result["labels"]  # in-place -- see Resort Labels above for why
+            lyr.refresh()
             n = result["n_removed"]
             self._debris_status_lbl.setText(
                 f"Done — removed {n} object(s) below {threshold} vox "
@@ -5999,7 +6010,8 @@ class ZFMicrogliaAIWidget(QWidget):
                 self._split_status_lbl.setText(f"ERROR: {result['error']}")
                 self._split_btn.setEnabled(True)
                 return
-            lyr.data  = result["labels"]
+            lyr.data[:] = result["labels"]  # in-place -- see Resort Labels above for why
+            lyr.refresh()
             new_ids   = result["new_ids"]
             n_total   = int(result["labels"].max())
             all_ids   = [target_label] + new_ids
@@ -6077,7 +6089,8 @@ class ZFMicrogliaAIWidget(QWidget):
                 self._join_status_lbl.setText(f"ERROR: {result['error']}")
                 self._join_btn.setEnabled(True)
                 return
-            lyr.data = result["labels"]
+            lyr.data[:] = result["labels"]  # in-place -- see Resort Labels above for why
+            lyr.refresh()
             self._join_status_lbl.setText(
                 f"Done — label {label_b} merged into {label_a}. "
                 f"Label {label_b} no longer exists."
@@ -6167,7 +6180,8 @@ class ZFMicrogliaAIWidget(QWidget):
                 self._correct_status_lbl.setText(f"ERROR: {result['error']}")
                 self._correct_btn.setEnabled(True)
                 return
-            lyr.data = result["labels"]
+            lyr.data[:] = result["labels"]  # in-place -- see Resort Labels above for why
+            lyr.refresh()
             self._correct_status_lbl.setText(
                 f"Done — label {label_id} regenerated on slice {z} "
                 f"(signal = intensity >= {lo:.3g})."
@@ -6235,7 +6249,8 @@ class ZFMicrogliaAIWidget(QWidget):
                 self._copyslice_status_lbl.setText(f"ERROR: {result['error']}")
                 self._copyslice_btn.setEnabled(True)
                 return
-            lyr.data = result["labels"]
+            lyr.data[:] = result["labels"]  # in-place -- see Resort Labels above for why
+            lyr.refresh()
             n_excluded = result["n_excluded"]
             excl_note = (
                 f" ({n_excluded} px skipped -- landed on a different label)"
@@ -7428,7 +7443,8 @@ class ZFMicrogliaAIWidget(QWidget):
                 return
 
             info = result["info"]
-            labels_layer.data = result["new_labels"]
+            labels_layer.data[:] = result["new_labels"]  # in-place -- see Resort Labels above for why
+            labels_layer.refresh()
 
             new_ids_str = ", ".join(str(i) for i in info["new_labels"]) or "(none -- discarded, no overlap survived)"
             porous_note = ""
