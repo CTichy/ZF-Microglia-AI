@@ -607,6 +607,14 @@ The label number of the blob you want to split. You can type it directly, or:
 
 Reads the currently selected label from the active napari Labels layer and fills it into the Target label spinner. Click the blob in napari first, then click this button.
 
+#### Split mode
+
+**3D (whole label)** (default) — splits the entire 3D blob, exactly as described above.
+
+**2D (current slice only)** — restricts the whole operation to the single Z-slice you're currently viewing: crops to that label's footprint on just that slice, runs the same watershed pipeline in 2D, and splices the result back into only that slice. Every other slice of the label is left completely untouched, and the new piece exists only on that slice — it doesn't extend into neighboring slices the way a 3D split's parts would.
+
+Use 2D mode when two things only touch on **one** cross-section rather than forming a genuine 3D neck — e.g. real signal happening to graze an unrelated skin-residue fragment right at that particular slice, with no real connection above or below it. In that case a 3D split either can't find a cut there at all (there's no true 3D saddle to watershed on) or ends up cutting somewhere unrelated on a different slice instead. Navigate to the problem slice in napari before clicking Split Label.
+
 #### Split into N parts
 
 **Range:** 2 to 10 — **Default: 2**
@@ -1786,6 +1794,7 @@ Shown automatically based on active layer suffix — `_ExtRm` → Cellpose-SAM, 
 
 | Control | Recommended | What it does |
 |---------|-------------|--------------|
+| Split mode | 3D (whole label) | 2D restricts the split to the current slice only — for artifacts that only touch on one cross-section |
 | Split σ | 1.0 | Smoothness for watershed split |
 | Min distance | 5 | Peak separation for split detection |
 | Join Labels | — | Merges Label B into Label A — the inverse of Split Label |
