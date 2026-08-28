@@ -2153,6 +2153,27 @@ class ZFMicrogliaAIWidget(QWidget):
         split_lbl_row.addWidget(self._split_use_sel_btn)
         dlt.addLayout(split_lbl_row)
 
+        split_mode_row = QHBoxLayout()
+        split_mode_row.addWidget(QLabel("Split mode:"))
+        self._split_mode_combo = QComboBox()
+        self._split_mode_combo.addItem("3D (whole label)", "3d")
+        self._split_mode_combo.addItem("2D (current slice only)", "2d")
+        split_mode_row.addWidget(self._split_mode_combo)
+        dlt.addLayout(split_mode_row)
+
+        split_mode_note = QLabel(
+            "  2D splits only the CURRENT slice, leaving every other "
+            "slice of this label completely untouched -- use it when "
+            "two things only touch on one cross-section (e.g. real "
+            "signal grazing a skin-residue fragment right at that "
+            "slice) rather than a genuine 3D neck, where a whole-volume "
+            "3D split either wouldn't find that cut at all or would cut "
+            "somewhere unrelated on a different slice instead."
+        )
+        split_mode_note.setWordWrap(True)
+        split_mode_note.setStyleSheet("color: #888; font-size: 10px;")
+        dlt.addWidget(split_mode_note)
+
         split_n_row = QHBoxLayout()
         split_n_row.addWidget(QLabel("Split into:"))
         self._split_n_spin = QSpinBox()
@@ -5977,9 +5998,13 @@ class ZFMicrogliaAIWidget(QWidget):
         n_splits     = self._split_n_spin.value()
         sigma        = self._split_sigma_slider.value()
         min_dist     = self._split_dist_slider.value()
+        mode         = self._split_mode_combo.currentData()
+        z            = int(self._viewer.dims.current_step[0]) if mode == "2d" else None
 
         self._split_btn.setEnabled(False)
-        self._split_status_lbl.setText("Splitting…")
+        self._split_status_lbl.setText(
+            f"Splitting (2D, slice {z})…" if mode == "2d" else "Splitting (3D)…"
+        )
 
         labels = np.asarray(lyr.data)
         result = {}
@@ -5992,6 +6017,8 @@ class ZFMicrogliaAIWidget(QWidget):
                     n_splits=n_splits,
                     sigma=sigma,
                     min_distance=min_dist,
+                    mode=mode,
+                    z=z,
                 )
             except Exception as exc:
                 traceback.print_exc()
@@ -6015,8 +6042,9 @@ class ZFMicrogliaAIWidget(QWidget):
             new_ids   = result["new_ids"]
             n_total   = int(result["labels"].max())
             all_ids   = [target_label] + new_ids
+            mode_note = f" (2D, slice {z} only)" if mode == "2d" else ""
             self._split_status_lbl.setText(
-                f"Done — {n_splits} parts: {all_ids}. Total labels: {n_total}."
+                f"Done{mode_note} — {n_splits} parts: {all_ids}. Total labels: {n_total}."
             )
             self._split_btn.setEnabled(True)
 

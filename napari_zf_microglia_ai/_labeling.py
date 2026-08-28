@@ -418,53 +418,30 @@ def remove_debris(labels: np.ndarray, threshold: int) -> "tuple[np.ndarray, int]
     return out.astype(np.int32), n_removed
 
 
-def split_label(
-    labels: np.ndarray,
-    target_label: int,
-    n_splits: int = 2,
-    sigma: float = 1.0,
-    min_distance: int = 5,
-) -> "tuple[np.ndarray, list[int]]":
+def _watershed_split_mask(
+    mask: np.ndarray,
+    n_splits: int,
+    sigma: float,
+    min_distance: int,
+) -> np.ndarray:
     """
-    Split one label into n_splits parts using watershed on the distance transform.
+    Core watershed-split engine, dimension-agnostic (works identically on a
+    2D mask -- one Z-slice -- or a full 3D mask) -- extracted so
+    split_label() can reuse the exact same pipeline for both its 3D and 2D
+    modes instead of maintaining two copies.
 
-    The boundary is placed where the object is narrowest — the saddle point
-    of the distance map between the local maxima.
+    mask : bool ndarray, any ndim (2D slice or full 3D volume)
 
-    Speed notes
-    -----------
-    - All operations run on the bounding box of the target label, not the
-      full volume — critical for large stacks.
-    - Gaussian smoothing runs on GPU (CuPy) when available.
-    - Seed assignment runs on GPU via Euclidean nearest-seed (CuPy); falls
-      back to CPU watershed if GPU is unavailable or runs out of memory.
+    Returns split_full : int32 ndarray, same shape as mask -- 0=background,
+    1..n_splits=parts (part 1 is the seed with the highest EDT peak, i.e.
+    the thickest chunk).
 
-    Parameters
-    ----------
-    labels       : (Z, Y, X) int32 ndarray
-    target_label : label value to split
-    n_splits     : number of parts to produce (≥ 2)
-    sigma        : Gaussian smoothing of distance map (higher = broader peaks)
-    min_distance : minimum voxel distance between seed peaks
-
-    Returns
-    -------
-    (new_labels, new_ids)
-        new_labels — same shape as labels, blob split into n_splits parts
-        new_ids    — list of n_splits-1 new label IDs created
-                     (target_label is kept for part 1)
-
-    Raises
-    ------
-    ValueError  if the label is not found, or fewer peaks than n_splits found
+    Raises ValueError if fewer than n_splits distinct sub-regions/peaks are
+    found (mirrors the original error messages).
     """
     from scipy.ndimage import distance_transform_edt
 
-    mask = labels == target_label
-    if not np.any(mask):
-        raise ValueError(f"Label {target_label} not found")
-
-    # ── 1. Crop to bounding box (avoids running EDT on full volume) ────────
+    # ── 1. Crop to bounding box (avoids running EDT on the full array) ─────
     nz  = np.argwhere(mask)
     lo  = nz.min(axis=0)
     hi  = nz.max(axis=0)
@@ -515,7 +492,7 @@ def split_label(
     dist_in_mask = dist_smooth * mask_crop.astype(np.float32)
     max_dist = float(dist_in_mask.max())
     if max_dist == 0:
-        raise ValueError(f"Label {target_label}: distance transform is zero — blob too flat?")
+        raise ValueError("distance transform is zero — blob too flat?")
 
     # Iteratively reduce h until >= n_splits prominent peaks found
     h_val   = max_dist * 0.50
@@ -592,20 +569,98 @@ def split_label(
         interface |= tmp_lo | tmp_hi
     eroded_crop[interface] = 0
 
-    # ── 7. Write result back into full-volume label array ─────────────────
+    # ── 7. Write result back into a full-size (mask.shape) array ───────────
     split_full = np.zeros(mask.shape, dtype=np.int32)
     split_full[sl] = eroded_crop
+    return split_full
+
+
+def split_label(
+    labels: np.ndarray,
+    target_label: int,
+    n_splits: int = 2,
+    sigma: float = 1.0,
+    min_distance: int = 5,
+    mode: str = "3d",
+    z: "int | None" = None,
+) -> "tuple[np.ndarray, list[int]]":
+    """
+    Split one label into n_splits parts using watershed on the distance transform.
+
+    The boundary is placed where the object is narrowest — the saddle point
+    of the distance map between the local maxima.
+
+    mode="3d" (default) splits the whole 3D blob, exactly as before.
+    mode="2d" restricts the entire operation to ONE Z-slice (`z`) --
+    for the case where two things only touch on a single cross-section
+    (e.g. real signal happening to graze a skin-residue fragment right
+    at that slice) and a true 3D neck/watershed saddle doesn't actually
+    exist across Z, so a 3D split would either fail to find a cut there
+    at all or cut somewhere unrelated on a different slice instead. In
+    2D mode, only that one slice is touched -- every other Z-slice of
+    the label is left completely untouched, and the new part(s) exist
+    only on that slice (they don't extend into neighboring slices the
+    way a 3D split's parts would).
+
+    Speed notes
+    -----------
+    - All operations run on the bounding box of the target label (or its
+      footprint on the given slice, in 2D mode), not the full volume/slice
+      — critical for large stacks.
+    - Gaussian smoothing runs on GPU (CuPy) when available.
+
+    Parameters
+    ----------
+    labels       : (Z, Y, X) int32 ndarray
+    target_label : label value to split
+    n_splits     : number of parts to produce (≥ 2)
+    sigma        : Gaussian smoothing of distance map (higher = broader peaks)
+    min_distance : minimum voxel distance between seed peaks
+    mode         : "3d" (default) or "2d"
+    z            : slice index, required when mode="2d" (ignored for "3d")
+
+    Returns
+    -------
+    (new_labels, new_ids)
+        new_labels — same shape as labels, blob split into n_splits parts
+        new_ids    — list of n_splits-1 new label IDs created
+                     (target_label is kept for part 1)
+
+    Raises
+    ------
+    ValueError  if mode is invalid, z is missing/out of range for mode="2d",
+                the label is not found (in the volume, or on slice z), or
+                fewer peaks than n_splits are found
+    """
+    if mode not in ("3d", "2d"):
+        raise ValueError(f"mode must be '3d' or '2d', got {mode!r}")
+
+    if mode == "2d":
+        if z is None:
+            raise ValueError("z (slice index) is required when mode='2d'")
+        if not (0 <= z < labels.shape[0]):
+            raise ValueError(f"slice {z} out of range for a {labels.shape[0]}-slice volume")
+        mask = labels[z] == target_label
+        if not np.any(mask):
+            raise ValueError(f"Label {target_label} not found on slice {z}")
+    else:
+        mask = labels == target_label
+        if not np.any(mask):
+            raise ValueError(f"Label {target_label} not found")
+
+    split_full = _watershed_split_mask(mask, n_splits, sigma, min_distance)
 
     out     = labels.copy()
+    out_view = out[z] if mode == "2d" else out
     new_ids = []
     max_lbl = int(labels.max())
 
     # Zero out the original blob first (gap voxels become background)
-    out[mask] = 0
-    out[split_full == 1] = target_label
+    out_view[mask] = 0
+    out_view[split_full == 1] = target_label
     for i in range(2, n_splits + 1):
         new_id = max_lbl + (i - 1)
-        out[split_full == i] = new_id
+        out_view[split_full == i] = new_id
         new_ids.append(new_id)
 
     for i, nid in enumerate([target_label] + new_ids, start=1):
