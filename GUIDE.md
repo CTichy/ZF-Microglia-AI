@@ -31,6 +31,7 @@
    - [9f. Build GT-Correction Package](#9f-build-gt-correction-package)
    - [9g. Verify Smooth σ XY / σ Z (GT Sweep)](#9g-verify-smooth-sigma-xy-sigma-z-gt-sweep)
    - [9h. Email notification (optional)](#9h-email-notification-optional)
+   - [9i. Calibrate Correct-Label Contrast (from Cellpose-SAM)](#9i-calibrate-correct-label-contrast-from-cellpose-sam)
 10. [Output files and folder structure](#10-output-files-and-folder-structure)
 11. [Statistics CSV — all columns explained](#11-statistics-csv--all-columns-explained) — for the algorithm/formula behind each column instead, see the separate [STATISTICS_GUIDE.md](STATISTICS_GUIDE.md)
 12. [Setting up description backends](#12-setting-up-description-backends)
@@ -668,17 +669,26 @@ Click **Join Labels**. Every voxel currently carrying Label B becomes Label A in
 
 ### Correct Label
 
-Regenerates one label's shape on the **current slice only**, from the raw signal layer's own live contrast display — useful when a particular contrast window traces a cell's true silhouette more accurately than the existing label does on that slice.
+Regenerates a label's shape from the raw signal layer's own live contrast display — useful when a particular contrast window traces a cell's true silhouette more accurately than the existing label does. Works in **2D** (one slice) or **3D** (the whole cell), via the **Correction mode** dropdown.
 
-**How it works:** dial the signal (`_ExtRm`/`_NoBG`/raw channel) Image layer's contrast limits in napari until the cell's outline looks right by eye — a narrow window (e.g. displaying only values from ~100 up) usually works best, since it saturates the display into a clean silhouette rather than showing a soft gradient. Then, without changing anything else, run this tool: it reads that same contrast window straight off the layer and uses everything **at or above** the lower limit as signal — the upper limit is just napari's own display-saturation ceiling, not a boundary on what still counts as real signal, so it isn't used to exclude anything.
+**How it works (both modes):** dial the signal (`_ExtRm`/`_NoBG`/raw channel) Image layer's contrast limits in napari until the cell's outline looks right by eye — a narrow window (e.g. displaying only values from ~100 up) usually works best, since it saturates the display into a clean silhouette rather than showing a soft gradient. `Calibrate Correct-Label Contrast (from Cellpose-SAM)` in [Tab 5](#9-tab-5--sweeps--utilities) can find this value automatically instead of by eye — see below. Then, without changing anything else, run this tool: it reads that same contrast window straight off the layer and uses everything **at or above** the lower limit as signal — the upper limit is just napari's own display-saturation ceiling, not a boundary on what still counts as real signal, so it isn't used to exclude anything.
 
 **Signal layer** — pick the Image layer whose current contrast window should be used (populated automatically from whatever Image layers are open).
 
 **Label to correct** — type it directly, or click the label in the viewer and use **Use selected**.
 
-**Bbox padding (px)** — default 15, matching the padding convention used elsewhere in this plugin (e.g. crop extraction). The correction only looks within this label's own bounding box (+ padding) on the current slice, not the whole image.
+**Bbox padding (px)** — default 15, matching the padding convention used elsewhere in this plugin (e.g. crop extraction). Each corrected slice only looks within this label's own bounding box (+ padding) on that slice, not the whole image.
 
-Click **Correct Label**. A neighboring label's own pixels are never touched, absorbed, or grown into — even if they sit inside the same padded box and share the exact same intensity range as the label being corrected. If the chosen contrast window doesn't overlap the label's existing shape at all, the tool refuses to apply rather than silently emptying the label — adjust the window and try again.
+**Correction mode**
+
+- **2D (current slice only)** — corrects only the slice you're currently viewing.
+- **3D (whole cell, from centroid)** — corrects the entire cell. Finds the label's own 3D centroid, corrects that slice first, then walks outward slice-by-slice in both +Z and -Z — each step is seeded by the *previous* step's own corrected shape (not that slice's original footprint), so the correction can grow into a slice the original label never touched at all, not just reshape slices that already carried it. Each direction stops naturally the moment a step finds nothing to connect to on the next slice — everything beyond that point is left completely untouched, even if the original (uncorrected) label continued further there.
+
+  After the walk, a debris-cleanup pass runs automatically (the same golden-ratio-relaxed floor Cellpose-SAM's own final safety net uses) to remove any small disconnected leftover — scoped to **only this label**, so it can never affect any other cell in the fish.
+
+  A report appears below the button listing every slice touched, how many debris pixels were removed, and — for each corrected slice — any *other* label whose pixels either directly **touch** the correction or merely sit **nearby** (inside the same padded working region, without necessarily touching). This is a visibility check, not a safety gate: a neighboring label's own pixels are never absorbed or overwritten either way (structurally impossible — the correction can only ever claim pixels that were background or already this label) — the report just flags close calls worth a manual look.
+
+Click **Correct Label**. A neighboring label's own pixels are never touched, absorbed, or grown into — even if they sit inside the same padded box and share the exact same intensity range as the label being corrected. If the chosen contrast window doesn't connect to the label's existing shape at all (2D), or not even at the starting/centroid slice (3D), the tool refuses to apply rather than silently emptying the label — adjust the window and try again.
 
 ---
 
@@ -1088,6 +1098,20 @@ These are the plugin's operations that can realistically run 30+ minutes; the ot
 **Send Test Email** — verifies your SMTP settings actually work without waiting on any real 30+ minute operation. Fills in the same fields above, then click it: sends one email immediately with a fixed test subject/body, using the exact same code path every "Email me when done" checkbox uses. Runs in a background thread (a misconfigured host/port can hang for up to the 30-second SMTP timeout rather than fail instantly) so napari stays responsive while it tries. Reports "Sent to ... — check your inbox" or the specific SMTP error (wrong password, unreachable host, etc.) right there — the fastest way to confirm setup before relying on it for a long run.
 
 **Why Tab 4's training notifications still work even if napari is closed the whole time:** unlike the other five tools (which run in a background thread inside napari itself, so they need napari to stay open the whole time regardless of email), a launched training run's notification isn't sent by the GUI's live polling — instead, when its checkbox is ticked, the launched background process itself is a small wrapper that runs the real training command, waits for it to finish, *then* sends the email, before exiting. That wrapper is what's detached and survives napari closing, exactly like the training script itself, so the email still arrives on schedule whether or not you ever reopen napari to see it. Clicking **Stop Training** kills the whole thing (wrapper included) before it reaches the email step, so a manual stop doesn't send one — only unattended completions/crashes do.
+
+---
+
+### 9i. Calibrate Correct-Label Contrast (from Cellpose-SAM) {#9i-calibrate-correct-label-contrast-from-cellpose-sam}
+
+Finds the lower-contrast value [Correct Label](#correct-label) (Tab 2/3) should start from — automatically, instead of by dragging the contrast slider until a silhouette "looks right" by eye. Unlike every other Tab 5 sweep, this one is **not** checked against independent ground truth — it finds whichever value best **reproduces what Cellpose-SAM has already segmented**, since that's the actual question Correct Label needs answered before a user nudges it further for one specific problem cell.
+
+**How it works:** picks the **Cells** most morphologically complex cells (same skeleton-branch-count "Complexity" measure Resort Labels uses) whose centroid sits at least **Edge margin (µm)** away from the volume's own outer boundary — a proxy for "not close to skin", since a cell right at the boundary is exactly the one most likely to already carry a skin-residue artifact merged in (the thing this calibration should be scored *against*, not accidentally learn from). For each selected cell it samples up to **Slices/cell** Z-slices (default 5 cells × 10 slices = **50 samples**, not 10 total), spread across the middle of that cell's own Z-extent. It then sweeps **Sweep steps** candidate lower-contrast values (auto-scaled to the real intensity range around the samples, not a hardcoded guess) and keeps whichever value best reproduces the most existing 2D footprints, jointly across all samples (mean IoU) — not each sample's own independent best, which would let one outlier pull the result around.
+
+**Cellpose-SAM labels layer** / **Signal layer** — pick the Labels layer to calibrate against and the Image layer whose contrast should be set (both populated automatically from whatever layers are open).
+
+**Cells** / **Slices/cell** — default 5 / 10 (50 samples total). **Edge margin (µm)** — default 50.0. **Sweep steps** — default 40 candidate values. **Bbox padding (px)** — default 15, matching Correct Label's own default.
+
+Click **Run Contrast Calibration Sweep**. On success, the report below shows every candidate tried and its mean IoU, and the winning value is **applied directly** to the chosen signal layer: contrast limits are set to `[best lo, best lo + 20]` — no manual step needed afterward.
 
 ---
 
@@ -1798,7 +1822,7 @@ Shown automatically based on active layer suffix — `_ExtRm` → Cellpose-SAM, 
 | Split σ | 1.0 | Smoothness for watershed split |
 | Min distance | 5 | Peak separation for split detection |
 | Join Labels | — | Merges Label B into Label A — the inverse of Split Label |
-| Correct Label | — | Regenerates a label's shape on the current slice from the signal layer's live contrast window |
+| Correct Label | 2D mode | Regenerates a label's shape from the signal layer's live contrast window — 2D (current slice) or 3D (whole cell from centroid, walks outward, auto debris cleanup, reports nearby/touching foreign labels) |
 | Copy Label to Adjacent Slice | — | Copies a label's shape from the current slice onto the next/previous slice |
 
 ### Tab 3 — Statistics
@@ -1833,7 +1857,7 @@ Always shown — a banner at the top warns if your GPU is missing or under the r
 
 ### Tab 5 — Sweeps & Utilities
 
-Eight tools consolidated from Tabs 1-4, each individually collapsible — see [Section 9](#9-tab-5--sweeps--utilities) for full detail. Every row reads from/writes back to the tab noted in parentheses. A "Show tools for..." filter at the top of the tab (4 checkboxes: Skin Removal / Pixel Classifier / Cellpose-SAM / General, all on by default) hides whichever categories you don't need.
+Nine tools consolidated from Tabs 1-4, each individually collapsible — see [Section 9](#9-tab-5--sweeps--utilities) for full detail. Every row reads from/writes back to the tab noted in parentheses. A "Show tools for..." filter at the top of the tab (4 checkboxes: Skin Removal / Pixel Classifier / Cellpose-SAM / General, all on by default) hides whichever categories you don't need.
 
 | Control | Scope | What it does |
 |---------|-------|--------------|
@@ -1842,6 +1866,7 @@ Eight tools consolidated from Tabs 1-4, each individually collapsible — see [S
 | Verify Smooth σ XY / σ Z (GT Sweep) | grid | (Tab 2) Confirms current Smooth σ XY/Z against real GT IoU, BG Threshold/Erosion held fixed — CPU-OK, doesn't survive closing napari — **cross-fish average + Min volume + Min hole size floors auto-applied and saved** |
 | Verify Cellprob / Large-contact (GT Sweep) | 5x5 grid, full fish, ~3h total | (Tab 2) Confirms against whole-fish GT — do_3D's network pass runs once for the whole grid (~3h on a full-size fish, GPU-preferred), Cellprob + Large-contact both re-thresholded cheaply on top — **cross-fish average + measured GT-min floor auto-applied to the sliders and saved**. Has an "Email me when done" checkbox (~3h is well past the 30-min mark) |
 | Verify Best Epoch (GT Sweep) | 5 cells, ±2 checkpoints | (Tab 4, Cellpose-SAM) confirms the recommendation against real GT IoU/Dice, not just test_loss — doesn't survive closing napari — **if the sweep disagrees, rewrites the pointer to the confirmed epoch and loads it as Tab 2's active model**. Has an "Email me when done" checkbox (can run 30 min to a couple hours) |
+| Calibrate Correct-Label Contrast (from Cellpose-SAM) | 50 samples (5 cells x 10 slices) | (Tab 2/3, Correct Label) finds the lower-contrast value Correct Label should start from by reproducing what Cellpose-SAM already segmented (mean IoU), not independent GT — **auto-applies `[best lo, best lo + 20]` to the chosen signal layer's contrast limits** |
 | Score Against GT | any 2 Labels layers | Whole-fish Hungarian-matched TP/FP/FN/Score/MeanIoU/MeanDice between any two Labels layers — synchronous, no GPU needed |
 | Build GT-Correction Package | — | (Tab 2) Zips Krendl output + stats CSV + creation guide for external manual correction |
 | Email notification (optional) | *(blank = off)* | Shared SMTP credentials (address, server, port, username, password — password saved **encrypted** via the OS credential store) for every "Email me when done" checkbox in the plugin; configuring it here doesn't itself send anything — see Section 9h |
