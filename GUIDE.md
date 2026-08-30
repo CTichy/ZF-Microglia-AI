@@ -682,9 +682,11 @@ Regenerates a label's shape from the raw signal layer's own live contrast displa
 **Correction mode**
 
 - **2D (current slice only)** — corrects only the slice you're currently viewing.
-- **3D (whole cell, from centroid)** — corrects the entire cell. Finds the label's own 3D centroid, corrects that slice first, then walks outward slice-by-slice in both +Z and -Z — each step is seeded by the *previous* step's own corrected shape (not that slice's original footprint), so the correction can grow into a slice the original label never touched at all, not just reshape slices that already carried it. Each direction stops naturally the moment a step finds nothing to connect to on the next slice — everything beyond that point is left completely untouched, even if the original (uncorrected) label continued further there.
+- **3D (whole cell, from centroid)** — corrects the entire cell. Finds the label's own 3D centroid, corrects that slice first, then walks outward slice-by-slice in both +Z and -Z — each step is seeded by the *previous* step's own corrected shape (not that slice's original footprint), so the correction can grow into a slice the original label never touched at all, not just reshape slices that already carried it. Each direction stops naturally the moment a step finds nothing to connect to on the next slice.
 
-  After the walk, a debris-cleanup pass runs automatically (the same golden-ratio-relaxed floor Cellpose-SAM's own final safety net uses) to remove any small disconnected leftover — scoped to **only this label**, so it can never affect any other cell in the fish.
+  **Beyond that stopping point, any of the label's own ORIGINAL pixels still remaining are trimmed (cleared), not left in place.** If Cellpose-SAM had labeled the cell further out than the recalibrated contrast threshold actually supports as real signal, that leftover is exactly what this removes — a fragment's size alone doesn't tell you whether it's a false extension or a real, differently-shaped continuation, so this doesn't wait for Remove Debris to maybe catch it. The trim only ever touches this one label's own pixels, and stops the instant the original label's own extent genuinely ends in that direction.
+
+  After the walk (and trim), a debris-cleanup pass runs automatically (the same golden-ratio-relaxed floor Cellpose-SAM's own final safety net uses) to remove any small disconnected leftover — scoped to **only this label**, so it can never affect any other cell in the fish.
 
   A report appears below the button listing every slice touched, how many debris pixels were removed, and — for each corrected slice — any *other* label whose pixels either directly **touch** the correction or merely sit **nearby** (inside the same padded working region, without necessarily touching). This is a visibility check, not a safety gate: a neighboring label's own pixels are never absorbed or overwritten either way (structurally impossible — the correction can only ever claim pixels that were background or already this label) — the report just flags close calls worth a manual look.
 
@@ -1822,7 +1824,7 @@ Shown automatically based on active layer suffix — `_ExtRm` → Cellpose-SAM, 
 | Split σ | 1.0 | Smoothness for watershed split |
 | Min distance | 5 | Peak separation for split detection |
 | Join Labels | — | Merges Label B into Label A — the inverse of Split Label |
-| Correct Label | 2D mode | Regenerates a label's shape from the signal layer's live contrast window — 2D (current slice) or 3D (whole cell from centroid, walks outward, auto debris cleanup, reports nearby/touching foreign labels) |
+| Correct Label | 2D mode | Regenerates a label's shape from the signal layer's live contrast window — 2D (current slice) or 3D (whole cell from centroid, walks outward, trims false-positive extension beyond real signal, auto debris cleanup, reports nearby/touching foreign labels) |
 | Copy Label to Adjacent Slice | — | Copies a label's shape from the current slice onto the next/previous slice |
 
 ### Tab 3 — Statistics
