@@ -2299,18 +2299,22 @@ class ZFMicrogliaAIWidget(QWidget):
         dlt.addLayout(correct_mode_row)
 
         correct_mode_note = QLabel(
-            "  3D corrects the CURRENT slice's own centroid slice first, "
-            "then walks outward in +Z and -Z, each step seeded by the "
+            "  3D corrects the label's own centroid slice first, then "
+            "walks outward in +Z and -Z, each step seeded by the "
             "PREVIOUS step's own corrected shape -- so it can grow into "
             "a slice the original label never touched at all, not just "
             "reshape slices that already carried it. Each direction "
             "stops naturally the moment a step finds nothing to connect "
-            "to. Afterwards, a debris-cleanup pass (same golden-ratio "
-            "floor as Cellpose-SAM's own final safety net) removes any "
-            "small disconnected leftover scoped to ONLY this label -- "
-            "other cells are never touched. Reports which slices any "
-            "other label's pixels directly touch or sit near, so a "
-            "close call is never silently invisible."
+            "to -- and beyond that point, any of this label's OWN "
+            "original pixels still remaining are TRIMMED (Cellpose-SAM "
+            "labeled something there that the recalibrated threshold no "
+            "longer supports as real signal), not left in place. "
+            "Afterwards, a debris-cleanup pass (same golden-ratio floor "
+            "as Cellpose-SAM's own final safety net) removes any small "
+            "disconnected leftover scoped to ONLY this label -- other "
+            "cells are never touched by either step. Reports which "
+            "slices any other label's pixels directly touch or sit "
+            "near, so a close call is never silently invisible."
         )
         correct_mode_note.setWordWrap(True)
         correct_mode_note.setStyleSheet("color: #888; font-size: 10px;")
@@ -6486,12 +6490,18 @@ class ZFMicrogliaAIWidget(QWidget):
             else:
                 report = result["report"]
                 slices = report["slices_corrected"]
+                trimmed = report["slices_trimmed"]
                 lines = [
                     f"Label {label_id} corrected in 3D from centroid slice "
                     f"{report['z_center']} -- {len(slices)} slice(s): "
                     f"{slices[0]}..{slices[-1]}",
-                    f"Debris removed: {report['n_debris_removed_px']} px",
                 ]
+                if trimmed:
+                    lines.append(
+                        f"Trimmed (original label beyond real signal, removed): "
+                        f"{report['n_trimmed_px']} px on slice(s) {trimmed}"
+                    )
+                lines.append(f"Debris removed: {report['n_debris_removed_px']} px")
                 if report["foreign_touching"]:
                     lines.append("Foreign labels TOUCHING the correction:")
                     for z_, ids in sorted(report["foreign_touching"].items()):
@@ -6504,9 +6514,10 @@ class ZFMicrogliaAIWidget(QWidget):
                     lines.append("No foreign labels touching or nearby on any corrected slice.")
                 self._correct_report_view.setPlainText("\n".join(lines))
                 self._correct_report_view.show()
+                trim_note = f", {report['n_trimmed_px']} trimmed px" if trimmed else ""
                 self._correct_status_lbl.setText(
                     f"Done — label {label_id} corrected in 3D, "
-                    f"{len(slices)} slice(s) ({slices[0]}..{slices[-1]}), "
+                    f"{len(slices)} slice(s) ({slices[0]}..{slices[-1]}){trim_note}, "
                     f"{report['n_debris_removed_px']} debris px removed. "
                     f"See report below."
                 )

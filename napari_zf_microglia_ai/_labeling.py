@@ -892,12 +892,22 @@ def correct_label_from_intensity_3d(
     the signal and connectivity support it. Each direction's walk stops
     the moment a step produces nothing (no candidate pixels connect to
     the previous step's seed there) -- a natural stopping point, not a
-    fixed slice count; slices beyond that boundary, in either
-    direction, are left completely untouched, even if the ORIGINAL
-    label extended further (a step that can't reconnect there is
-    treated as "the correction ends here", not skipped-and-continued).
+    fixed slice count.
 
-    After the walk, remove_debris_for_label() (golden-ratio-relaxed
+    Beyond that stopping point, any of this label's OWN original pixels
+    still remaining are TRIMMED (cleared to background), contiguously,
+    until the original label's own extent genuinely ends in that
+    direction -- Cellpose-SAM having labeled something there that the
+    recalibrated contrast threshold no longer supports as real signal
+    is exactly the case this exists for; left alone, that's garbage
+    Remove Debris might catch (if it happens to be small) or might not
+    (nothing about size alone distinguishes a false extension from a
+    real, differently-shaped continuation of the cell), so it's swept
+    unconditionally instead of relying on a size heuristic. Only this
+    label's own pixels are ever touched by the trim -- it never reaches
+    past a genuine gap to affect something unrelated sharing the ID.
+
+    After the walk (and trim), remove_debris_for_label() (golden-ratio-relaxed
     floor, same as Cellpose-SAM's own final safety net) cleans up any
     small disconnected fragment left over from the correction -- scoped
     to ONLY this label, unlike running the general Remove Debris tool
@@ -918,7 +928,12 @@ def correct_label_from_intensity_3d(
     Returns (new_labels, report). report is a dict:
         z_center            -- the starting slice (nearest to the
                                label's own pre-correction 3D centroid)
-        slices_corrected    -- sorted list of every Z touched
+        slices_corrected    -- sorted list of every Z the walk itself
+                               regenerated
+        slices_trimmed      -- sorted list of every Z where original
+                               label_id pixels beyond the walk's own
+                               reach were cleared (see above)
+        n_trimmed_px        -- total pixels cleared by trimming
         n_debris_removed_px -- pixels removed by the debris-cleanup step
         foreign_touching    -- {z: sorted [foreign label ids]} -- IDs
                                whose pixels directly border (8-connected)
@@ -983,13 +998,18 @@ def correct_label_from_intensity_3d(
 
     slices_corrected = {z_center}
 
+    slices_trimmed = set()
+    n_trimmed_px = 0
+
     for direction, z_range in ((1, range(z_center + 1, z_dim)),
                                 (-1, range(z_center - 1, -1, -1))):
         prev_seed = center_seed_full
+        stop_z = None
         for z in z_range:
             result = _intensity_grow_2d(image[z], new_labels[z], label_id, lo, pad, prev_seed)
             if result is None:
-                break  # natural stop: nothing here connects to the previous slice
+                stop_z = z  # natural stop: nothing here connects to the previous slice
+                break
             corrected, _crop_seed, (gy0, gy1, gx0, gx1) = result
             crop = new_labels[z, gy0:gy1, gx0:gx1]
             crop[crop == label_id] = 0  # clear any of this label's own old pixels here first
@@ -999,6 +1019,28 @@ def correct_label_from_intensity_3d(
 
             prev_seed = np.zeros(labels.shape[1:], dtype=bool)
             prev_seed[gy0:gy1, gx0:gx1] = corrected
+
+        # Trim: beyond the point the walk stopped, any of this label's OWN
+        # original pixels still remaining are exactly the case this exists
+        # for -- Cellpose-SAM labeled something there that the recalibrated
+        # contrast threshold no longer supports as real signal. Left alone,
+        # that's garbage that Remove Debris might catch (if it's small) or
+        # might not (nothing about size alone tells you a chunk is a false
+        # extension rather than a real, differently-shaped continuation of
+        # the cell) -- so it's cleared explicitly here instead of relying
+        # on that. Contiguous only: stops the instant the original label's
+        # own extent genuinely ends in this direction, never reaching past
+        # it to touch something unrelated that happens to share the ID.
+        if stop_z is not None:
+            trim_z = stop_z
+            while 0 <= trim_z < z_dim:
+                mask_here = new_labels[trim_z] == label_id
+                if not np.any(mask_here):
+                    break
+                n_trimmed_px += int(mask_here.sum())
+                new_labels[trim_z][mask_here] = 0
+                slices_trimmed.add(trim_z)
+                trim_z += direction
 
     n_debris_removed_px = 0
     if min_volume is not None:
@@ -1027,6 +1069,8 @@ def correct_label_from_intensity_3d(
     report = {
         "z_center": z_center,
         "slices_corrected": sorted(slices_corrected),
+        "slices_trimmed": sorted(slices_trimmed),
+        "n_trimmed_px": n_trimmed_px,
         "n_debris_removed_px": n_debris_removed_px,
         "foreign_touching": foreign_touching,
         "foreign_nearby": foreign_nearby,
