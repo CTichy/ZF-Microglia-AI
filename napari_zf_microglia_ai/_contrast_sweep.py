@@ -33,7 +33,7 @@ def select_calibration_samples(
     labels: np.ndarray,
     scale_zyx: "tuple[float, float, float]",
     n_cells: int = 5,
-    slices_per_cell: int = 2,
+    slices_per_cell: int = 10,
     edge_margin_um: float = 50.0,
 ) -> "list[tuple[int, int]]":
     """

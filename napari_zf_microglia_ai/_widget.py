@@ -3654,8 +3654,10 @@ class ZFMicrogliaAIWidget(QWidget):
             "to skin\", since a boundary-adjacent cell is exactly the "
             "one most likely to already have a skin-residue artifact "
             "merged in -- the thing this calibration should be scored "
-            "against, not learn from), samples a few slices from each, "
-            "then sweeps candidate lo values and keeps whichever "
+            "against, not learn from), samples up to Slices/cell Z-slices "
+            "from EACH of those cells (default 5 cells x 10 slices = 50 "
+            "samples total, not 10 total), then sweeps candidate lo "
+            "values and keeps whichever "
             "reproduces the most existing 2D footprints most closely "
             "(mean IoU). On success, sets the signal layer's contrast "
             "limits to [best lo, best lo + 20] directly."
@@ -3684,8 +3686,8 @@ class ZFMicrogliaAIWidget(QWidget):
         ccal_cells_row.addWidget(self._ccal_ncells_spin)
         ccal_cells_row.addWidget(QLabel("Slices/cell:"))
         self._ccal_slices_spin = QSpinBox()
-        self._ccal_slices_spin.setRange(1, 10)
-        self._ccal_slices_spin.setValue(2)
+        self._ccal_slices_spin.setRange(1, 30)
+        self._ccal_slices_spin.setValue(10)
         ccal_cells_row.addWidget(self._ccal_slices_spin)
         ccl.addLayout(ccal_cells_row)
 
