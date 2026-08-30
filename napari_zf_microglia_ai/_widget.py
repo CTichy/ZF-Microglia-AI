@@ -32,6 +32,10 @@ from ._labeling import (
     correct_label_from_intensity, copy_label_to_adjacent_slice,
 )
 from ._statistics import compute_stats
+from ._contrast_sweep import (
+    select_calibration_samples, default_lo_candidates,
+    sweep_contrast_lower_value, format_contrast_sweep_report,
+)
 from ._cellpose_seg import run_full_pipeline as _run_cellpose_pipeline
 from ._cellpose_seg import rerun_single_cell as _rerun_single_cell
 from ._cellpose_seg import masks_from_flows as _masks_from_flows
@@ -3636,6 +3640,96 @@ class ZFMicrogliaAIWidget(QWidget):
         t5.addWidget(esg)
         self._t5_category_groups.setdefault("cellpose", []).append(esg)
 
+        # ── Calibrate Correct-Label Contrast (from Cellpose-SAM) ──────── #
+        ccg = QGroupBox("Calibrate Correct-Label Contrast (from Cellpose-SAM)")
+        ccl = QVBoxLayout()
+
+        ccal_note = QLabel(
+            "  Finds the lower-contrast value Correct Label should start "
+            "from -- not by checking against independent ground truth "
+            "(like every sweep above), but by finding whichever value "
+            "best REPRODUCES what Cellpose-SAM already segmented. Picks "
+            "the N most morphologically complex cells that sit away "
+            "from the volume's outer boundary (a proxy for \"not close "
+            "to skin\", since a boundary-adjacent cell is exactly the "
+            "one most likely to already have a skin-residue artifact "
+            "merged in -- the thing this calibration should be scored "
+            "against, not learn from), samples a few slices from each, "
+            "then sweeps candidate lo values and keeps whichever "
+            "reproduces the most existing 2D footprints most closely "
+            "(mean IoU). On success, sets the signal layer's contrast "
+            "limits to [best lo, best lo + 20] directly."
+        )
+        ccal_note.setWordWrap(True)
+        ccal_note.setStyleSheet("color: #888; font-size: 10px;")
+        ccl.addWidget(ccal_note)
+
+        ccal_labels_row = QHBoxLayout()
+        ccal_labels_row.addWidget(QLabel("Cellpose-SAM labels layer:"))
+        self._ccal_labels_combo = QComboBox()
+        ccal_labels_row.addWidget(self._ccal_labels_combo)
+        ccl.addLayout(ccal_labels_row)
+
+        ccal_signal_row = QHBoxLayout()
+        ccal_signal_row.addWidget(QLabel("Signal layer:"))
+        self._ccal_signal_combo = QComboBox()
+        ccal_signal_row.addWidget(self._ccal_signal_combo)
+        ccl.addLayout(ccal_signal_row)
+
+        ccal_cells_row = QHBoxLayout()
+        ccal_cells_row.addWidget(QLabel("Cells:"))
+        self._ccal_ncells_spin = QSpinBox()
+        self._ccal_ncells_spin.setRange(1, 20)
+        self._ccal_ncells_spin.setValue(5)
+        ccal_cells_row.addWidget(self._ccal_ncells_spin)
+        ccal_cells_row.addWidget(QLabel("Slices/cell:"))
+        self._ccal_slices_spin = QSpinBox()
+        self._ccal_slices_spin.setRange(1, 10)
+        self._ccal_slices_spin.setValue(2)
+        ccal_cells_row.addWidget(self._ccal_slices_spin)
+        ccl.addLayout(ccal_cells_row)
+
+        ccal_margin_row = QHBoxLayout()
+        ccal_margin_row.addWidget(QLabel("Edge margin (µm):"))
+        self._ccal_margin_spin = QDoubleSpinBox()
+        self._ccal_margin_spin.setDecimals(1)
+        self._ccal_margin_spin.setRange(0.0, 1000.0)
+        self._ccal_margin_spin.setValue(50.0)
+        ccal_margin_row.addWidget(self._ccal_margin_spin)
+        ccal_margin_row.addWidget(QLabel("Sweep steps:"))
+        self._ccal_steps_spin = QSpinBox()
+        self._ccal_steps_spin.setRange(5, 200)
+        self._ccal_steps_spin.setValue(40)
+        ccal_margin_row.addWidget(self._ccal_steps_spin)
+        ccl.addLayout(ccal_margin_row)
+
+        ccal_pad_row = QHBoxLayout()
+        ccal_pad_row.addWidget(QLabel("Bbox padding (px):"))
+        self._ccal_pad_spin = QSpinBox()
+        self._ccal_pad_spin.setRange(0, 500)
+        self._ccal_pad_spin.setValue(15)
+        ccal_pad_row.addWidget(self._ccal_pad_spin)
+        ccl.addLayout(ccal_pad_row)
+
+        self._ccal_run_btn = QPushButton("Run Contrast Calibration Sweep")
+        self._ccal_run_btn.setStyleSheet("QPushButton { font-weight: bold; padding: 5px; }")
+        ccl.addWidget(self._ccal_run_btn)
+
+        self._ccal_status_lbl = QLabel("")
+        self._ccal_status_lbl.setWordWrap(True)
+        ccl.addWidget(self._ccal_status_lbl)
+
+        self._ccal_report_view = QTextEdit()
+        self._ccal_report_view.setReadOnly(True)
+        self._ccal_report_view.setStyleSheet("font-family: monospace; font-size: 9px;")
+        self._ccal_report_view.setFixedHeight(160)
+        ccl.addWidget(self._ccal_report_view)
+
+        ccg.setLayout(ccl)
+        ccg = _make_collapsible(ccg)
+        t5.addWidget(ccg)
+        self._t5_category_groups.setdefault("cellpose", []).append(ccg)
+
         # Now that every Tab 5 tool has registered its category, wire the
         # filter checkboxes built at the top of this tab and apply their
         # initial (persisted) state.
@@ -3774,6 +3868,7 @@ class ZFMicrogliaAIWidget(QWidget):
         self._es_readrec_btn.clicked.connect(self._on_es_read_recommended)
         self._es_run_btn.clicked.connect(self._on_es_run_sweep)
         self._es_stop_btn.clicked.connect(self._on_es_stop_sweep)
+        self._ccal_run_btn.clicked.connect(self._on_run_contrast_sweep)
         self._viewer.layers.events.inserted.connect(self._refresh_layer_info)
         self._viewer.layers.events.removed.connect(self._refresh_layer_info)
         self._viewer.layers.selection.events.changed.connect(self._refresh_layer_info)
@@ -4692,41 +4787,121 @@ class ZFMicrogliaAIWidget(QWidget):
                 return lyr
         return None
 
+    def _on_run_contrast_sweep(self):
+        labels_name = self._ccal_labels_combo.currentData()
+        if not labels_name or labels_name not in self._viewer.layers:
+            self._ccal_status_lbl.setText("ERROR: pick a Cellpose-SAM labels layer first.")
+            return
+        signal_name = self._ccal_signal_combo.currentData()
+        if not signal_name or signal_name not in self._viewer.layers:
+            self._ccal_status_lbl.setText("ERROR: pick a signal layer first.")
+            return
+
+        labels_lyr = self._viewer.layers[labels_name]
+        signal_lyr = self._viewer.layers[signal_name]
+        labels = np.asarray(labels_lyr.data)
+        image = np.asarray(signal_lyr.data)
+        if labels.shape != image.shape:
+            self._ccal_status_lbl.setText(
+                f"ERROR: labels shape {labels.shape} != signal shape "
+                f"{image.shape} -- pick the matching signal layer."
+            )
+            return
+
+        n_cells = self._ccal_ncells_spin.value()
+        slices_per_cell = self._ccal_slices_spin.value()
+        margin_um = self._ccal_margin_spin.value()
+        n_steps = self._ccal_steps_spin.value()
+        pad = self._ccal_pad_spin.value()
+        scale_zyx = tuple(float(v) for v in labels_lyr.scale) if len(labels_lyr.scale) == 3 else (1.0, 1.0, 1.0)
+
+        self._ccal_run_btn.setEnabled(False)
+        self._ccal_report_view.clear()
+        self._ccal_status_lbl.setText("Selecting calibration samples...")
+
+        result = {}
+
+        def _progress(msg):
+            result["_progress"] = msg
+
+        def _worker():
+            try:
+                samples = select_calibration_samples(
+                    labels, scale_zyx, n_cells=n_cells,
+                    slices_per_cell=slices_per_cell, edge_margin_um=margin_um,
+                )
+                if not samples:
+                    raise ValueError(
+                        "No calibration samples found -- try a smaller edge "
+                        "margin, or check this fish actually has labeled cells "
+                        "away from the volume boundary."
+                    )
+                candidates = default_lo_candidates(image, samples, pad, n_steps=n_steps)
+                sweep = sweep_contrast_lower_value(
+                    labels, image, samples, candidates, pad=pad, progress_cb=_progress
+                )
+                result["samples"] = samples
+                result["sweep"] = sweep
+            except Exception as exc:
+                traceback.print_exc()
+                result["error"] = str(exc)
+
+        thread = threading.Thread(target=_worker, daemon=True)
+        thread.start()
+
+        timer = QTimer(self)
+
+        def _poll():
+            if thread.is_alive():
+                if "_progress" in result:
+                    self._ccal_status_lbl.setText(result["_progress"])
+                return
+            timer.stop()
+            if "error" in result:
+                self._ccal_status_lbl.setText(f"ERROR: {result['error']}")
+                self._ccal_run_btn.setEnabled(True)
+                return
+            sweep = result["sweep"]
+            samples = result["samples"]
+            report = format_contrast_sweep_report(sweep, samples)
+            self._ccal_report_view.setPlainText(report)
+
+            best_lo = sweep["best_lo"]
+            best_hi = best_lo + 20.0
+            signal_lyr.contrast_limits = (best_lo, best_hi)
+            self._ccal_status_lbl.setText(
+                f"Done — {sweep['n_samples']} sample(s) from "
+                f"{len(set(lbl for lbl, _z in samples))} cell(s). "
+                f"Best lo={best_lo:.4g} (mean IoU={sweep['best_mean_iou']:.3f}) "
+                f"-- applied to '{signal_name}' contrast limits "
+                f"[{best_lo:.4g}, {best_hi:.4g}]."
+            )
+            self._ccal_run_btn.setEnabled(True)
+
+        timer.timeout.connect(_poll)
+        timer.start(200)
+
     def _refresh_stats_layers(self, *_):
         """Repopulate image and shapes layer combos in the Statistics tab."""
-        # Image layers
-        cur_img = self._stats_image_combo.currentData()
-        cur_correct_img = self._correct_signal_combo.currentData()
-        cur_split_img = self._split_signal_combo.currentData()
-        self._stats_image_combo.blockSignals(True)
-        self._stats_image_combo.clear()
-        self._stats_image_combo.addItem("None", None)
-        self._correct_signal_combo.blockSignals(True)
-        self._correct_signal_combo.clear()
-        self._correct_signal_combo.addItem("None", None)
-        self._split_signal_combo.blockSignals(True)
-        self._split_signal_combo.clear()
-        self._split_signal_combo.addItem("None", None)
+        # Image layers -- every combo that lets the user pick a signal/
+        # intensity Image layer shares this one repopulation loop.
+        image_combos = (
+            self._stats_image_combo, self._correct_signal_combo,
+            self._split_signal_combo, self._ccal_signal_combo,
+        )
+        cur_by_combo = {c: c.currentData() for c in image_combos}
+        for c in image_combos:
+            c.blockSignals(True)
+            c.clear()
+            c.addItem("None", None)
         for lyr in self._viewer.layers:
             if isinstance(lyr, napari.layers.Image):
-                self._stats_image_combo.addItem(lyr.name, lyr.name)
-                if lyr.name == cur_img:
-                    self._stats_image_combo.setCurrentIndex(
-                        self._stats_image_combo.count() - 1
-                    )
-                self._correct_signal_combo.addItem(lyr.name, lyr.name)
-                if lyr.name == cur_correct_img:
-                    self._correct_signal_combo.setCurrentIndex(
-                        self._correct_signal_combo.count() - 1
-                    )
-                self._split_signal_combo.addItem(lyr.name, lyr.name)
-                if lyr.name == cur_split_img:
-                    self._split_signal_combo.setCurrentIndex(
-                        self._split_signal_combo.count() - 1
-                    )
-        self._stats_image_combo.blockSignals(False)
-        self._correct_signal_combo.blockSignals(False)
-        self._split_signal_combo.blockSignals(False)
+                for c in image_combos:
+                    c.addItem(lyr.name, lyr.name)
+                    if lyr.name == cur_by_combo[c]:
+                        c.setCurrentIndex(c.count() - 1)
+        for c in image_combos:
+            c.blockSignals(False)
 
         # Shapes layers
         cur_shp = self._stats_shapes_combo.currentData()
@@ -4743,7 +4918,7 @@ class ZFMicrogliaAIWidget(QWidget):
         self._stats_shapes_combo.blockSignals(False)
 
         # Labels layers (Score Against GT)
-        for combo in (self._gtscore_pred_combo, self._gtscore_gt_combo):
+        for combo in (self._gtscore_pred_combo, self._gtscore_gt_combo, self._ccal_labels_combo):
             cur = combo.currentData()
             combo.blockSignals(True)
             combo.clear()

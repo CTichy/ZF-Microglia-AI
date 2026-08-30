@@ -338,9 +338,15 @@ def resort_labels(
     else:
         axis_map = {"centroid_z": 0, "centroid_y": 1, "centroid_x": 2}
         axis     = axis_map[sort_by]
+        # center_of_mass returns a proper list of tuples for a LIST index
+        # (label_list always is one here), even a length-1 list -- the
+        # "single bare tuple" case only applies to a scalar index, which
+        # this never passes. No extra wrapping needed (a prior version of
+        # this code wrapped unconditionally on unique.size==1, which was
+        # wrong and would have crashed resorting a single-label volume by
+        # centroid -- found and fixed while building a similar sweep that
+        # copied the same mistaken assumption from here).
         raw      = _com(labels > 0, labels, label_list)
-        if unique.size == 1:
-            raw = [raw]   # scipy returns a single tuple when only one label
         keyed = [(float(c[axis]), int(lbl)) for lbl, c in zip(label_list, raw)]
         # natural: ascending (smallest coordinate first → label 1)
         keyed.sort(key=lambda t: t[0], reverse=reverse)
@@ -807,9 +813,53 @@ def correct_label_from_intensity(
 
     labels_z = labels[z]
     image_z  = image[z]
+    try:
+        corrected, crop_existing, (y0, y1, x0, x1) = _intensity_correct_2d(
+            labels_z, image_z, label_id, lo, pad
+        )
+    except ValueError as exc:
+        raise ValueError(f"{exc} (slice {z})") from None
+
+    new_labels = labels.copy()
+    crop = new_labels[z, y0:y1, x0:x1]
+    crop[crop_existing] = 0
+    crop[corrected] = label_id
+    return new_labels
+
+
+def _intensity_correct_2d(
+    labels_z: np.ndarray,
+    image_z: np.ndarray,
+    label_id: int,
+    lo: float,
+    pad: int,
+) -> "tuple[np.ndarray, np.ndarray, tuple[int, int, int, int]]":
+    """
+    Core 2D intensity-threshold engine behind correct_label_from_intensity(),
+    extracted so a calibration sweep (many candidate `lo` values) can reuse
+    it directly without copying/returning a full label volume on every
+    candidate -- this returns just the small cropped boolean result.
+
+    labels_z, image_z : one Z-slice each (2D), same shape
+    label_id           : the label being corrected
+    lo                  : one-sided intensity cutoff (signal = image >= lo)
+    pad                 : bbox padding in pixels
+
+    Returns (corrected, crop_existing, (y0, y1, x0, x1)):
+        corrected     — bool array, shape (y1-y0, x1-x0): the label's new
+                         footprint within the crop
+        crop_existing — bool array, same crop shape: the label's OLD
+                         footprint within the crop (what production code
+                         needs to clear before painting `corrected`)
+        (y0,y1,x0,x1) — the crop's bounds within labels_z/image_z, for the
+                         caller to splice back with
+
+    Raises ValueError if label_id isn't on this slice, or if the threshold
+    leaves nothing connected to the label's existing footprint.
+    """
     existing = labels_z == label_id
     if not np.any(existing):
-        raise ValueError(f"label {label_id} not found on slice {z}")
+        raise ValueError(f"label {label_id} not found")
 
     ys, xs = np.nonzero(existing)
     y0 = max(int(ys.min()) - pad, 0)
@@ -831,17 +881,11 @@ def correct_label_from_intensity(
     if not keep_ids:
         raise ValueError(
             f"threshold >= {lo} leaves nothing connected to "
-            f"label {label_id}'s existing footprint on slice {z} -- "
-            f"refusing to erase the label; adjust the contrast window "
-            f"and try again."
+            f"label {label_id}'s existing footprint -- refusing to erase "
+            f"the label; adjust the contrast window and try again."
         )
     corrected = np.isin(cc, list(keep_ids))
-
-    new_labels = labels.copy()
-    crop = new_labels[z, y0:y1, x0:x1]
-    crop[crop_existing] = 0
-    crop[corrected] = label_id
-    return new_labels
+    return corrected, crop_existing, (y0, y1, x0, x1)
 
 
 def copy_label_to_adjacent_slice(
