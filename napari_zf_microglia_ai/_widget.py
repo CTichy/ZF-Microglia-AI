@@ -2162,17 +2162,26 @@ class ZFMicrogliaAIWidget(QWidget):
         dlt.addLayout(split_mode_row)
 
         split_mode_note = QLabel(
-            "  2D splits only the CURRENT slice, leaving every other "
-            "slice of this label completely untouched -- use it when "
-            "two things only touch on one cross-section (e.g. real "
-            "signal grazing a skin-residue fragment right at that "
-            "slice) rather than a genuine 3D neck, where a whole-volume "
-            "3D split either wouldn't find that cut at all or would cut "
-            "somewhere unrelated on a different slice instead."
+            "  2D splits only the CURRENT slice, watersheding on the "
+            "SIGNAL layer's raw intensity instead of the mask's shape -- "
+            "seeds sit at local brightness peaks, the cut runs along the "
+            "dimmest ridge between them. Use it when two things only "
+            "touch on one cross-section (e.g. real signal grazing a "
+            "skin-residue fragment right at that slice) with no real "
+            "geometric neck for a 3D/shape-based split to find, since "
+            "the mask can be wide right through a point the real signal "
+            "already dips low at. Every other slice of this label is "
+            "left completely untouched."
         )
         split_mode_note.setWordWrap(True)
         split_mode_note.setStyleSheet("color: #888; font-size: 10px;")
         dlt.addWidget(split_mode_note)
+
+        split_signal_row = QHBoxLayout()
+        split_signal_row.addWidget(QLabel("Signal layer (2D mode only):"))
+        self._split_signal_combo = QComboBox()
+        split_signal_row.addWidget(self._split_signal_combo)
+        dlt.addLayout(split_signal_row)
 
         split_n_row = QHBoxLayout()
         split_n_row.addWidget(QLabel("Split into:"))
@@ -4688,12 +4697,16 @@ class ZFMicrogliaAIWidget(QWidget):
         # Image layers
         cur_img = self._stats_image_combo.currentData()
         cur_correct_img = self._correct_signal_combo.currentData()
+        cur_split_img = self._split_signal_combo.currentData()
         self._stats_image_combo.blockSignals(True)
         self._stats_image_combo.clear()
         self._stats_image_combo.addItem("None", None)
         self._correct_signal_combo.blockSignals(True)
         self._correct_signal_combo.clear()
         self._correct_signal_combo.addItem("None", None)
+        self._split_signal_combo.blockSignals(True)
+        self._split_signal_combo.clear()
+        self._split_signal_combo.addItem("None", None)
         for lyr in self._viewer.layers:
             if isinstance(lyr, napari.layers.Image):
                 self._stats_image_combo.addItem(lyr.name, lyr.name)
@@ -4706,8 +4719,14 @@ class ZFMicrogliaAIWidget(QWidget):
                     self._correct_signal_combo.setCurrentIndex(
                         self._correct_signal_combo.count() - 1
                     )
+                self._split_signal_combo.addItem(lyr.name, lyr.name)
+                if lyr.name == cur_split_img:
+                    self._split_signal_combo.setCurrentIndex(
+                        self._split_signal_combo.count() - 1
+                    )
         self._stats_image_combo.blockSignals(False)
         self._correct_signal_combo.blockSignals(False)
+        self._split_signal_combo.blockSignals(False)
 
         # Shapes layers
         cur_shp = self._stats_shapes_combo.currentData()
@@ -6001,6 +6020,20 @@ class ZFMicrogliaAIWidget(QWidget):
         mode         = self._split_mode_combo.currentData()
         z            = int(self._viewer.dims.current_step[0]) if mode == "2d" else None
 
+        image = None
+        if mode == "2d":
+            signal_name = self._split_signal_combo.currentData()
+            if not signal_name or signal_name not in self._viewer.layers:
+                self._split_status_lbl.setText("ERROR: pick a signal layer first (required for 2D mode).")
+                return
+            image = np.asarray(self._viewer.layers[signal_name].data)
+            if image.shape != lyr.data.shape:
+                self._split_status_lbl.setText(
+                    f"ERROR: signal layer shape {image.shape} != labels shape "
+                    f"{lyr.data.shape} -- pick the matching signal layer."
+                )
+                return
+
         self._split_btn.setEnabled(False)
         self._split_status_lbl.setText(
             f"Splitting (2D, slice {z})…" if mode == "2d" else "Splitting (3D)…"
@@ -6019,6 +6052,7 @@ class ZFMicrogliaAIWidget(QWidget):
                     min_distance=min_dist,
                     mode=mode,
                     z=z,
+                    image=image,
                 )
             except Exception as exc:
                 traceback.print_exc()

@@ -423,6 +423,7 @@ def _watershed_split_mask(
     n_splits: int,
     sigma: float,
     min_distance: int,
+    surface_full: "np.ndarray | None" = None,
 ) -> np.ndarray:
     """
     Core watershed-split engine, dimension-agnostic (works identically on a
@@ -430,11 +431,29 @@ def _watershed_split_mask(
     split_label() can reuse the exact same pipeline for both its 3D and 2D
     modes instead of maintaining two copies.
 
-    mask : bool ndarray, any ndim (2D slice or full 3D volume)
+    mask         : bool ndarray, any ndim (2D slice or full 3D volume)
+    surface_full : optional ndarray, SAME shape as mask (uncropped) -- the
+                   raw signal intensity to watershed on instead of the
+                   mask's own shape. When None (default, used by 3D mode),
+                   the surface is the mask's own EDT -- a purely geometric
+                   split that cuts at the shape's thinnest neck, regardless
+                   of what the underlying signal looks like there. When
+                   given (used by 2D mode), the surface is the actual
+                   image intensity -- seeds are placed at local brightness
+                   peaks (real cell interiors) and the cut runs along the
+                   dimmest ridge between them, i.e. wherever the real
+                   signal is weakest, not wherever the mask's silhouette
+                   happens to be geometrically narrowest. These can find
+                   completely different cuts: a mask can be geometrically
+                   wide at a point where the real signal already dips low
+                   (e.g. a genuine cell edge, with a merged skin-residue
+                   fragment sitting past it) -- EDT has no way to see that
+                   dip at all, since it only looks at the mask's outline.
 
     Returns split_full : int32 ndarray, same shape as mask -- 0=background,
-    1..n_splits=parts (part 1 is the seed with the highest EDT peak, i.e.
-    the thickest chunk).
+    1..n_splits=parts (part 1 is the seed with the highest surface peak,
+    i.e. the thickest chunk in geometric mode, or the brightest chunk in
+    intensity mode).
 
     Raises ValueError if fewer than n_splits distinct sub-regions/peaks are
     found (mirrors the original error messages).
@@ -452,8 +471,12 @@ def _watershed_split_mask(
 
     mask_crop = mask[sl]
 
-    # ── 2. Distance transform (CPU — not in cupyx) ─────────────────────────
-    dist = distance_transform_edt(mask_crop).astype(np.float32)
+    # ── 2. The surface to split: signal intensity if given, else the
+    #       mask's own EDT (geometric neck-finding, the original behavior)
+    if surface_full is not None:
+        dist = surface_full[sl].astype(np.float32)
+    else:
+        dist = distance_transform_edt(mask_crop).astype(np.float32)
 
     # ── 3. Gaussian smoothing — GPU if available, CPU fallback ─────────────
     if _BACKEND == "cuda" and _CP is not None:
@@ -583,24 +606,32 @@ def split_label(
     min_distance: int = 5,
     mode: str = "3d",
     z: "int | None" = None,
+    image: "np.ndarray | None" = None,
 ) -> "tuple[np.ndarray, list[int]]":
     """
-    Split one label into n_splits parts using watershed on the distance transform.
+    Split one label into n_splits parts using watershed.
 
-    The boundary is placed where the object is narrowest — the saddle point
-    of the distance map between the local maxima.
+    mode="3d" (default) splits the whole 3D blob using the mask's own
+    distance transform -- the boundary is placed where the SHAPE is
+    geometrically narrowest (the saddle point of the distance map
+    between local maxima), independent of what the underlying signal
+    looks like there.
 
-    mode="3d" (default) splits the whole 3D blob, exactly as before.
-    mode="2d" restricts the entire operation to ONE Z-slice (`z`) --
-    for the case where two things only touch on a single cross-section
-    (e.g. real signal happening to graze a skin-residue fragment right
-    at that slice) and a true 3D neck/watershed saddle doesn't actually
-    exist across Z, so a 3D split would either fail to find a cut there
-    at all or cut somewhere unrelated on a different slice instead. In
-    2D mode, only that one slice is touched -- every other Z-slice of
-    the label is left completely untouched, and the new part(s) exist
-    only on that slice (they don't extend into neighboring slices the
-    way a 3D split's parts would).
+    mode="2d" restricts the entire operation to ONE Z-slice (`z`) AND
+    watersheds on the raw signal intensity (`image[z]`) instead of the
+    mask's shape -- seeds are placed at local brightness peaks (real
+    cell interiors) and the cut runs along the dimmest ridge between
+    them, i.e. wherever the actual signal is weakest. This is for the
+    case where two things only touch on a single cross-section -- e.g.
+    real signal happening to graze a skin-residue fragment right at
+    that slice -- where the mask's own outline can be geometrically
+    wide right through a point the real signal already dips low at (a
+    true 3D neck doesn't exist there, and even in 2D the mask's own
+    EDT has no way to see an intensity dip it isn't shaped around).
+    Only that one slice is touched -- every other Z-slice of the label
+    is left completely untouched, and the new part(s) exist only on
+    that slice (they don't extend into neighboring slices the way a
+    3D split's parts would).
 
     Speed notes
     -----------
@@ -614,10 +645,13 @@ def split_label(
     labels       : (Z, Y, X) int32 ndarray
     target_label : label value to split
     n_splits     : number of parts to produce (≥ 2)
-    sigma        : Gaussian smoothing of distance map (higher = broader peaks)
+    sigma        : Gaussian smoothing of the split surface (higher = broader peaks)
     min_distance : minimum voxel distance between seed peaks
     mode         : "3d" (default) or "2d"
     z            : slice index, required when mode="2d" (ignored for "3d")
+    image        : (Z, Y, X) raw signal volume, same shape as labels --
+                   required when mode="2d" (ignored for "3d", which never
+                   looks at signal intensity)
 
     Returns
     -------
@@ -628,9 +662,9 @@ def split_label(
 
     Raises
     ------
-    ValueError  if mode is invalid, z is missing/out of range for mode="2d",
-                the label is not found (in the volume, or on slice z), or
-                fewer peaks than n_splits are found
+    ValueError  if mode is invalid, z/image is missing or the wrong shape
+                for mode="2d", the label is not found (in the volume, or
+                on slice z), or fewer peaks than n_splits are found
     """
     if mode not in ("3d", "2d"):
         raise ValueError(f"mode must be '3d' or '2d', got {mode!r}")
@@ -640,15 +674,21 @@ def split_label(
             raise ValueError("z (slice index) is required when mode='2d'")
         if not (0 <= z < labels.shape[0]):
             raise ValueError(f"slice {z} out of range for a {labels.shape[0]}-slice volume")
+        if image is None:
+            raise ValueError("image (raw signal volume) is required when mode='2d'")
+        if image.shape != labels.shape:
+            raise ValueError(f"image shape {image.shape} != labels shape {labels.shape}")
         mask = labels[z] == target_label
         if not np.any(mask):
             raise ValueError(f"Label {target_label} not found on slice {z}")
+        surface_full = image[z].astype(np.float32)
     else:
         mask = labels == target_label
         if not np.any(mask):
             raise ValueError(f"Label {target_label} not found")
+        surface_full = None
 
-    split_full = _watershed_split_mask(mask, n_splits, sigma, min_distance)
+    split_full = _watershed_split_mask(mask, n_splits, sigma, min_distance, surface_full=surface_full)
 
     out     = labels.copy()
     out_view = out[z] if mode == "2d" else out
