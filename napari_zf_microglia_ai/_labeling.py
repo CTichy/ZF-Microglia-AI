@@ -390,7 +390,7 @@ def remove_debris(labels: np.ndarray, threshold: int) -> "tuple[np.ndarray, int]
 
     Returns (labels, n_removed) -- n_removed counts fragments, not label
     IDs (one ID can contribute more than one removed fragment)."""
-    from scipy.ndimage import label as _cc_label, find_objects
+    from scipy.ndimage import find_objects
 
     labels = np.asarray(labels)
     max_lbl = int(labels.max()) if labels.size else 0
@@ -398,30 +398,72 @@ def remove_debris(labels: np.ndarray, threshold: int) -> "tuple[np.ndarray, int]
         return labels.copy(), 0
 
     out = labels.copy()
-    structure = np.ones((3, 3, 3), dtype=np.int32)
     objs = find_objects(labels)
     n_removed = 0
     for lbl in range(1, max_lbl + 1):
         sl = objs[lbl - 1] if lbl - 1 < len(objs) else None
         if sl is None:
             continue
-        crop = out[sl]
-        mask = crop == lbl
-        if not mask.any():
-            continue
-        cc, n_cc = _cc_label(mask, structure=structure)
-        if n_cc <= 1:
-            if int(mask.sum()) < threshold:
-                crop[mask] = 0
-                n_removed += 1
-            continue
-        counts = np.bincount(cc.ravel())
-        for piece_id in range(1, n_cc + 1):
-            if counts[piece_id] < threshold:
-                crop[cc == piece_id] = 0
-                n_removed += 1
+        n_removed += _remove_debris_from_crop(out[sl], lbl, threshold)
 
     return out.astype(np.int32), n_removed
+
+
+def _remove_debris_from_crop(crop: np.ndarray, lbl: int, threshold: int) -> int:
+    """
+    In-place: zero out connected fragments of value `lbl` within `crop`
+    smaller than `threshold` voxels (26-connectivity, matching
+    create_labels()'s own convention). Returns the number of fragments
+    removed. Shared by remove_debris() (loops over every label in a
+    layer) and remove_debris_for_label() (scoped to just one).
+    """
+    from scipy.ndimage import label as _cc_label
+    structure = np.ones((3, 3, 3), dtype=np.int32)
+    mask = crop == lbl
+    if not mask.any():
+        return 0
+    cc, n_cc = _cc_label(mask, structure=structure)
+    if n_cc <= 1:
+        if int(mask.sum()) < threshold:
+            crop[mask] = 0
+            return 1
+        return 0
+    counts = np.bincount(cc.ravel())
+    removed = 0
+    for piece_id in range(1, n_cc + 1):
+        if counts[piece_id] < threshold:
+            crop[cc == piece_id] = 0
+            removed += 1
+    return removed
+
+
+def remove_debris_for_label(labels: np.ndarray, label_id: int, threshold: int) -> "tuple[np.ndarray, int]":
+    """
+    Same connected-fragment volume filter as remove_debris(), but
+    scoped to exactly ONE label -- every other label elsewhere in the
+    volume is left completely untouched, unlike running the general
+    Remove Debris tool on a whole layer (used as the automatic cleanup
+    step after correct_label_from_intensity_3d(), which shouldn't have
+    side effects on unrelated cells just because it corrected one).
+
+    Returns (new_labels, n_removed_px) -- pixel count removed (not
+    fragment count, unlike remove_debris() -- more informative for a
+    single-label report).
+    """
+    mask = labels == label_id
+    if not np.any(mask):
+        return labels.copy(), 0
+    nz = np.argwhere(mask)
+    lo = nz.min(axis=0)
+    hi = nz.max(axis=0)
+    sl = tuple(slice(int(a), int(b) + 1) for a, b in zip(lo, hi))
+
+    out = labels.copy()
+    crop = out[sl]
+    before = int((crop == label_id).sum())
+    _remove_debris_from_crop(crop, label_id, threshold)
+    after = int((crop == label_id).sum())
+    return out.astype(np.int32), before - after
 
 
 def _watershed_split_mask(
@@ -827,6 +869,171 @@ def correct_label_from_intensity(
     return new_labels
 
 
+def correct_label_from_intensity_3d(
+    labels: np.ndarray,
+    image: np.ndarray,
+    label_id: int,
+    lo: float,
+    pad: int = 15,
+    min_volume: "int | None" = None,
+    final_min_fraction: float = 0.618,
+) -> "tuple[np.ndarray, dict]":
+    """
+    3D version of correct_label_from_intensity(): corrects the WHOLE
+    cell, not just one slice.
+
+    Finds label_id's own 3D centroid, corrects that slice first (same
+    engine as the 2D tool, seeded by its own existing footprint there),
+    then walks outward in both +Z and -Z from the centroid slice. Each
+    step is seeded by the PREVIOUS step's own corrected shape (not
+    necessarily that slice's original footprint) -- so the correction
+    can both reshape slices that already carried the label AND grow
+    into a slice the original label never touched at all, as long as
+    the signal and connectivity support it. Each direction's walk stops
+    the moment a step produces nothing (no candidate pixels connect to
+    the previous step's seed there) -- a natural stopping point, not a
+    fixed slice count; slices beyond that boundary, in either
+    direction, are left completely untouched, even if the ORIGINAL
+    label extended further (a step that can't reconnect there is
+    treated as "the correction ends here", not skipped-and-continued).
+
+    After the walk, remove_debris_for_label() (golden-ratio-relaxed
+    floor, same as Cellpose-SAM's own final safety net) cleans up any
+    small disconnected fragment left over from the correction -- scoped
+    to ONLY this label, unlike running the general Remove Debris tool
+    on the whole layer.
+
+    labels, image      : (Z, Y, X) volumes, same shape
+    label_id            : the label being corrected
+    lo                  : one-sided intensity cutoff (signal = image >= lo),
+                          held constant across every slice in the walk
+    pad                 : bbox padding in pixels, XY only, per slice
+    min_volume          : if given (with final_min_fraction), the debris
+                          floor is final_min_fraction * min_volume voxels
+                          -- pass None to skip the debris-cleanup step
+                          entirely (report will show n_debris_removed_px=0)
+    final_min_fraction  : golden ratio (0.618) by default, matching
+                          every other final-safety-net stage in this plugin
+
+    Returns (new_labels, report). report is a dict:
+        z_center            -- the starting slice (nearest to the
+                               label's own pre-correction 3D centroid)
+        slices_corrected    -- sorted list of every Z touched
+        n_debris_removed_px -- pixels removed by the debris-cleanup step
+        foreign_touching    -- {z: sorted [foreign label ids]} -- IDs
+                               whose pixels directly border (8-connected)
+                               this label's corrected footprint on that
+                               slice, for slices where this is non-empty
+        foreign_nearby      -- {z: sorted [foreign label ids]} -- IDs
+                               present anywhere inside the padded bbox
+                               region this slice's correction actually
+                               worked within, even where not touching,
+                               for slices where this is non-empty. (A
+                               literal "foreign pixels included inside
+                               this label" check is not meaningful for a
+                               label array -- each voxel holds exactly
+                               one label value, so true overlap is
+                               structurally impossible; this is the
+                               closest real, useful signal: a foreign
+                               blob sitting inside the correction's own
+                               working neighborhood, worth a manual
+                               look even though it was never actually
+                               absorbed -- the foreign-exclusion guard
+                               inside _intensity_grow_2d makes that part
+                               impossible by construction.)
+
+    Raises ValueError if label_id isn't found anywhere in the volume,
+    or if even the centroid slice can't be corrected (nothing connects
+    to its own existing footprint there).
+    """
+    if labels.shape != image.shape:
+        raise ValueError(f"labels shape {labels.shape} != image shape {image.shape}")
+
+    mask3d = labels == label_id
+    if not np.any(mask3d):
+        raise ValueError(f"label {label_id} not found anywhere in the volume")
+
+    from scipy.ndimage import center_of_mass as _com
+    cz, _cy, _cx = _com(mask3d)
+    z_dim = labels.shape[0]
+    z_center = int(round(cz))
+    z_center = max(0, min(z_dim - 1, z_center))
+
+    zs_with_label = np.unique(np.nonzero(mask3d)[0])
+    if not np.any(labels[z_center] == label_id):
+        # centroid can land on a slice the label doesn't actually occupy
+        # (a branchy/non-convex 3D shape) -- snap to the nearest real one
+        z_center = int(zs_with_label[np.argmin(np.abs(zs_with_label - z_center))])
+
+    new_labels = labels.copy()
+    bboxes: "dict[int, tuple[int, int, int, int]]" = {}
+
+    corrected0, crop_seed0, bbox0 = _intensity_correct_2d(
+        new_labels[z_center], image[z_center], label_id, lo, pad
+    )
+    y0, y1, x0, x1 = bbox0
+    crop = new_labels[z_center, y0:y1, x0:x1]
+    crop[crop_seed0] = 0
+    crop[corrected0] = label_id
+    bboxes[z_center] = bbox0
+
+    seed_full = np.zeros(labels.shape[1:], dtype=bool)
+    seed_full[y0:y1, x0:x1] = corrected0
+    center_seed_full = seed_full  # kept to start the -Z walk from the same slice
+
+    slices_corrected = {z_center}
+
+    for direction, z_range in ((1, range(z_center + 1, z_dim)),
+                                (-1, range(z_center - 1, -1, -1))):
+        prev_seed = center_seed_full
+        for z in z_range:
+            result = _intensity_grow_2d(image[z], new_labels[z], label_id, lo, pad, prev_seed)
+            if result is None:
+                break  # natural stop: nothing here connects to the previous slice
+            corrected, _crop_seed, (gy0, gy1, gx0, gx1) = result
+            crop = new_labels[z, gy0:gy1, gx0:gx1]
+            crop[crop == label_id] = 0  # clear any of this label's own old pixels here first
+            crop[corrected] = label_id
+            bboxes[z] = (gy0, gy1, gx0, gx1)
+            slices_corrected.add(z)
+
+            prev_seed = np.zeros(labels.shape[1:], dtype=bool)
+            prev_seed[gy0:gy1, gx0:gx1] = corrected
+
+    n_debris_removed_px = 0
+    if min_volume is not None:
+        threshold = final_min_fraction * min_volume
+        new_labels, n_debris_removed_px = remove_debris_for_label(new_labels, label_id, threshold)
+
+    from scipy.ndimage import binary_dilation
+    foreign_touching: "dict[int, list[int]]" = {}
+    foreign_nearby: "dict[int, list[int]]" = {}
+    for z in sorted(slices_corrected):
+        own = new_labels[z] == label_id
+        if not np.any(own):
+            continue  # debris cleanup removed this slice's contribution entirely
+        dilated = binary_dilation(own, structure=np.ones((3, 3), dtype=bool))
+        touching_here = new_labels[z][dilated & ~own]
+        touching_ids = sorted(int(i) for i in np.unique(touching_here) if i not in (0, label_id))
+        if touching_ids:
+            foreign_touching[z] = touching_ids
+
+        gy0, gy1, gx0, gx1 = bboxes.get(z, (0, new_labels.shape[1], 0, new_labels.shape[2]))
+        nearby_here = new_labels[z, gy0:gy1, gx0:gx1]
+        nearby_ids = sorted(int(i) for i in np.unique(nearby_here) if i not in (0, label_id))
+        if nearby_ids:
+            foreign_nearby[z] = nearby_ids
+
+    report = {
+        "z_center": z_center,
+        "slices_corrected": sorted(slices_corrected),
+        "n_debris_removed_px": n_debris_removed_px,
+        "foreign_touching": foreign_touching,
+        "foreign_nearby": foreign_nearby,
+    }
+    return new_labels.astype(np.int32), report
+
+
 def _intensity_correct_2d(
     labels_z: np.ndarray,
     image_z: np.ndarray,
@@ -861,31 +1068,66 @@ def _intensity_correct_2d(
     if not np.any(existing):
         raise ValueError(f"label {label_id} not found")
 
-    ys, xs = np.nonzero(existing)
+    result = _intensity_grow_2d(image_z, labels_z, label_id, lo, pad, existing)
+    if result is None:
+        raise ValueError(
+            f"threshold >= {lo} leaves nothing connected to "
+            f"label {label_id}'s existing footprint -- refusing to erase "
+            f"the label; adjust the contrast window and try again."
+        )
+    corrected, crop_seed, bbox = result
+    return corrected, crop_seed, bbox
+
+
+def _intensity_grow_2d(
+    image_z: np.ndarray,
+    labels_z: np.ndarray,
+    label_id: int,
+    lo: float,
+    pad: int,
+    seed_mask: np.ndarray,
+) -> "tuple[np.ndarray, np.ndarray, tuple[int, int, int, int]] | None":
+    """
+    Threshold + connected-component engine shared by
+    _intensity_correct_2d() (per-slice correction, seed = that slice's
+    own existing label_id footprint) and
+    correct_label_from_intensity_3d()'s Z-walk (seed = the previous
+    step's own corrected shape, projected onto the next slice -- so the
+    correction can grow into a slice the original label never touched
+    at all, not just reshape a slice that already carried it).
+
+    seed_mask : bool, same shape as image_z/labels_z -- non-empty
+                (caller's responsibility; this function doesn't itself
+                know whether an empty seed means "label not found" or
+                "the Z-walk should stop here", since that's a different
+                error for each caller)
+
+    Returns (corrected, crop_seed, (y0,y1,x0,x1)) within the crop only
+    -- same convention _intensity_correct_2d() already returned.
+    Returns None (not an exception) if the threshold leaves nothing
+    connected to seed_mask -- the caller decides what that means.
+    """
+    ys, xs = np.nonzero(seed_mask)
     y0 = max(int(ys.min()) - pad, 0)
     y1 = min(int(ys.max()) + pad + 1, labels_z.shape[0])
     x0 = max(int(xs.min()) - pad, 0)
     x1 = min(int(xs.max()) + pad + 1, labels_z.shape[1])
 
-    crop_labels   = labels_z[y0:y1, x0:x1]
-    crop_image    = image_z[y0:y1, x0:x1]
-    crop_existing = existing[y0:y1, x0:x1]
+    crop_labels = labels_z[y0:y1, x0:x1]
+    crop_image  = image_z[y0:y1, x0:x1]
+    crop_seed   = seed_mask[y0:y1, x0:x1]
 
     candidate = crop_image >= lo  # one-sided: signal is "at/above lo", not a narrow band
     foreign = (crop_labels != 0) & (crop_labels != label_id)
     candidate &= ~foreign  # never claim another label's territory
 
     cc, _ = cpu_label(candidate)
-    keep_ids = set(np.unique(cc[crop_existing & (cc > 0)]))
+    keep_ids = set(np.unique(cc[crop_seed & (cc > 0)]))
     keep_ids.discard(0)
     if not keep_ids:
-        raise ValueError(
-            f"threshold >= {lo} leaves nothing connected to "
-            f"label {label_id}'s existing footprint -- refusing to erase "
-            f"the label; adjust the contrast window and try again."
-        )
+        return None
     corrected = np.isin(cc, list(keep_ids))
-    return corrected, crop_existing, (y0, y1, x0, x1)
+    return corrected, crop_seed, (y0, y1, x0, x1)
 
 
 def copy_label_to_adjacent_slice(

@@ -29,7 +29,8 @@ from ._inference import DEFAULT_MODEL, _SKIN_SEG_DIR, run_inference
 from ._background import remove_outside_brain, remove_global, fill_outside_brain_random
 from ._labeling import (
     create_labels, resort_labels, split_label, join_labels, remove_debris,
-    correct_label_from_intensity, copy_label_to_adjacent_slice,
+    correct_label_from_intensity, correct_label_from_intensity_3d,
+    copy_label_to_adjacent_slice,
 )
 from ._statistics import compute_stats
 from ._contrast_sweep import (
@@ -2279,15 +2280,41 @@ class ZFMicrogliaAIWidget(QWidget):
         dlt.addWidget(_sep())
 
         correct_note = QLabel(
-            "  Correct Label — regenerates one label's shape on the "
-            "CURRENT slice only, from the signal layer's own current "
-            "contrast limits (whatever intensity window it's displayed "
-            "with right now). A neighboring label's own pixels are "
-            "never touched, even if they fall inside the padded box."
+            "  Correct Label — regenerates a label's shape from the "
+            "signal layer's own current contrast limits (whatever "
+            "intensity window it's displayed with right now). A "
+            "neighboring label's own pixels are never touched, even if "
+            "they fall inside the padded box."
         )
         correct_note.setWordWrap(True)
         correct_note.setStyleSheet("color: #888; font-size: 10px;")
         dlt.addWidget(correct_note)
+
+        correct_mode_row = QHBoxLayout()
+        correct_mode_row.addWidget(QLabel("Correction mode:"))
+        self._correct_mode_combo = QComboBox()
+        self._correct_mode_combo.addItem("2D (current slice only)", "2d")
+        self._correct_mode_combo.addItem("3D (whole cell, from centroid)", "3d")
+        correct_mode_row.addWidget(self._correct_mode_combo)
+        dlt.addLayout(correct_mode_row)
+
+        correct_mode_note = QLabel(
+            "  3D corrects the CURRENT slice's own centroid slice first, "
+            "then walks outward in +Z and -Z, each step seeded by the "
+            "PREVIOUS step's own corrected shape -- so it can grow into "
+            "a slice the original label never touched at all, not just "
+            "reshape slices that already carried it. Each direction "
+            "stops naturally the moment a step finds nothing to connect "
+            "to. Afterwards, a debris-cleanup pass (same golden-ratio "
+            "floor as Cellpose-SAM's own final safety net) removes any "
+            "small disconnected leftover scoped to ONLY this label -- "
+            "other cells are never touched. Reports which slices any "
+            "other label's pixels directly touch or sit near, so a "
+            "close call is never silently invisible."
+        )
+        correct_mode_note.setWordWrap(True)
+        correct_mode_note.setStyleSheet("color: #888; font-size: 10px;")
+        dlt.addWidget(correct_mode_note)
 
         correct_signal_row = QHBoxLayout()
         correct_signal_row.addWidget(QLabel("Signal layer:"))
@@ -2323,6 +2350,13 @@ class ZFMicrogliaAIWidget(QWidget):
         self._correct_status_lbl = QLabel("")
         self._correct_status_lbl.setWordWrap(True)
         dlt.addWidget(self._correct_status_lbl)
+
+        self._correct_report_view = QTextEdit()
+        self._correct_report_view.setReadOnly(True)
+        self._correct_report_view.setStyleSheet("font-family: monospace; font-size: 9px;")
+        self._correct_report_view.setFixedHeight(100)
+        self._correct_report_view.hide()
+        dlt.addWidget(self._correct_report_view)
 
         dlt.addWidget(_sep())
 
@@ -6377,6 +6411,7 @@ class ZFMicrogliaAIWidget(QWidget):
 
         label_id = self._correct_label_spin.value()
         pad = self._correct_pad_spin.value()
+        mode = self._correct_mode_combo.currentData()
         # Read the current on-screen contrast lower limit directly --
         # the whole point is that whatever value the user has dialed
         # in by eye becomes the correction threshold. Only lo is used
@@ -6387,24 +6422,45 @@ class ZFMicrogliaAIWidget(QWidget):
         # threshold got this backwards (emptied the label, kept the
         # surrounding background instead).
         lo, hi = (float(v) for v in signal_lyr.contrast_limits)
-        z = int(self._viewer.dims.current_step[0])
 
         self._correct_btn.setEnabled(False)
-        self._correct_status_lbl.setText(
-            f"Correcting label {label_id} on slice {z} from '{signal_name}' "
-            f"-- signal = intensity >= {lo:.3g}…"
-        )
+        self._correct_report_view.hide()
+        self._correct_report_view.clear()
 
         result = {}
 
-        def _worker():
-            try:
-                result["labels"] = correct_label_from_intensity(
-                    labels, image, label_id, z, lo, hi, pad=pad
-                )
-            except Exception as exc:
-                traceback.print_exc()
-                result["error"] = str(exc)
+        if mode == "2d":
+            z = int(self._viewer.dims.current_step[0])
+            self._correct_status_lbl.setText(
+                f"Correcting label {label_id} on slice {z} from '{signal_name}' "
+                f"-- signal = intensity >= {lo:.3g}…"
+            )
+
+            def _worker():
+                try:
+                    result["labels"] = correct_label_from_intensity(
+                        labels, image, label_id, z, lo, hi, pad=pad
+                    )
+                except Exception as exc:
+                    traceback.print_exc()
+                    result["error"] = str(exc)
+        else:
+            min_volume = self._current_min_volume()
+            final_min_fraction = self._finalfrac_spin.value()
+            self._correct_status_lbl.setText(
+                f"Correcting label {label_id} in 3D from '{signal_name}' "
+                f"-- signal = intensity >= {lo:.3g}…"
+            )
+
+            def _worker():
+                try:
+                    result["labels"], result["report"] = correct_label_from_intensity_3d(
+                        labels, image, label_id, lo, pad=pad,
+                        min_volume=min_volume, final_min_fraction=final_min_fraction,
+                    )
+                except Exception as exc:
+                    traceback.print_exc()
+                    result["error"] = str(exc)
 
         thread = threading.Thread(target=_worker, daemon=True)
         thread.start()
@@ -6421,10 +6477,39 @@ class ZFMicrogliaAIWidget(QWidget):
                 return
             lyr.data[:] = result["labels"]  # in-place -- see Resort Labels above for why
             lyr.refresh()
-            self._correct_status_lbl.setText(
-                f"Done — label {label_id} regenerated on slice {z} "
-                f"(signal = intensity >= {lo:.3g})."
-            )
+
+            if mode == "2d":
+                self._correct_status_lbl.setText(
+                    f"Done — label {label_id} regenerated on slice {z} "
+                    f"(signal = intensity >= {lo:.3g})."
+                )
+            else:
+                report = result["report"]
+                slices = report["slices_corrected"]
+                lines = [
+                    f"Label {label_id} corrected in 3D from centroid slice "
+                    f"{report['z_center']} -- {len(slices)} slice(s): "
+                    f"{slices[0]}..{slices[-1]}",
+                    f"Debris removed: {report['n_debris_removed_px']} px",
+                ]
+                if report["foreign_touching"]:
+                    lines.append("Foreign labels TOUCHING the correction:")
+                    for z_, ids in sorted(report["foreign_touching"].items()):
+                        lines.append(f"  slice {z_}: label(s) {ids}")
+                if report["foreign_nearby"]:
+                    lines.append("Foreign labels nearby (within the correction's own bbox, not necessarily touching):")
+                    for z_, ids in sorted(report["foreign_nearby"].items()):
+                        lines.append(f"  slice {z_}: label(s) {ids}")
+                if not report["foreign_touching"] and not report["foreign_nearby"]:
+                    lines.append("No foreign labels touching or nearby on any corrected slice.")
+                self._correct_report_view.setPlainText("\n".join(lines))
+                self._correct_report_view.show()
+                self._correct_status_lbl.setText(
+                    f"Done — label {label_id} corrected in 3D, "
+                    f"{len(slices)} slice(s) ({slices[0]}..{slices[-1]}), "
+                    f"{report['n_debris_removed_px']} debris px removed. "
+                    f"See report below."
+                )
             self._correct_btn.setEnabled(True)
 
         timer.timeout.connect(_poll)
