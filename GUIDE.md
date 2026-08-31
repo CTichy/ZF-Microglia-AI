@@ -339,7 +339,7 @@ Tab 2 shows **exactly one** of the two labelling methods below, chosen automatic
 
 So the choice is really made back in **Tab 1, Step 5**: pick **Option 1** if you plan to segment with Cellpose-SAM, or **Option 2** if you plan to use the Pixel Classifier.
 
-The **Sort by / Resort Labels**, **Remove Debris**, **Split Label**, **Join Labels**, **Correct Label**, **Copy Label to Adjacent Slice**, and **Save Labels** tools (Section 6, further down) only appear once one of the two sections above is showing — with no `_ExtRm`/`_NoBG` layer selected, there's nothing yet to sort, clean up, split, or save. **Tab 3 — Statistics** takes a different approach: it stays visible regardless, showing an explanatory hint in place of its controls until at least one Labels layer exists in the viewer, so a first-time user can still discover the tab is there.
+The **Sort by / Resort Labels**, **Remove Debris**, **Split Label**, **Join Labels**, **Correct Label**, **Copy Label to Adjacent Slice**, **Correct Adjacent Labels**, and **Save Labels** tools (Section 6, further down) only appear once one of the two sections above is showing — with no `_ExtRm`/`_NoBG` layer selected, there's nothing yet to sort, clean up, split, or save. **Tab 3 — Statistics** takes a different approach: it stays visible regardless, showing an explanatory hint in place of its controls until at least one Labels layer exists in the viewer, so a first-time user can still discover the tab is there.
 
 ---
 
@@ -703,6 +703,22 @@ Copies one label's 2D shape from the currently-viewed slice onto the next or pre
 **Copy to** — choose **Next slice (Z+1)** or **Previous slice (Z-1)**.
 
 Click **Copy Label to Adjacent Slice**. The label's own old shape on the target slice is cleared first, then the copied shape is painted in — running this again on the same pair of slices replaces the previous copy cleanly rather than leaving a stale double outline. As with Correct Label, a neighboring label's pixels on the target slice are never touched: any part of the copied shape that would land on a different label is silently dropped, and the status message reports how many pixels were skipped that way so a partial-overlap copy is never mistaken for an exact one.
+
+---
+
+### Correct Adjacent Labels
+
+For two labels that end up touching or merged on **one slice** — two real cells, or a cell and a skin-residue fragment — e.g. right after Copy Label to Adjacent Slice pastes a shape that now touches a neighbor there. **2D only, current slice.**
+
+**Why not just run Correct Label twice:** at a shared contrast threshold, both labels' regenerated regions can fuse into one connected blob exactly where they touch, and each single-label correction's own foreign-label guard would draw the boundary from the *other* label's stale original shape — not the real signal boundary between them, which is usually different once both are corrected. This tool regenerates **both labels together** from the intensity threshold, then splits the combined result with a watershed cut placed along the intensity valley between them — the same signal-based cut Split Label's 2D mode uses — instead of drawing the line from stale label geometry.
+
+**Signal layer** — pick the Image layer whose current contrast window should be used.
+
+**Label A** / **Label B** — type directly, or click each label in the viewer and use its own **Use selected** button.
+
+**Bbox padding (px)** — default 15. The correction works within the *union* of both labels' existing footprints (+ padding) on the current slice.
+
+Click **Correct Adjacent Labels**. A third, unrelated label is never touched, absorbed, or grown into — same protection as every other Correct Label tool. If the two labels are too fused for a genuine 2-way cut to be found at all, the tool refuses rather than guessing — try Split Label directly with a different Smooth σ, or correct/split manually. The status message reports each label's final pixel count and how many pixels (if any) were lost right at the cut boundary.
 
 ---
 
@@ -1826,6 +1842,7 @@ Shown automatically based on active layer suffix — `_ExtRm` → Cellpose-SAM, 
 | Join Labels | — | Merges Label B into Label A — the inverse of Split Label |
 | Correct Label | 2D mode | Regenerates a label's shape from the signal layer's live contrast window — 2D (current slice) or 3D (whole cell from centroid, walks outward, trims false-positive extension beyond real signal, auto debris cleanup, reports nearby/touching foreign labels) |
 | Copy Label to Adjacent Slice | — | Copies a label's shape from the current slice onto the next/previous slice |
+| Correct Adjacent Labels | 2D only | Jointly corrects two touching labels on the current slice, cut placed by watershed on signal intensity |
 
 ### Tab 3 — Statistics
 
