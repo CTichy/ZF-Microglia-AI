@@ -617,33 +617,45 @@ def _watershed_split_mask(
     split_crop = watershed(-dist_smooth, markers, mask=mask_crop)
 
     # ── 6. Clear only the cut interface (1 voxel each side) ──────────────
-    #    Find face-adjacent voxel pairs belonging to different parts and zero
-    #    both.  The outer surface of each part is left completely untouched.
-    eroded_crop = split_crop.copy()
-    interface   = np.zeros(split_crop.shape, dtype=bool)
-    for axis in range(split_crop.ndim):
-        slc_lo = [slice(None)] * split_crop.ndim
-        slc_hi = [slice(None)] * split_crop.ndim
-        slc_lo[axis] = slice(None, -1)
-        slc_hi[axis] = slice(1, None)
-        slc_lo = tuple(slc_lo)
-        slc_hi = tuple(slc_hi)
-        both = (
-            (split_crop[slc_lo] > 0) &
-            (split_crop[slc_hi] > 0) &
-            (split_crop[slc_lo] != split_crop[slc_hi])
-        )
-        tmp_lo = np.zeros(split_crop.shape, dtype=bool)
-        tmp_hi = np.zeros(split_crop.shape, dtype=bool)
-        tmp_lo[slc_lo] = both
-        tmp_hi[slc_hi] = both
-        interface |= tmp_lo | tmp_hi
-    eroded_crop[interface] = 0
+    eroded_crop = _clear_split_interface(split_crop)
 
     # ── 7. Write result back into a full-size (mask.shape) array ───────────
     split_full = np.zeros(mask.shape, dtype=np.int32)
     split_full[sl] = eroded_crop
     return split_full
+
+
+def _clear_split_interface(split_arr: np.ndarray) -> np.ndarray:
+    """
+    Given an int array with 0=background and 1..N=parts (from any
+    watershed split), zero out only the 1-voxel-wide interface where two
+    different parts directly touch -- the outer surface of each part is
+    left completely untouched. Shared by _watershed_split_mask() (auto
+    peak-found seeds) and any marker-seeded watershed split that wants
+    the same "clean gap between parts, not a jagged shared boundary"
+    treatment.
+    """
+    eroded = split_arr.copy()
+    interface = np.zeros(split_arr.shape, dtype=bool)
+    for axis in range(split_arr.ndim):
+        slc_lo = [slice(None)] * split_arr.ndim
+        slc_hi = [slice(None)] * split_arr.ndim
+        slc_lo[axis] = slice(None, -1)
+        slc_hi[axis] = slice(1, None)
+        slc_lo = tuple(slc_lo)
+        slc_hi = tuple(slc_hi)
+        both = (
+            (split_arr[slc_lo] > 0) &
+            (split_arr[slc_hi] > 0) &
+            (split_arr[slc_lo] != split_arr[slc_hi])
+        )
+        tmp_lo = np.zeros(split_arr.shape, dtype=bool)
+        tmp_hi = np.zeros(split_arr.shape, dtype=bool)
+        tmp_lo[slc_lo] = both
+        tmp_hi[slc_hi] = both
+        interface |= tmp_lo | tmp_hi
+    eroded[interface] = 0
+    return eroded
 
 
 def split_label(
@@ -1183,7 +1195,6 @@ def correct_adjacent_labels_2d(
     lo: float,
     pad: int = 15,
     sigma: float = 1.0,
-    min_distance: int = 5,
 ) -> "tuple[np.ndarray, dict]":
     """
     Corrects TWO adjacent/touching labels on ONE slice simultaneously
@@ -1201,11 +1212,25 @@ def correct_adjacent_labels_2d(
     guard would just draw the boundary wherever the OTHER label's stale
     ORIGINAL pixels happened to already sit -- not the real signal
     boundary between them, which is usually different once both are
-    corrected together. This function regenerates BOTH labels' combined
-    territory from the threshold in one pass, then splits the combined
-    result at the intensity valley between the two brightness peaks --
-    the same signal-based cut Split Label's 2D mode uses -- rather than
-    drawing the line from stale label geometry.
+    corrected together.
+
+    The cut is placed by a MARKER-SEEDED watershed, anchored at each
+    label's own existing footprint -- not by Split Label's blind
+    peak-finding (auto-detecting the two most prominent intensity peaks
+    anywhere in the combined region and cutting between THOSE). Peak-
+    finding has no notion of "these two regions already have their own
+    separate identities and an existing boundary between them" -- on a
+    combined region with more than one real intensity dip (e.g. a
+    genuine internal texture variation inside one of the two cells, in
+    addition to the real seam between them), it can just as easily lock
+    onto the wrong valley entirely, one unrelated to where the two
+    labels actually meet. Seeding directly from each label's own
+    existing region instead means the watershed floods outward from
+    each cell's own known territory and the two fronts meet wherever
+    they meet -- the resulting boundary naturally tracks close to the
+    ORIGINAL touching boundary's neighborhood while still following the
+    real per-pixel signal (so it isn't just re-drawing the stale shape
+    either), rather than being pulled toward some other, unrelated dip.
 
     labels, image    : (Z, Y, X) volumes, same shape
     label_a, label_b : the two labels being corrected together (must be
@@ -1214,8 +1239,9 @@ def correct_adjacent_labels_2d(
     lo               : one-sided intensity cutoff (signal = image >= lo)
     pad              : bbox padding in pixels around the UNION of both
                        labels' existing footprints on this slice
-    sigma, min_distance : passed through to the watershed split step,
-                       same meaning/defaults as Split Label's own
+    sigma            : Gaussian smoothing of the signal before watershed
+                       (higher = less sensitive to single-pixel noise
+                       nudging the boundary around)
 
     Returns (new_labels, info). info is a dict:
         n_a, n_b -- final pixel counts for label_a/label_b after correction
@@ -1227,10 +1253,10 @@ def correct_adjacent_labels_2d(
 
     Raises ValueError if label_a == label_b, either label isn't present
     on slice z, the joint threshold connects to neither label's existing
-    footprint at all, or the combined region is too fused for a genuine
-    2-way split to be found (same failure mode as Split Label -- try
-    Split Label directly with a different Smooth sigma, or correct/split
-    manually).
+    footprint at all, or one label's own marker ends up with zero
+    reachable candidate pixels within the combined region (its own
+    existing footprint doesn't meet the new threshold at all) -- refuses
+    to silently erase one label rather than returning a 1-label result.
     """
     if label_a == label_b:
         raise ValueError("label_a and label_b must be different labels")
@@ -1277,33 +1303,38 @@ def correct_adjacent_labels_2d(
         )
     combined = np.isin(cc, list(keep_ids))
 
-    try:
-        split_full = _watershed_split_mask(
-            combined, n_splits=2, sigma=sigma, min_distance=min_distance,
-            surface_full=crop_image,
-        )
-    except ValueError as exc:
-        raise ValueError(
-            f"could not find a 2-way split between label {label_a} and "
-            f"{label_b} at this threshold ({exc}) -- they may be too "
-            f"fused to separate automatically; try Split Label directly "
-            f"with a different Smooth sigma, or correct/split manually."
-        ) from None
-
-    part1 = split_full == 1
-    part2 = split_full == 2
-
-    # Assign each watershed part to whichever original label it overlaps
-    # more -- try both pairings, keep whichever maximizes total overlap
-    # (only 2 parts x 2 labels, so this is an exact, not heuristic, choice).
-    overlap_1a = int((part1 & crop_a).sum())
-    overlap_1b = int((part1 & crop_b).sum())
-    overlap_2a = int((part2 & crop_a).sum())
-    overlap_2b = int((part2 & crop_b).sum())
-    if overlap_1a + overlap_2b >= overlap_1b + overlap_2a:
-        crop_final_a, crop_final_b = part1, part2
+    # Marker-seeded watershed: markers are exactly each label's own
+    # EXISTING footprint (not auto-detected peaks) -- floods outward from
+    # each cell's own known territory on the (smoothed) real signal, so
+    # the two fronts meet near the actual current boundary's neighborhood
+    # rather than being pulled toward some other, unrelated intensity dip
+    # elsewhere in the combined region. See the docstring above for why
+    # Split Label's peak-finding approach was tried first and rejected.
+    from skimage.segmentation import watershed
+    if sigma > 0:
+        crop_image_smooth = cpu_gaussian(crop_image.astype(np.float32), sigma=float(sigma))
     else:
-        crop_final_a, crop_final_b = part2, part1
+        crop_image_smooth = crop_image.astype(np.float32)
+
+    markers = np.zeros(combined.shape, dtype=np.int32)
+    markers[crop_a] = 1
+    markers[crop_b] = 2
+    split_crop = watershed(-crop_image_smooth, markers, mask=combined)
+    split_crop = _clear_split_interface(split_crop)
+
+    crop_final_a = split_crop == 1
+    crop_final_b = split_crop == 2
+    if not np.any(crop_final_a) or not np.any(crop_final_b):
+        # A marker with no candidate pixels of its own reachable within
+        # `combined` gets 0 output pixels from skimage's watershed,
+        # silently -- e.g. label_a's own existing footprint doesn't meet
+        # the new threshold at all. Refuse rather than erase one label
+        # outright, matching every other Correct Label tool's guard.
+        empty_lbl = label_a if not np.any(crop_final_a) else label_b
+        raise ValueError(
+            f"threshold >= {lo} leaves label {empty_lbl} with nothing -- "
+            f"refusing to erase it; adjust the contrast window and try again."
+        )
 
     new_labels = labels.copy()
     crop = new_labels[z, y0:y1, x0:x1]
