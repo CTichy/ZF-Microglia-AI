@@ -710,7 +710,9 @@ Click **Copy Label to Adjacent Slice**. The label's own old shape on the target 
 
 For two labels that end up touching or merged on **one slice** — two real cells, or a cell and a skin-residue fragment — e.g. right after Copy Label to Adjacent Slice pastes a shape that now touches a neighbor there. **2D only, current slice.**
 
-**Why not just run Correct Label twice:** at a shared contrast threshold, both labels' regenerated regions can fuse into one connected blob exactly where they touch, and each single-label correction's own foreign-label guard would draw the boundary from the *other* label's stale original shape — not the real signal boundary between them, which is usually different once both are corrected. This tool regenerates **both labels together** from the intensity threshold, then splits the combined result with a watershed cut placed along the intensity valley between them — the same signal-based cut Split Label's 2D mode uses — instead of drawing the line from stale label geometry.
+**Why not just run Correct Label twice:** at a shared contrast threshold, both labels' regenerated regions can fuse into one connected blob exactly where they touch, and each single-label correction's own foreign-label guard would draw the boundary from the *other* label's stale original shape — not the real signal boundary between them, which is usually different once both are corrected.
+
+**How the cut is placed:** this tool regenerates **both labels together** from the intensity threshold, then splits the combined result with a watershed **seeded by each label's own existing footprint** — not by auto-detecting the two strongest intensity peaks anywhere in the combined region the way Split Label's 2D mode does. That distinction matters: a combined region can have more than one real dip (e.g. genuine internal texture inside one of the two cells, in addition to the real seam between them), and blind peak-finding can lock onto the wrong one entirely. Seeding directly from each label's own current region means the correction floods outward from each cell's own known territory, so the two fronts meet near the *actual* boundary's neighborhood — following the real signal there, not just re-drawing the old shape, but also not wandering off to some unrelated dip elsewhere.
 
 **Signal layer** — pick the Image layer whose current contrast window should be used.
 
@@ -718,7 +720,7 @@ For two labels that end up touching or merged on **one slice** — two real cell
 
 **Bbox padding (px)** — default 15. The correction works within the *union* of both labels' existing footprints (+ padding) on the current slice.
 
-Click **Correct Adjacent Labels**. A third, unrelated label is never touched, absorbed, or grown into — same protection as every other Correct Label tool. If the two labels are too fused for a genuine 2-way cut to be found at all, the tool refuses rather than guessing — try Split Label directly with a different Smooth σ, or correct/split manually. The status message reports each label's final pixel count and how many pixels (if any) were lost right at the cut boundary.
+Click **Correct Adjacent Labels**. A third, unrelated label is never touched, absorbed, or grown into — same protection as every other Correct Label tool. If the threshold leaves one label's own existing footprint with nothing to anchor to at all, the tool refuses rather than silently erasing that label — adjust the contrast window and try again. The status message reports each label's final pixel count and how many pixels (if any) were lost right at the cut boundary.
 
 ---
 
@@ -1842,7 +1844,7 @@ Shown automatically based on active layer suffix — `_ExtRm` → Cellpose-SAM, 
 | Join Labels | — | Merges Label B into Label A — the inverse of Split Label |
 | Correct Label | 2D mode | Regenerates a label's shape from the signal layer's live contrast window — 2D (current slice) or 3D (whole cell from centroid, walks outward, trims false-positive extension beyond real signal, auto debris cleanup, reports nearby/touching foreign labels) |
 | Copy Label to Adjacent Slice | — | Copies a label's shape from the current slice onto the next/previous slice |
-| Correct Adjacent Labels | 2D only | Jointly corrects two touching labels on the current slice, cut placed by watershed on signal intensity |
+| Correct Adjacent Labels | 2D only | Jointly corrects two touching labels on the current slice, cut placed by watershed seeded at each label's own existing footprint |
 
 ### Tab 3 — Statistics
 
