@@ -1174,6 +1174,153 @@ def _intensity_grow_2d(
     return corrected, crop_seed, (y0, y1, x0, x1)
 
 
+def correct_adjacent_labels_2d(
+    labels: np.ndarray,
+    image: np.ndarray,
+    label_a: int,
+    label_b: int,
+    z: int,
+    lo: float,
+    pad: int = 15,
+    sigma: float = 1.0,
+    min_distance: int = 5,
+) -> "tuple[np.ndarray, dict]":
+    """
+    Corrects TWO adjacent/touching labels on ONE slice simultaneously
+    from the raw signal's intensity threshold, with the boundary
+    between them placed by watershed on the signal itself -- for the
+    case where two things (two real cells, or a cell and a skin-residue
+    fragment) end up merged together on a particular cross-section
+    (e.g. right after Copy Label to Adjacent Slice pastes a shape that
+    now touches a neighbor there).
+
+    Correcting each label independently with correct_label_from_intensity()
+    doesn't handle this: at a shared contrast threshold, both labels'
+    regenerated regions can fuse into one connected blob exactly where
+    they touch, and each single-label correction's own foreign-exclusion
+    guard would just draw the boundary wherever the OTHER label's stale
+    ORIGINAL pixels happened to already sit -- not the real signal
+    boundary between them, which is usually different once both are
+    corrected together. This function regenerates BOTH labels' combined
+    territory from the threshold in one pass, then splits the combined
+    result at the intensity valley between the two brightness peaks --
+    the same signal-based cut Split Label's 2D mode uses -- rather than
+    drawing the line from stale label geometry.
+
+    labels, image    : (Z, Y, X) volumes, same shape
+    label_a, label_b : the two labels being corrected together (must be
+                       different, both present on slice z)
+    z                : slice index -- only this slice is touched
+    lo               : one-sided intensity cutoff (signal = image >= lo)
+    pad              : bbox padding in pixels around the UNION of both
+                       labels' existing footprints on this slice
+    sigma, min_distance : passed through to the watershed split step,
+                       same meaning/defaults as Split Label's own
+
+    Returns (new_labels, info). info is a dict:
+        n_a, n_b -- final pixel counts for label_a/label_b after correction
+        n_lost   -- pixels that were label_a or label_b before, but ended
+                    up neither after the joint correction/split (e.g. a
+                    sliver the threshold no longer supports, or that
+                    neither watershed part reached) -- reported, not
+                    hidden, so a meaningful loss doesn't go unnoticed
+
+    Raises ValueError if label_a == label_b, either label isn't present
+    on slice z, the joint threshold connects to neither label's existing
+    footprint at all, or the combined region is too fused for a genuine
+    2-way split to be found (same failure mode as Split Label -- try
+    Split Label directly with a different Smooth sigma, or correct/split
+    manually).
+    """
+    if label_a == label_b:
+        raise ValueError("label_a and label_b must be different labels")
+    if not (0 <= z < labels.shape[0]):
+        raise ValueError(f"slice {z} out of range for a {labels.shape[0]}-slice volume")
+    if labels.shape != image.shape:
+        raise ValueError(f"labels shape {labels.shape} != image shape {image.shape}")
+
+    labels_z = labels[z]
+    image_z = image[z]
+    existing_a = labels_z == label_a
+    existing_b = labels_z == label_b
+    if not np.any(existing_a):
+        raise ValueError(f"label {label_a} not found on slice {z}")
+    if not np.any(existing_b):
+        raise ValueError(f"label {label_b} not found on slice {z}")
+
+    seed = existing_a | existing_b
+    ys, xs = np.nonzero(seed)
+    y0 = max(int(ys.min()) - pad, 0)
+    y1 = min(int(ys.max()) + pad + 1, labels_z.shape[0])
+    x0 = max(int(xs.min()) - pad, 0)
+    x1 = min(int(xs.max()) + pad + 1, labels_z.shape[1])
+
+    crop_labels = labels_z[y0:y1, x0:x1]
+    crop_image  = image_z[y0:y1, x0:x1]
+    crop_seed   = seed[y0:y1, x0:x1]
+    crop_a      = existing_a[y0:y1, x0:x1]
+    crop_b      = existing_b[y0:y1, x0:x1]
+
+    candidate = crop_image >= lo  # one-sided, same convention as every other Correct Label tool
+    foreign = (crop_labels != 0) & (crop_labels != label_a) & (crop_labels != label_b)
+    candidate &= ~foreign  # a THIRD label's territory is still off-limits
+
+    cc, _ = cpu_label(candidate)
+    keep_ids = set(np.unique(cc[crop_seed & (cc > 0)]))
+    keep_ids.discard(0)
+    if not keep_ids:
+        raise ValueError(
+            f"threshold >= {lo} leaves nothing connected to either label "
+            f"{label_a} or {label_b}'s existing footprint on slice {z} -- "
+            f"refusing to erase both labels; adjust the contrast window "
+            f"and try again."
+        )
+    combined = np.isin(cc, list(keep_ids))
+
+    try:
+        split_full = _watershed_split_mask(
+            combined, n_splits=2, sigma=sigma, min_distance=min_distance,
+            surface_full=crop_image,
+        )
+    except ValueError as exc:
+        raise ValueError(
+            f"could not find a 2-way split between label {label_a} and "
+            f"{label_b} at this threshold ({exc}) -- they may be too "
+            f"fused to separate automatically; try Split Label directly "
+            f"with a different Smooth sigma, or correct/split manually."
+        ) from None
+
+    part1 = split_full == 1
+    part2 = split_full == 2
+
+    # Assign each watershed part to whichever original label it overlaps
+    # more -- try both pairings, keep whichever maximizes total overlap
+    # (only 2 parts x 2 labels, so this is an exact, not heuristic, choice).
+    overlap_1a = int((part1 & crop_a).sum())
+    overlap_1b = int((part1 & crop_b).sum())
+    overlap_2a = int((part2 & crop_a).sum())
+    overlap_2b = int((part2 & crop_b).sum())
+    if overlap_1a + overlap_2b >= overlap_1b + overlap_2a:
+        crop_final_a, crop_final_b = part1, part2
+    else:
+        crop_final_a, crop_final_b = part2, part1
+
+    new_labels = labels.copy()
+    crop = new_labels[z, y0:y1, x0:x1]
+    crop[crop_a] = 0
+    crop[crop_b] = 0
+    crop[crop_final_a] = label_a
+    crop[crop_final_b] = label_b
+
+    n_lost = int((crop_seed & ~(crop_final_a | crop_final_b)).sum())
+    info = {
+        "n_a": int(crop_final_a.sum()),
+        "n_b": int(crop_final_b.sum()),
+        "n_lost": n_lost,
+    }
+    return new_labels.astype(np.int32), info
+
+
 def copy_label_to_adjacent_slice(
     labels: np.ndarray,
     label_id: int,

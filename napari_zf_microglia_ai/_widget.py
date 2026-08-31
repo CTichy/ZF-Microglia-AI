@@ -30,6 +30,7 @@ from ._background import remove_outside_brain, remove_global, fill_outside_brain
 from ._labeling import (
     create_labels, resort_labels, split_label, join_labels, remove_debris,
     correct_label_from_intensity, correct_label_from_intensity_3d,
+    correct_adjacent_labels_2d,
     copy_label_to_adjacent_slice,
 )
 from ._statistics import compute_stats
@@ -2407,6 +2408,75 @@ class ZFMicrogliaAIWidget(QWidget):
 
         dlt.addWidget(_sep())
 
+        adjcorr_note = QLabel(
+            "  Correct Adjacent Labels (2D only) — for two labels that "
+            "end up touching/merged on ONE slice (e.g. two microglia, "
+            "or a cell and a skin-residue fragment, right after Copy "
+            "Label to Adjacent Slice pastes a shape that now touches a "
+            "neighbor). Correcting each label separately with Correct "
+            "Label doesn't work here -- at a shared threshold both "
+            "labels' regenerated regions can fuse where they touch, and "
+            "each one's own foreign-exclusion guard would draw the "
+            "boundary from the OTHER label's stale geometry, not the "
+            "real signal. This regenerates BOTH labels together from "
+            "the signal threshold, then splits the combined result at "
+            "the intensity valley between them -- same signal-based cut "
+            "Split Label's 2D mode uses -- instead of drawing the line "
+            "from stale label shapes."
+        )
+        adjcorr_note.setWordWrap(True)
+        adjcorr_note.setStyleSheet("color: #888; font-size: 10px;")
+        dlt.addWidget(adjcorr_note)
+
+        adjcorr_signal_row = QHBoxLayout()
+        adjcorr_signal_row.addWidget(QLabel("Signal layer:"))
+        self._adjcorr_signal_combo = QComboBox()
+        adjcorr_signal_row.addWidget(self._adjcorr_signal_combo)
+        dlt.addLayout(adjcorr_signal_row)
+
+        adjcorr_a_row = QHBoxLayout()
+        adjcorr_a_row.addWidget(QLabel("Label A:"))
+        self._adjcorr_a_spin = QSpinBox()
+        self._adjcorr_a_spin.setMinimum(1)
+        self._adjcorr_a_spin.setMaximum(99999)
+        self._adjcorr_a_spin.setValue(1)
+        adjcorr_a_row.addWidget(self._adjcorr_a_spin)
+        self._adjcorr_a_use_sel_btn = QPushButton("Use selected")
+        self._adjcorr_a_use_sel_btn.setFixedWidth(90)
+        adjcorr_a_row.addWidget(self._adjcorr_a_use_sel_btn)
+        dlt.addLayout(adjcorr_a_row)
+
+        adjcorr_b_row = QHBoxLayout()
+        adjcorr_b_row.addWidget(QLabel("Label B:"))
+        self._adjcorr_b_spin = QSpinBox()
+        self._adjcorr_b_spin.setMinimum(1)
+        self._adjcorr_b_spin.setMaximum(99999)
+        self._adjcorr_b_spin.setValue(2)
+        adjcorr_b_row.addWidget(self._adjcorr_b_spin)
+        self._adjcorr_b_use_sel_btn = QPushButton("Use selected")
+        self._adjcorr_b_use_sel_btn.setFixedWidth(90)
+        adjcorr_b_row.addWidget(self._adjcorr_b_use_sel_btn)
+        dlt.addLayout(adjcorr_b_row)
+
+        adjcorr_pad_row = QHBoxLayout()
+        adjcorr_pad_row.addWidget(QLabel("Bbox padding (px):"))
+        self._adjcorr_pad_spin = QSpinBox()
+        self._adjcorr_pad_spin.setMinimum(0)
+        self._adjcorr_pad_spin.setMaximum(500)
+        self._adjcorr_pad_spin.setValue(15)
+        adjcorr_pad_row.addWidget(self._adjcorr_pad_spin)
+        dlt.addLayout(adjcorr_pad_row)
+
+        self._adjcorr_btn = QPushButton("Correct Adjacent Labels")
+        self._adjcorr_btn.setStyleSheet("QPushButton { padding: 5px; }")
+        dlt.addWidget(self._adjcorr_btn)
+
+        self._adjcorr_status_lbl = QLabel("")
+        self._adjcorr_status_lbl.setWordWrap(True)
+        dlt.addWidget(self._adjcorr_status_lbl)
+
+        dlt.addWidget(_sep())
+
         self._save_labels_btn = QPushButton("Save Labels")
         self._save_labels_btn.setStyleSheet("QPushButton { padding: 5px; }")
         dlt.addWidget(self._save_labels_btn)
@@ -3878,6 +3948,9 @@ class ZFMicrogliaAIWidget(QWidget):
         self._correct_btn.clicked.connect(self._on_correct_label)
         self._copyslice_use_sel_btn.clicked.connect(self._on_use_selected_label_copyslice)
         self._copyslice_btn.clicked.connect(self._on_copy_label_to_adjacent_slice)
+        self._adjcorr_a_use_sel_btn.clicked.connect(self._on_use_selected_label_adjcorr_a)
+        self._adjcorr_b_use_sel_btn.clicked.connect(self._on_use_selected_label_adjcorr_b)
+        self._adjcorr_btn.clicked.connect(self._on_correct_adjacent_labels)
         self._save_labels_btn.clicked.connect(self._on_save_labels)
         self._stats_backend_combo.currentIndexChanged.connect(self._on_stats_backend_changed)
         self._stats_btn.clicked.connect(self._on_generate_stats)
@@ -4928,6 +5001,7 @@ class ZFMicrogliaAIWidget(QWidget):
         image_combos = (
             self._stats_image_combo, self._correct_signal_combo,
             self._split_signal_combo, self._ccal_signal_combo,
+            self._adjcorr_signal_combo,
         )
         cur_by_combo = {c: c.currentData() for c in image_combos}
         for c in image_combos:
@@ -6596,6 +6670,108 @@ class ZFMicrogliaAIWidget(QWidget):
                 f"slice {z_dst}{excl_note}."
             )
             self._copyslice_btn.setEnabled(True)
+
+        timer.timeout.connect(_poll)
+        timer.start(200)
+
+    def _on_use_selected_label_adjcorr_a(self):
+        """Copy the currently selected label from the active Labels layer
+        into Correct Adjacent Labels' Label A field."""
+        lyr = self._active_labels_layer()
+        if lyr is None:
+            self._adjcorr_status_lbl.setText("No Labels layer selected.")
+            return
+        sel = int(lyr.selected_label)
+        if sel == 0:
+            self._adjcorr_status_lbl.setText("Selected label is 0 (background).")
+            return
+        self._adjcorr_a_spin.setValue(sel)
+        self._adjcorr_status_lbl.setText(f"Label A set to {sel}.")
+
+    def _on_use_selected_label_adjcorr_b(self):
+        """Copy the currently selected label from the active Labels layer
+        into Correct Adjacent Labels' Label B field."""
+        lyr = self._active_labels_layer()
+        if lyr is None:
+            self._adjcorr_status_lbl.setText("No Labels layer selected.")
+            return
+        sel = int(lyr.selected_label)
+        if sel == 0:
+            self._adjcorr_status_lbl.setText("Selected label is 0 (background).")
+            return
+        self._adjcorr_b_spin.setValue(sel)
+        self._adjcorr_status_lbl.setText(f"Label B set to {sel}.")
+
+    def _on_correct_adjacent_labels(self):
+        lyr = self._active_labels_layer()
+        if lyr is None:
+            self._adjcorr_status_lbl.setText("No Labels layer selected.")
+            return
+
+        signal_name = self._adjcorr_signal_combo.currentData()
+        if not signal_name or signal_name not in self._viewer.layers:
+            self._adjcorr_status_lbl.setText("ERROR: pick a signal layer first.")
+            return
+        signal_lyr = self._viewer.layers[signal_name]
+
+        labels = np.asarray(lyr.data)
+        image = np.asarray(signal_lyr.data)
+        if labels.shape != image.shape:
+            self._adjcorr_status_lbl.setText(
+                f"ERROR: labels shape {labels.shape} != signal shape "
+                f"{image.shape} -- pick the matching signal layer for "
+                f"this labels layer."
+            )
+            return
+
+        label_a = self._adjcorr_a_spin.value()
+        label_b = self._adjcorr_b_spin.value()
+        if label_a == label_b:
+            self._adjcorr_status_lbl.setText("ERROR: Label A and Label B must be different.")
+            return
+        pad = self._adjcorr_pad_spin.value()
+        lo, _hi = (float(v) for v in signal_lyr.contrast_limits)
+        z = int(self._viewer.dims.current_step[0])
+
+        self._adjcorr_btn.setEnabled(False)
+        self._adjcorr_status_lbl.setText(
+            f"Correcting labels {label_a} and {label_b} together on slice "
+            f"{z} from '{signal_name}' -- signal = intensity >= {lo:.3g}…"
+        )
+
+        result = {}
+
+        def _worker():
+            try:
+                result["labels"], result["info"] = correct_adjacent_labels_2d(
+                    labels, image, label_a, label_b, z, lo, pad=pad
+                )
+            except Exception as exc:
+                traceback.print_exc()
+                result["error"] = str(exc)
+
+        thread = threading.Thread(target=_worker, daemon=True)
+        thread.start()
+
+        timer = QTimer(self)
+
+        def _poll():
+            if thread.is_alive():
+                return
+            timer.stop()
+            if "error" in result:
+                self._adjcorr_status_lbl.setText(f"ERROR: {result['error']}")
+                self._adjcorr_btn.setEnabled(True)
+                return
+            lyr.data[:] = result["labels"]  # in-place -- see Resort Labels above for why
+            lyr.refresh()
+            info = result["info"]
+            lost_note = f", {info['n_lost']} px lost at the cut" if info["n_lost"] > 0 else ""
+            self._adjcorr_status_lbl.setText(
+                f"Done — slice {z}: label {label_a}={info['n_a']} px, "
+                f"label {label_b}={info['n_b']} px{lost_note}."
+            )
+            self._adjcorr_btn.setEnabled(True)
 
         timer.timeout.connect(_poll)
         timer.start(200)
