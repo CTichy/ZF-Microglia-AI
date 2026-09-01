@@ -147,28 +147,25 @@ def parse_metadata(metadata_path):
     return result
 
 
-def find_best_metadata_match(file_path):
+def _best_metadata_match_in(directory, stem):
     """
-    Search the parent directory for the best-matching *_metadata.txt file.
+    Search a single directory for the best-matching *_metadata.txt file.
     Returns the Path to the best match, or None.
     """
-    file_path = Path(file_path)
-    parent = file_path.parent
-
-    exact = parent / f"{file_path.stem}_metadata.txt"
+    exact = directory / f"{stem}_metadata.txt"
     if exact.exists():
         print(f"   Found exact metadata match: {exact.name}")
         return exact
 
-    candidates = list(parent.glob("*_metadata.txt"))
+    candidates = list(directory.glob("*_metadata.txt"))
     if not candidates:
         return None
 
-    stem = file_path.stem.lower()
+    stem_lower = stem.lower()
     best, best_r = None, 0.0
     for c in candidates:
         r = SequenceMatcher(
-            None, stem, c.stem.replace("_metadata", "").lower()
+            None, stem_lower, c.stem.replace("_metadata", "").lower()
         ).ratio()
         if r > best_r:
             best_r, best = r, c
@@ -176,6 +173,28 @@ def find_best_metadata_match(file_path):
     if best and best_r > 0.3:
         print(f"   Using closest metadata match ({best_r:.0%}): {best.name}")
         return best
+    return None
+
+
+def find_best_metadata_match(file_path):
+    """
+    Search the stack's own directory for the best-matching *_metadata.txt
+    file; if nothing is found there, fall back to the parent directory (the
+    metadata file is sometimes kept one level up from the stack itself).
+    Returns the Path to the best match, or None.
+    """
+    file_path = Path(file_path)
+
+    match = _best_metadata_match_in(file_path.parent, file_path.stem)
+    if match is not None:
+        return match
+
+    grandparent = file_path.parent.parent
+    if grandparent != file_path.parent:
+        match = _best_metadata_match_in(grandparent, file_path.stem)
+        if match is not None:
+            return match
+
     return None
 
 
