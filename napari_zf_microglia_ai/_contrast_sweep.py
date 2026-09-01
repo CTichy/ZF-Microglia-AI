@@ -55,6 +55,17 @@ def select_calibration_samples(
     of its span -- avoiding the very top/bottom slices where a cell's
     2D cross-section is thin and unrepresentative.
 
+    Each axis's margin is capped at 30% of that axis's own total extent
+    (per side), so it degrades gracefully instead of collapsing the
+    "interior" window to nothing. A single edge_margin_um in physical
+    microns hits Z and XY very differently under this project's usual
+    anisotropy: a typical ~101-slice fish stack at 1.0 um/vox is only
+    ~101 um deep, so an UNcapped 50 um margin on both sides leaves at
+    most a single-voxel-wide (or literally empty) valid Z window even
+    though the XY plane (2048 px * 0.174 um/vox =~ 356 um) has plenty
+    of room -- a real bug this cap fixes, not a hypothetical one: it
+    silently excluded every cell in exactly that common case.
+
     Returns up to n_cells * slices_per_cell (label_id, z) pairs (fewer
     if there aren't enough interior/complex-enough cells available).
     """
@@ -71,9 +82,10 @@ def select_calibration_samples(
     z_dim, y_dim, x_dim = labels.shape
     sz, sy, sx = scale_zyx
 
-    margin_z = edge_margin_um / sz if sz > 0 else 0.0
-    margin_y = edge_margin_um / sy if sy > 0 else 0.0
-    margin_x = edge_margin_um / sx if sx > 0 else 0.0
+    max_margin_fraction = 0.3
+    margin_z = min(edge_margin_um / sz if sz > 0 else 0.0, max_margin_fraction * z_dim)
+    margin_y = min(edge_margin_um / sy if sy > 0 else 0.0, max_margin_fraction * y_dim)
+    margin_x = min(edge_margin_um / sx if sx > 0 else 0.0, max_margin_fraction * x_dim)
 
     label_list = unique.tolist()
     # center_of_mass returns a proper list of tuples for a LIST index, even
