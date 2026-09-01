@@ -1352,6 +1352,236 @@ def correct_adjacent_labels_2d(
     return new_labels.astype(np.int32), info
 
 
+def correct_label_group_2d(
+    labels: np.ndarray,
+    image: np.ndarray,
+    label_ids: "list[int]",
+    z: int,
+    lo: float,
+    pad: int = 15,
+    sigma: float = 1.0,
+) -> "tuple[np.ndarray, dict]":
+    """
+    N-label generalization of correct_adjacent_labels_2d(): jointly
+    corrects an arbitrary GROUP of mutually-touching labels on ONE
+    slice from the raw signal, via the same marker-seeded watershed
+    (markers = each label's own existing footprint, never an
+    auto-detected peak) -- see correct_adjacent_labels_2d()'s own
+    docstring for why that anchoring matters. Built for
+    auto_contrast_correct_stack()'s slice-by-slice pass, where more
+    than two cells can end up mutually touching on a given slice after
+    an independent cell-by-cell 3D correction pass, not just pairs.
+
+    label_ids : 2 or more distinct label IDs, all present on slice z.
+                A single-ID call degenerates to plain single-label
+                intensity correction (one marker floods everything the
+                threshold connects it to) -- supported for uniformity,
+                though the pipeline that drives this only ever calls it
+                with real touching groups (size >= 2).
+
+    Returns (new_labels, info). info is a dict:
+        n_lost   -- pixels that were one of label_ids before, but ended
+                    up belonging to NONE of them after the joint
+                    correction/split (reported, not hidden)
+        <label_id>: <final pixel count>  -- one entry per label in the
+                    group
+
+    Raises ValueError if label_ids has duplicates, fewer than 1 label
+    is found on slice z, the joint threshold connects to none of the
+    group's existing footprint at all, or any one label's own marker
+    ends up with zero reachable pixels within the combined region --
+    refuses to silently erase a label rather than returning a result
+    missing one.
+    """
+    if len(label_ids) < 1:
+        raise ValueError("label_ids must contain at least one label")
+    if len(set(label_ids)) != len(label_ids):
+        raise ValueError(f"label_ids must not contain duplicates: {label_ids}")
+    if not (0 <= z < labels.shape[0]):
+        raise ValueError(f"slice {z} out of range for a {labels.shape[0]}-slice volume")
+    if labels.shape != image.shape:
+        raise ValueError(f"labels shape {labels.shape} != image shape {image.shape}")
+
+    labels_z = labels[z]
+    image_z = image[z]
+
+    existing: "dict[int, np.ndarray]" = {}
+    seed = np.zeros(labels_z.shape, dtype=bool)
+    for lid in label_ids:
+        m = labels_z == lid
+        if not np.any(m):
+            raise ValueError(f"label {lid} not found on slice {z}")
+        existing[lid] = m
+        seed |= m
+
+    ys, xs = np.nonzero(seed)
+    y0 = max(int(ys.min()) - pad, 0)
+    y1 = min(int(ys.max()) + pad + 1, labels_z.shape[0])
+    x0 = max(int(xs.min()) - pad, 0)
+    x1 = min(int(xs.max()) + pad + 1, labels_z.shape[1])
+
+    crop_labels = labels_z[y0:y1, x0:x1]
+    crop_image  = image_z[y0:y1, x0:x1]
+    crop_seed   = seed[y0:y1, x0:x1]
+    crop_existing = {lid: m[y0:y1, x0:x1] for lid, m in existing.items()}
+
+    candidate = crop_image >= lo  # one-sided, same convention as every other Correct Label tool
+    foreign = (crop_labels != 0) & (~np.isin(crop_labels, list(label_ids)))
+    candidate &= ~foreign  # any label OUTSIDE this group is still off-limits
+
+    cc, _ = cpu_label(candidate)
+    keep_ids = set(np.unique(cc[crop_seed & (cc > 0)]))
+    keep_ids.discard(0)
+    if not keep_ids:
+        raise ValueError(
+            f"threshold >= {lo} leaves nothing connected to any of "
+            f"{list(label_ids)}'s existing footprint on slice {z} -- "
+            f"refusing to erase the whole group; adjust the contrast "
+            f"window and try again."
+        )
+    combined = np.isin(cc, list(keep_ids))
+
+    # Marker-seeded watershed: markers are exactly each label's own
+    # EXISTING footprint (not auto-detected peaks) -- see
+    # correct_adjacent_labels_2d()'s docstring for the full rationale.
+    from skimage.segmentation import watershed
+    if sigma > 0:
+        crop_image_smooth = cpu_gaussian(crop_image.astype(np.float32), sigma=float(sigma))
+    else:
+        crop_image_smooth = crop_image.astype(np.float32)
+
+    markers = np.zeros(combined.shape, dtype=np.int32)
+    for i, lid in enumerate(label_ids, start=1):
+        markers[crop_existing[lid]] = i
+    split_crop = watershed(-crop_image_smooth, markers, mask=combined)
+    split_crop = _clear_split_interface(split_crop)
+
+    finals = {}
+    empties = []
+    for i, lid in enumerate(label_ids, start=1):
+        finals[lid] = split_crop == i
+        if not np.any(finals[lid]):
+            empties.append(lid)
+    if empties:
+        raise ValueError(
+            f"threshold >= {lo} leaves label(s) {empties} with nothing -- "
+            f"refusing to erase; adjust the contrast window and try again."
+        )
+
+    new_labels = labels.copy()
+    crop = new_labels[z, y0:y1, x0:x1]
+    for lid in label_ids:
+        crop[crop_existing[lid]] = 0
+    for lid in label_ids:
+        crop[finals[lid]] = lid
+
+    any_final = np.zeros(combined.shape, dtype=bool)
+    for lid in label_ids:
+        any_final |= finals[lid]
+    n_lost = int((crop_seed & ~any_final).sum())
+
+    info = {"n_lost": n_lost}
+    for lid in label_ids:
+        info[lid] = int(finals[lid].sum())
+    return new_labels.astype(np.int32), info
+
+
+def _touching_pairs_on_slice(labels_z: np.ndarray) -> "set[frozenset]":
+    """
+    Every pair of distinct, nonzero labels that directly (8-connected)
+    border each other on this one 2D slice. Bbox-cropped per label (via
+    find_objects) so cost scales with how many cells are actually on
+    this slice, not the slice's full size.
+    """
+    from scipy.ndimage import binary_dilation, find_objects
+
+    present = np.unique(labels_z)
+    present = present[present > 0]
+    pairs: "set[frozenset]" = set()
+    if present.size < 2:
+        return pairs
+
+    objs = find_objects(labels_z, max_label=int(present.max()))
+    struct = np.ones((3, 3), dtype=bool)
+    for lid in present.tolist():
+        sl = objs[lid - 1] if lid - 1 < len(objs) else None
+        if sl is None:
+            continue
+        pad_sl = tuple(
+            slice(max(s.start - 1, 0), min(s.stop + 1, labels_z.shape[i]))
+            for i, s in enumerate(sl)
+        )
+        crop = labels_z[pad_sl]
+        own = crop == lid
+        if not np.any(own):
+            continue
+        dilated = binary_dilation(own, structure=struct)
+        neighbor_ids = np.unique(crop[dilated & ~own])
+        for nid in neighbor_ids.tolist():
+            if nid != 0 and nid != lid:
+                pairs.add(frozenset((int(lid), int(nid))))
+    return pairs
+
+
+def _union_find_groups(elements: "list[int]", pairs: "set[frozenset]") -> "list[list[int]]":
+    parent = {e: e for e in elements}
+
+    def find(x):
+        while parent[x] != x:
+            parent[x] = parent[parent[x]]
+            x = parent[x]
+        return x
+
+    def union(a, b):
+        ra, rb = find(a), find(b)
+        if ra != rb:
+            parent[ra] = rb
+
+    for pair in pairs:
+        a, b = tuple(pair)
+        if a in parent and b in parent:
+            union(a, b)
+
+    groups: "dict[int, list[int]]" = {}
+    for e in elements:
+        r = find(e)
+        groups.setdefault(r, []).append(e)
+    return list(groups.values())
+
+
+def touching_groups_for_stack(labels: np.ndarray) -> "dict[int, list[list[int]]]":
+    """
+    For every Z slice, groups the labels present there into
+    mutually-touching (8-connected) clusters. Returns {z: [group, ...]}
+    -- slices with no group of size >= 2 (every label on that slice has
+    no neighbor there) are omitted entirely, since they need no joint
+    correction. Each group is a sorted list of label IDs.
+
+    Used by auto_contrast_correct_stack()'s second pass: an independent
+    cell-by-cell correction can leave two (or more) cells directly
+    touching wherever their newly-recalibrated shapes meet, and which
+    cell "wins" a contested boundary pixel there is an arbitrary
+    accident of processing order -- this is how that pass finds exactly
+    which (slice, cell-group) combinations need to be re-derived
+    jointly instead of left as that greedy artifact.
+    """
+    result: "dict[int, list[list[int]]]" = {}
+    for z in range(labels.shape[0]):
+        labels_z = labels[z]
+        present = np.unique(labels_z)
+        present = present[present > 0]
+        if present.size < 2:
+            continue
+        pairs = _touching_pairs_on_slice(labels_z)
+        if not pairs:
+            continue
+        groups = _union_find_groups([int(p) for p in present.tolist()], pairs)
+        multi = [sorted(g) for g in groups if len(g) >= 2]
+        if multi:
+            result[z] = multi
+    return result
+
+
 def copy_label_to_adjacent_slice(
     labels: np.ndarray,
     label_id: int,

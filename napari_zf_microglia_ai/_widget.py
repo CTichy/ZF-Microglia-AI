@@ -41,6 +41,7 @@ from ._contrast_sweep import (
 from ._cellpose_seg import run_full_pipeline as _run_cellpose_pipeline
 from ._cellpose_seg import rerun_single_cell as _rerun_single_cell
 from ._cellpose_seg import masks_from_flows as _masks_from_flows
+from ._auto_correction import auto_contrast_correct_stack, format_auto_correction_report
 from . import _pixel_sweep as _psw
 from . import _brain_sweep as _bsw
 from . import _gt_score as _gts
@@ -1784,6 +1785,22 @@ class ZFMicrogliaAIWidget(QWidget):
         self._cp_largecontact_recommended_lbl = _add_recommended_label(
             cpg, _root_cfg.get("cellpose_large_contact_recommended"), unit=" vox", noun="Large-contact merge"
         )
+
+        self._cp_autocorrect_cb = QCheckBox("Auto-correct labels via contrast sweep after segmentation")
+        self._cp_autocorrect_cb.setChecked(True)
+        cpg.addWidget(self._cp_autocorrect_cb)
+        cp_autocorrect_note = QLabel(
+            "  After segmentation: calibrates the contrast threshold that best "
+            "reproduces these labels from the raw signal (self-referential, no "
+            "GT needed -- same engine as Tab 5's Calibrate Correct-Label "
+            "Contrast sweep), then corrects every cell (whole-volume, "
+            "cell-by-cell) and re-derives the boundary jointly wherever cells "
+            "end up touching (slice-by-slice), then runs Remove Debris once "
+            "over the result."
+        )
+        cp_autocorrect_note.setWordWrap(True)
+        cp_autocorrect_note.setStyleSheet("color: #888; font-size: 10px;")
+        cpg.addWidget(cp_autocorrect_note)
 
         self._cp_run_notify_cb = _make_notify_checkbox()
         cpg.addWidget(self._cp_run_notify_cb)
@@ -7771,21 +7788,18 @@ class ZFMicrogliaAIWidget(QWidget):
                     f"raising Flow iterations alone rarely fixes it by itself."
                 )
 
-            self._cp_status_lbl.setText(
-                f"Done — {stats['n_final']} cells "
+            base_status = (
+                f"Segmentation done — {stats['n_final']} cells "
                 f"(raw={stats['n_raw']} -> gmm={stats['n_after_gmm']} -> "
                 f"safe={stats['n_after_safe_merge']} -> large={stats['n_after_large_contact']}). "
                 f"Saved {cp_masks_path.name} and {cp_masks_corrected_path.name}."
                 f"{porous_note}"
             )
-            self._cp_run_btn.setEnabled(True)
-            self._maybe_send_notify(
-                self._cp_run_notify_cb,
-                f"[ZF-Microglia-AI] Cellpose-SAM Segmentation done — {stem}",
+            base_email = (
                 f"Cellpose-SAM Segmentation on {stem} finished.\n\n"
                 f"{stats['n_final']} cells (raw={stats['n_raw']} -> gmm={stats['n_after_gmm']} "
                 f"-> safe={stats['n_after_safe_merge']} -> large={stats['n_after_large_contact']})."
-                f"{porous_note}",
+                f"{porous_note}"
             )
 
             print(f"{'='*70}")
@@ -7797,8 +7811,125 @@ class ZFMicrogliaAIWidget(QWidget):
                 print(f"  {porous_note.strip()}")
             print(f"{'='*70}\n")
 
+            if not self._cp_autocorrect_cb.isChecked():
+                self._cp_status_lbl.setText(base_status)
+                self._cp_run_btn.setEnabled(True)
+                self._maybe_send_notify(
+                    self._cp_run_notify_cb,
+                    f"[ZF-Microglia-AI] Cellpose-SAM Segmentation done — {stem}",
+                    base_email,
+                )
+                return
+
+            self._cp_status_lbl.setText(base_status + " Auto-correcting labels via contrast sweep...")
+            self._run_auto_correction_stage(
+                stem=stem, lname=lname, volume=volume, labels=labels, scale=scale,
+                out_dir=out_dir, base_status=base_status, base_email=base_email,
+            )
+
         timer2.timeout.connect(_poll2)
         timer2.start(500)
+
+    def _run_auto_correction_stage(self, stem, lname, volume, labels, scale, out_dir, base_status, base_email):
+        """
+        Second stage chained onto a Cellpose-SAM Segmentation run, gated
+        by self._cp_autocorrect_cb: self-referential contrast calibration
+        + full-stack correction (see auto_contrast_correct_stack()'s own
+        docstring for the 4-step pipeline). Same background-thread +
+        QTimer-poll pattern as the segmentation run itself, chained after
+        it rather than run in parallel, since it corrects THIS run's own
+        fresh labels.
+        """
+        min_volume = self._current_min_volume()
+        final_min_fraction = self._finalfrac_spin.value()
+
+        result3 = {}
+
+        def _worker3():
+            try:
+                def _progress3(msg):
+                    result3["_progress"] = msg
+                new_labels, report = auto_contrast_correct_stack(
+                    labels, volume, scale,
+                    min_volume=min_volume, final_min_fraction=final_min_fraction,
+                    progress_cb=_progress3,
+                )
+                result3["labels"] = new_labels
+                result3["report"] = report
+            except Exception as exc:
+                traceback.print_exc()
+                result3["error"] = str(exc)
+
+        thread3 = threading.Thread(target=_worker3, daemon=True)
+        thread3.start()
+
+        timer3 = QTimer(self)
+
+        def _poll3():
+            if thread3.is_alive():
+                if "_progress" in result3:
+                    self._cp_status_lbl.setText(result3["_progress"])
+                return
+            timer3.stop()
+
+            if "error" in result3:
+                self._cp_status_lbl.setText(
+                    f"{base_status} Auto-correct FAILED: {result3['error']} "
+                    f"(the segmentation result above is unaffected)."
+                )
+                self._cp_run_btn.setEnabled(True)
+                self._maybe_send_notify(
+                    self._cp_run_notify_cb,
+                    f"[ZF-Microglia-AI] Cellpose-SAM Segmentation done, auto-correct failed — {stem}",
+                    f"{base_email}\n\nAuto-correction failed: {result3['error']}\n"
+                    f"The segmentation result itself is unaffected.",
+                )
+                return
+
+            new_labels = result3["labels"]
+            report = result3["report"]
+
+            # Mutate the existing Labels layer's array in place rather
+            # than reassign `.data` -- reassignment races napari's own
+            # async thumbnail update on a large volume, a confirmed
+            # napari-internal crash (see the fix applied to every other
+            # label-editing tool in this plugin, same root cause).
+            if lname in self._viewer.layers:
+                lyr = self._viewer.layers[lname]
+                lyr.data[:] = new_labels
+                lyr.refresh()
+            else:
+                self._viewer.add_labels(new_labels, name=lname, scale=scale)
+
+            autocorrected_path = out_dir / f"{stem}_cellpose_labels_autocorrected.tif"
+            tifffile.imwrite(str(autocorrected_path), new_labels.astype(np.int32))
+
+            report_text = format_auto_correction_report(report)
+            self._cp_status_lbl.setText(
+                f"{base_status} Auto-correct done — lo={report['best_lo']:.4g}, "
+                f"{report['n_cells_corrected']}/{report['n_cells_total']} cells corrected, "
+                f"{report['n_groups_corrected']}/{report['n_group_slices']} touching-group(s) "
+                f"corrected, {report['n_debris_fragments_removed']} debris fragment(s) removed. "
+                f"Saved {autocorrected_path.name}."
+            )
+            self._cp_log_view.append("\n" + report_text)
+            sb = self._cp_log_view.verticalScrollBar()
+            sb.setValue(sb.maximum())
+
+            self._cp_run_btn.setEnabled(True)
+            self._maybe_send_notify(
+                self._cp_run_notify_cb,
+                f"[ZF-Microglia-AI] Cellpose-SAM Segmentation + auto-correct done — {stem}",
+                f"{base_email}\n\n{report_text}",
+            )
+
+            print(f"{'='*70}")
+            print(f"AUTO-CORRECTION COMPLETE — {stem}")
+            print(report_text)
+            print(f"{'='*70}\n")
+
+        timer3.timeout.connect(_poll3)
+        timer3.start(500)
 
     def _on_rerun_single_cell(self):
         # _active_layer() only ever returns an Image layer -- if the
