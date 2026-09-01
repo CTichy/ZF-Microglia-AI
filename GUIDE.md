@@ -541,6 +541,19 @@ Click to start. `do_3D` inference is slow — it can take **hours** for a full-s
 
 > If this button errors with `No module named 'cellpose'`, install it in your environment: `pip install cellpose` (already listed in `environment.yml`/`environment-mac.yml` for fresh installs — see Section 15).
 
+#### Auto-correct labels via contrast sweep after segmentation (checkbox, on by default)
+
+When a full run finishes, this chains a second, fully automatic stage onto it — no GT, no manual contrast dragging:
+
+1. **Calibrates the contrast threshold** that best reproduces the labels the run just produced, straight from the raw signal — the exact same self-referential engine as [Calibrate Correct-Label Contrast (Section 9i)](#9i-calibrate-correct-label-contrast-from-cellpose-sam), just run against this run's own output instead of a hand-picked sample set.
+2. **Corrects every cell, whole-volume (3D)** at that threshold — the same engine as **Correct Label**'s **3D (whole cell, from centroid)** mode (below), run once per label automatically.
+3. **Re-derives the boundary jointly, per slice, wherever two or more cells end up directly touching** — the same marker-seeded watershed as **Correct Adjacent Labels**, generalized to however many cells are actually touching there (not just pairs). This exists because step 2, run independently per cell, is order-dependent exactly at a shared boundary: whichever cell was corrected first wins the contested pixels by accident of processing order, not by anything about the real signal — this step replaces that with a real, symmetric split.
+4. **Removes debris** once over the whole result (same golden-ratio floor as every other final-safety-net stage in this plugin).
+
+A cell that genuinely doesn't reach the calibrated threshold anywhere (rare, but possible for a very faint true positive) is skipped and left exactly as Cellpose-SAM originally produced it — this never aborts the run or erases a cell.
+
+Saves the result to `<stem>_cellpose_labels_autocorrected.tif` and updates the `*_cellpose_labels` layer in place; `<stem>_cp_masks.tif`/`<stem>_cp_masks_corrected.tif` are unaffected — those stay the raw Krendl-pipeline output, unchanged. The status line and log box report the calibrated `lo`, how many cells/touching-groups were corrected vs. skipped, and how much debris was removed. Untick the checkbox before running to skip this stage entirely and keep the older, single-pass behavior.
+
 #### Re-run This Cell Only
 
 Fixes one specific label without redoing the whole fish. Crops to that label's own bounding box (+ padding), re-runs `do_3D` plus the same GMM cleanup / Krendl safe-merge / large-contact merge / final-min-size safety net used by a full run — using this section's current settings, so nudge Cellprob or Flow iterations first if that's what needs to change for this cell — then splices the result back into the full label array in place of the old label. Requires the matching `<image>_cellpose_labels` layer to already exist (run the full segmentation once first).
