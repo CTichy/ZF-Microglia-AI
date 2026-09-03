@@ -34,25 +34,61 @@ stem --
   <parent>/<stem>/<stem>_brain_only_NoBG.tif    (Background mode 2 --
                                                   Pixel Classifier route)
   <parent>/<stem>/<stem>_brain_only_RndFill.tif (Background mode 3)
-  <parent>/<stem>/<stem>_cp_masks.tif           (raw Cellpose-SAM output)
-  <parent>/<stem>/<stem>_cp_masks_corrected.tif (post-Krendl)
+  <parent>/<stem>/<stem>_cp.tif                 (raw Cellpose-SAM output,
+                                                  pre-merge)
+  <parent>/<stem>/<stem>_cp_krendl.tif          (post-Krendl safe-merge +
+                                                  large-contact merge)
+  <parent>/<stem>/<stem>_cp_krendl_ac.tif       (post auto-correct, if
+                                                  that stage ran)
+  <parent>/<stem>/<stem>_cp_krendl_ac_sanded.tif (post sanding, if that
+                                                  stage ran too)
   <parent>/<stem>/<stem>_GROUND_TRUTH.tif       (hand-corrected cell
                                                   instance labels)
   <parent>/<stem>/<stem>_statistics.csv
+
+Cellpose-SAM naming is cumulative and self-documenting: each stage's
+filename is the previous stage's filename with one more suffix
+appended, so reading it left to right tells you exactly which
+processing steps were actually applied -- `_cp_krendl_ac_sanded.tif`
+went through Krendl, then auto-correct, then sanding; `_cp_krendl.tif`
+only went through Krendl. Only `_cp.tif` (raw) and `_cp_krendl.tif`
+(post-Krendl) are always saved by a normal segmentation run --
+`_cp_krendl_ac.tif`/`_cp_krendl_ac_sanded.tif` only exist if
+auto-correct/sanding were left enabled for that run.
 """
 from pathlib import Path
 
 SUFFIXES = {
-    "original":           "_original.tif",
-    "brain_mask":         "_brain_mask.tif",
-    "ext_rm":             "_brain_only_ExtRm.tif",
-    "no_bg":              "_brain_only_NoBG.tif",
-    "rnd_fill":           "_brain_only_RndFill.tif",
-    "cp_masks":           "_cp_masks.tif",
-    "cp_masks_corrected": "_cp_masks_corrected.tif",
-    "ground_truth":       "_GROUND_TRUTH.tif",
-    "statistics_csv":     "_statistics.csv",
+    "original":            "_original.tif",
+    "brain_mask":          "_brain_mask.tif",
+    "ext_rm":              "_brain_only_ExtRm.tif",
+    "no_bg":               "_brain_only_NoBG.tif",
+    "rnd_fill":            "_brain_only_RndFill.tif",
+    "cp":                  "_cp.tif",
+    "cp_krendl":           "_cp_krendl.tif",
+    "cp_krendl_ac":        "_cp_krendl_ac.tif",
+    "cp_krendl_ac_sanded": "_cp_krendl_ac_sanded.tif",
+    "ground_truth":        "_GROUND_TRUTH.tif",
+    "statistics_csv":      "_statistics.csv",
 }
+
+# Priority order for "most-advanced Cellpose-SAM correction stage this
+# fish actually has" -- sanded beats auto-corrected beats Krendl-only.
+# Deliberately does NOT include "cp" (the raw pre-merge stage): that one
+# is always kept as a separate reference file, never used as the GT
+# package's own correction starting point.
+_CORRECTED_MASKS_PRIORITY = ("cp_krendl_ac_sanded", "cp_krendl_ac", "cp_krendl")
+
+
+def best_corrected_masks(found):
+    """Returns (path, key) for the most-advanced Cellpose-SAM correction
+    stage present in a discover_fish_files() `found` dict, or (None, None)
+    if this fish has none of them (e.g. it only went through the Pixel
+    Classifier route). See _CORRECTED_MASKS_PRIORITY for the order."""
+    for key in _CORRECTED_MASKS_PRIORITY:
+        if found.get(key) is not None:
+            return found[key], key
+    return None, None
 
 
 def resolve_fish_folder(source_path) -> Path:

@@ -565,7 +565,7 @@ When a full run finishes, this chains a second, fully automatic stage onto it �
 
 A cell that genuinely doesn't reach the calibrated threshold anywhere (rare, but possible for a very faint true positive) is skipped and left exactly as Cellpose-SAM originally produced it — this never aborts the run or erases a cell.
 
-Saves the auto-corrected result to `<stem>_cellpose_labels_autocorrected.tif`, then — if sanding is enabled — saves the sanded result on top as `<stem>_cellpose_labels_sanded.tif`, updating the `*_cellpose_labels` layer in place at each stage; `<stem>_cp_masks.tif`/`<stem>_cp_masks_corrected.tif` are unaffected — those stay the raw Krendl-pipeline output, unchanged. The status line and log box report the calibrated `lo`, how many cells/touching-groups were corrected vs. skipped, how much debris was removed, and (if sanding ran) how many cells were softened. Untick the auto-correct checkbox to skip both this stage and sanding entirely and keep the older, single-pass behavior; untick only the sanding checkbox to keep auto-correct but skip the softening pass.
+Saves the auto-corrected result to `<stem>_cp_krendl_ac.tif`, then — if sanding is enabled — saves the sanded result on top as `<stem>_cp_krendl_ac_sanded.tif`, updating the `*_cellpose_labels` layer in place at each stage; `<stem>_cp.tif`/`<stem>_cp_krendl.tif` are unaffected — those stay the raw Krendl-pipeline output, unchanged. On-disk naming is cumulative: each stage's filename is the previous one with one more suffix appended (see [9f's naming table](#9f-build-gt-correction-package)), so the filename alone tells you which stages actually ran. The status line and log box report the calibrated `lo`, how many cells/touching-groups were corrected vs. skipped, how much debris was removed, and (if sanding ran) how many cells were softened. Untick the auto-correct checkbox to skip both this stage and sanding entirely and keep the older, single-pass behavior; untick only the sanding checkbox to keep auto-correct but skip the softening pass.
 
 #### Re-run This Cell Only
 
@@ -1088,11 +1088,11 @@ This is a genuinely different tool from the four sweepers above: those each test
 
 ### 9f. Build GT-Correction Package
 
-Packages a Krendl segmentation result for external manual correction — the exact file layout this project has assembled by hand for every fish sent out for ground-truth creation. The corrected result becomes future training/GT data, closing the loop between inference and the training tools in Tab 4.
+Packages a Cellpose-SAM correction result for external manual correction — the exact file layout this project has assembled by hand for every fish sent out for ground-truth creation. The corrected result becomes future training/GT data, closing the loop between inference and the training tools in Tab 4.
 
 1. **Fish stem** — the identifier used to name every file in the package (e.g. `NT39-3dpf-D1F4_2024-09-05_15.38.01`).
-2. **Source image** — the `brain_only` image the segmentation ran on.
-3. **Krendl masks** — the output of Tab 2's **Run Cellpose-SAM Segmentation**. Becomes `<stem>_masks_corrected.tif` — the file the reviewer edits first ("start here" per the guide).
+2. **Source image** — the `brain_only` image the segmentation ran on. **Browsing here also auto-fills every field below** from that fish's own folder (Fish stem, Corrected masks, Raw masks, Output folder) using the established `<parent>/<stem>/<stem>_<artifact>.tif` convention — override anything by hand afterward if it picked the wrong file.
+3. **Corrected masks** — the most-advanced Cellpose-SAM correction stage this fish actually has: **sanded > auto-corrected > Krendl-only**, whichever exists (auto-picked when Source image is browsed above; see [6c's Auto-correct/Sanding sections](#6c-cellpose-sam-segmentation) for what each stage means). Becomes `<stem>_cp_corrected.tif` — the file the reviewer edits first ("start here" per the guide).
 4. **Raw Cellpose masks** (optional) — the pre-merge `do_3D` output, if you have it, included as `<stem>_cp_masks_3D.tif` for reference only (not corrected).
 5. **Creation guide** (optional override) — defaults to this project's own `GROUND_TRUTH_CREATION_GUIDE.md`; only set this if it lives somewhere else on your machine.
 6. **Output folder** — where the package folder and `.zip` are created.
@@ -1103,7 +1103,7 @@ Click **Build GT-Correction Package**. Output:
 <output folder>/
 ├── <stem>_GT_package/
 │   ├── GROUND_TRUTH_CREATION_GUIDE.md
-│   ├── <stem>_masks_corrected.tif
+│   ├── <stem>_cp_corrected.tif
 │   ├── <stem>_cp_masks_3D.tif        (only if provided)
 │   ├── <stem>_cell_statistics.csv    (label/volume/centroid/bbox — quick reference, not the full Tab 3 output)
 │   └── <stem>_brain_only_ExtRm.tif
@@ -1111,6 +1111,15 @@ Click **Build GT-Correction Package**. Output:
 ```
 
 The statistics CSV is deliberately minimal (label, volume, centroid, bounding box) — a quick reference for someone correcting labels, not the full ~51-column Tab 3 Statistics output.
+
+> **On-disk naming for every Cellpose-SAM stage** is cumulative and self-documenting — each stage's filename is the previous one with one more suffix appended, so reading it left to right tells you exactly which processing steps ran:
+>
+> | File | Stage |
+> |------|-------|
+> | `<stem>_cp.tif` | raw `do_3D` output, pre-merge |
+> | `<stem>_cp_krendl.tif` | + Krendl safe-merge + large-contact merge (always saved by a normal run) |
+> | `<stem>_cp_krendl_ac.tif` | + auto-correct (only if that stage was left enabled) |
+> | `<stem>_cp_krendl_ac_sanded.tif` | + sanding (only if that stage was left enabled too) |
 
 ---
 
@@ -1921,7 +1930,7 @@ Nine tools consolidated from Tabs 1-4, each individually collapsible — see [Se
 | Verify Best Epoch (GT Sweep) | 5 cells, ±2 checkpoints | (Tab 4, Cellpose-SAM) confirms the recommendation against real GT IoU/Dice, not just test_loss — doesn't survive closing napari — **if the sweep disagrees, rewrites the pointer to the confirmed epoch and loads it as Tab 2's active model**. Has an "Email me when done" checkbox (can run 30 min to a couple hours) |
 | Calibrate Correct-Label Contrast (from Cellpose-SAM) | 50 samples (5 cells x 10 slices) | (Tab 2/3, Correct Label) finds the lower-contrast value Correct Label should start from by reproducing what Cellpose-SAM already segmented (mean IoU), not independent GT — **auto-applies `[best lo, best lo + 20]` to the chosen signal layer's contrast limits** |
 | Score Against GT | any 2 Labels layers | Whole-fish Hungarian-matched TP/FP/FN/Score/MeanIoU/MeanDice between any two Labels layers — synchronous, no GPU needed |
-| Build GT-Correction Package | — | (Tab 2) Zips Krendl output + stats CSV + creation guide for external manual correction |
+| Build GT-Correction Package | — | (Tab 2) Zips the most-advanced correction stage available (sanded > auto-corrected > Krendl-only) + stats CSV + creation guide for external manual correction — browsing Source image auto-fills the rest |
 | Email notification (optional) | *(blank = off)* | Shared SMTP credentials (address, server, port, username, password — password saved **encrypted** via the OS credential store) for every "Email me when done" checkbox in the plugin; configuring it here doesn't itself send anything — see Section 9h |
 | Send Test Email | — | Sends one email immediately (no GPU, no waiting) to confirm SMTP settings before relying on them for a long run |
 

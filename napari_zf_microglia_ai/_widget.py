@@ -644,10 +644,11 @@ class ZFMicrogliaAIWidget(QWidget):
         gtk_path_note = QLabel(
             "  Established convention: <parent>/<stem>/<stem>_<artifact>.tif "
             "for every derived file (ExtRm/NoBG/RndFill, brain_mask, "
-            "cp_masks, cp_masks_corrected, GROUND_TRUTH, statistics.csv) -- "
-            "the same folder \"Build GT-Correction Package\" below delivers "
-            "into too. Point here at either the raw source file (its "
-            "sibling folder is found automatically) or the folder itself."
+            "cp/cp_krendl/cp_krendl_ac/cp_krendl_ac_sanded, GROUND_TRUTH, "
+            "statistics.csv) -- the same folder \"Build GT-Correction "
+            "Package\" below delivers into too. Point here at either the "
+            "raw source file (its sibling folder is found automatically) "
+            "or the folder itself."
         )
         gtk_path_note.setStyleSheet("color: #aaa; font-size: 10px;")
         gtk_path_note.setWordWrap(True)
@@ -2074,13 +2075,13 @@ class ZFMicrogliaAIWidget(QWidget):
         self._krendl_sweep_job = {"thread": None, "cancel_event": None, "timer": None}
 
         # ── Build GT-Correction Package — always visible, no GPU needed ── #
-        # Packages a Krendl segmentation result for external manual
+        # Packages a Cellpose-SAM correction result for external manual
         # correction, matching the exact file layout this project has
         # produced by hand for every fish sent out (D1F1, D1F2, D1F4x2):
-        # GROUND_TRUTH_CREATION_GUIDE.md + masks_corrected.tif (the Krendl
-        # output, correction starting point) + cp_masks_3D.tif (raw,
-        # reference) + a per-cell statistics CSV + the source image,
-        # zipped together.
+        # GROUND_TRUTH_CREATION_GUIDE.md + cp_corrected.tif (whatever
+        # correction stage was fed in -- sanded/auto-corrected/Krendl-only,
+        # correction starting point) + cp_masks_3D.tif (raw, reference) +
+        # a per-cell statistics CSV + the source image, zipped together.
         gtpg = QGroupBox("Build GT-Correction Package")
         gtpl = QVBoxLayout()
         gtpl.setSpacing(6)
@@ -2113,16 +2114,29 @@ class ZFMicrogliaAIWidget(QWidget):
         self._gtp_img_browse_btn.setFixedWidth(32)
         gtp_img_row.addWidget(self._gtp_img_browse_btn)
         gtpl.addLayout(gtp_img_row)
+        gtp_img_note = QLabel(
+            "  Browsing here also auto-fills Fish stem / Corrected masks / "
+            "Raw masks / Output folder below from this fish's own folder, "
+            "if it can find them -- override any of them by hand afterward."
+        )
+        gtp_img_note.setStyleSheet("color: #aaa; font-size: 10px;")
+        gtp_img_note.setWordWrap(True)
+        gtpl.addWidget(gtp_img_note)
 
         gtp_masks_row = QHBoxLayout()
-        gtp_masks_row.addWidget(QLabel("Krendl masks:"))
+        gtp_masks_row.addWidget(QLabel("Corrected masks:"))
         self._gtp_masks_edit = QLineEdit("")
         gtp_masks_row.addWidget(self._gtp_masks_edit)
         self._gtp_masks_browse_btn = QPushButton("...")
         self._gtp_masks_browse_btn.setFixedWidth(32)
         gtp_masks_row.addWidget(self._gtp_masks_browse_btn)
         gtpl.addLayout(gtp_masks_row)
-        gtp_masks_note = QLabel("  The Run Cellpose-SAM Segmentation output — becomes masks_corrected.tif (\"start here\").")
+        gtp_masks_note = QLabel(
+            "  The most-advanced Cellpose-SAM correction stage this fish "
+            "actually has -- sanded > auto-corrected > Krendl-only, "
+            "auto-picked from the fish's folder when \"Source image\" is "
+            "browsed above. Becomes cp_corrected.tif in the package (\"start here\")."
+        )
         gtp_masks_note.setStyleSheet("color: #aaa; font-size: 10px;")
         gtp_masks_note.setWordWrap(True)
         gtpl.addWidget(gtp_masks_note)
@@ -5587,12 +5601,16 @@ class ZFMicrogliaAIWidget(QWidget):
             self._ct_calib_gt_edit.setText(str(gt))
 
         self._gtp_stem_edit.setText(stem)
+        no_bg = found["no_bg"]
         if ext_rm is not None:
             self._gtp_img_edit.setText(str(ext_rm))
-        if found["cp_masks_corrected"] is not None:
-            self._gtp_masks_edit.setText(str(found["cp_masks_corrected"]))
-        if found["cp_masks"] is not None:
-            self._gtp_raw_edit.setText(str(found["cp_masks"]))
+        elif no_bg is not None:
+            self._gtp_img_edit.setText(str(no_bg))
+        best_masks, _best_key = _gtk.best_corrected_masks(found)
+        if best_masks is not None:
+            self._gtp_masks_edit.setText(str(best_masks))
+        if found["cp"] is not None:
+            self._gtp_raw_edit.setText(str(found["cp"]))
         self._gtp_out_edit.setText(str(folder))
 
     def _on_gtk_run(self):
@@ -7859,14 +7877,16 @@ class ZFMicrogliaAIWidget(QWidget):
             # and the final Krendl-corrected result, every single run, not
             # just when manually building a GT-correction package (see
             # _gt_package.py, which used to be the only place these two
-            # ever got written to disk). Same naming convention as that
-            # package's own cp_masks_3D.tif/masks_corrected.tif so a fish
-            # processed through either path looks the same on disk.
+            # ever got written to disk). Naming is cumulative/self-
+            # documenting -- see _gt_toolkit.py's module docstring: each
+            # stage's filename is the previous stage's with one more
+            # suffix appended, so `_cp_krendl_ac_sanded.tif` tells you at
+            # a glance every stage that ran, not just the last one.
             out_dir = self._output_dir()
-            cp_masks_path = out_dir / f"{stem}_cp_masks.tif"
-            cp_masks_corrected_path = out_dir / f"{stem}_cp_masks_corrected.tif"
-            tifffile.imwrite(str(cp_masks_path), stats["raw_masks"].astype(np.int32))
-            tifffile.imwrite(str(cp_masks_corrected_path), labels.astype(np.int32))
+            cp_raw_path = out_dir / f"{stem}_cp.tif"
+            cp_krendl_path = out_dir / f"{stem}_cp_krendl.tif"
+            tifffile.imwrite(str(cp_raw_path), stats["raw_masks"].astype(np.int32))
+            tifffile.imwrite(str(cp_krendl_path), labels.astype(np.int32))
 
             if lname in self._viewer.layers:
                 self._viewer.layers.remove(lname)
@@ -7893,7 +7913,7 @@ class ZFMicrogliaAIWidget(QWidget):
                 f"Segmentation done — {stats['n_final']} cells "
                 f"(raw={stats['n_raw']} -> gmm={stats['n_after_gmm']} -> "
                 f"safe={stats['n_after_safe_merge']} -> large={stats['n_after_large_contact']}). "
-                f"Saved {cp_masks_path.name} and {cp_masks_corrected_path.name}."
+                f"Saved {cp_raw_path.name} and {cp_krendl_path.name}."
                 f"{porous_note}"
             )
             base_email = (
@@ -8002,7 +8022,7 @@ class ZFMicrogliaAIWidget(QWidget):
             else:
                 self._viewer.add_labels(new_labels, name=lname, scale=scale)
 
-            autocorrected_path = out_dir / f"{stem}_cellpose_labels_autocorrected.tif"
+            autocorrected_path = out_dir / f"{stem}_cp_krendl_ac.tif"
             tifffile.imwrite(str(autocorrected_path), new_labels.astype(np.int32))
 
             report_text = format_auto_correction_report(report)
@@ -8112,7 +8132,7 @@ class ZFMicrogliaAIWidget(QWidget):
             else:
                 self._viewer.add_labels(new_labels, name=lname, scale=scale)
 
-            sanded_path = out_dir / f"{stem}_cellpose_labels_sanded.tif"
+            sanded_path = out_dir / f"{stem}_cp_krendl_ac_sanded.tif"
             tifffile.imwrite(str(sanded_path), new_labels.astype(np.int32))
 
             report_text = format_sanding_report(report)
@@ -8629,11 +8649,25 @@ class ZFMicrogliaAIWidget(QWidget):
 
     def _on_gtp_browse_img(self):
         path_str, _ = QFileDialog.getOpenFileName(self, "Select source image", "", "TIFF files (*.tif *.tiff)")
-        if path_str:
-            self._gtp_img_edit.setText(path_str)
+        if not path_str:
+            return
+        self._gtp_img_edit.setText(path_str)
+        # Auto-fill the rest of this fish's fields from the same folder --
+        # the point of browsing here at all, per the established
+        # <parent>/<stem>/<stem>_<artifact>.tif convention (_gt_toolkit.py).
+        # Never overwrites the Source image field itself with something
+        # else -- whatever the user just explicitly picked stays picked.
+        folder, stem, found = _gtk.discover_fish_files(path_str)
+        self._gtp_stem_edit.setText(stem)
+        best_masks, _best_key = _gtk.best_corrected_masks(found)
+        if best_masks is not None:
+            self._gtp_masks_edit.setText(str(best_masks))
+        if found["cp"] is not None:
+            self._gtp_raw_edit.setText(str(found["cp"]))
+        self._gtp_out_edit.setText(str(folder))
 
     def _on_gtp_browse_masks(self):
-        path_str, _ = QFileDialog.getOpenFileName(self, "Select Krendl segmentation output", "", "TIFF files (*.tif *.tiff)")
+        path_str, _ = QFileDialog.getOpenFileName(self, "Select corrected masks (most-advanced Cellpose-SAM stage)", "", "TIFF files (*.tif *.tiff)")
         if path_str:
             self._gtp_masks_edit.setText(path_str)
 
@@ -8662,9 +8696,9 @@ class ZFMicrogliaAIWidget(QWidget):
         masks_path = self._gtp_masks_edit.text().strip()
         out_dir = self._gtp_out_edit.text().strip()
         if not (stem and img_path and masks_path and out_dir):
-            self._gtp_status_lbl.setText("ERROR: set Fish stem, Source image, Krendl masks, and Output folder.")
+            self._gtp_status_lbl.setText("ERROR: set Fish stem, Source image, Corrected masks, and Output folder.")
             return
-        for label_str, p in (("Source image", img_path), ("Krendl masks", masks_path)):
+        for label_str, p in (("Source image", img_path), ("Corrected masks", masks_path)):
             if not Path(p).exists():
                 self._gtp_status_lbl.setText(f"ERROR: {label_str} not found: {p}")
                 return

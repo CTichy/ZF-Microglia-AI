@@ -1,10 +1,10 @@
 """
 _gt_package.py — build the GT-correction package this project has sent
 to Nathalie (Peri Lab) for every fish's ground-truth creation: the
-Krendl segmentation output as a correction starting point, a reference
-copy of the raw pre-merge Cellpose masks, a lightweight per-cell
-statistics CSV, the source image, and the ground-truth creation guide,
-all zipped together.
+most-advanced Cellpose-SAM correction stage available as a correction
+starting point, a reference copy of the raw pre-merge Cellpose masks, a
+lightweight per-cell statistics CSV, the source image, and the
+ground-truth creation guide, all zipped together.
 
 Not a new methodology -- automates a manual step repeated by hand at
 least three times in this project's history (D1F1, D1F2, two different
@@ -12,7 +12,11 @@ D1F4 fish), always producing the exact same file layout:
 
   <stem>_GT_package/
     GROUND_TRUTH_CREATION_GUIDE.md
-    <stem>_masks_corrected.tif    (Krendl output -- "start here" per the guide)
+    <stem>_cp_corrected.tif       ("start here" per the guide -- whatever
+                                   correction stage was fed in, e.g. the
+                                   sanded or auto-corrected result if
+                                   that ran, Krendl-only otherwise; see
+                                   _gt_toolkit.py's best_corrected_masks())
     <stem>_cp_masks_3D.tif        (raw pre-merge Cellpose masks, reference only)
     <stem>_cell_statistics.csv    (label/volume/centroid/bbox per cell)
     <stem>_brain_only_ExtRm.tif   (source image)
@@ -80,7 +84,7 @@ def _cell_statistics_csv(labels, scale_zyx, out_csv):
     return len(rows)
 
 
-def build_gt_package(stem, out_dir, image_path, krendl_masks_path,
+def build_gt_package(stem, out_dir, image_path, corrected_masks_path,
                       raw_cellpose_masks_path=None, scale_zyx=(1.0, 0.174, 0.174),
                       guide_path=None, progress_cb=None):
     """
@@ -91,8 +95,13 @@ def build_gt_package(stem, out_dir, image_path, krendl_masks_path,
     stem                     : fish identifier used for all output filenames
     out_dir                  : where to create the package folder + zip
     image_path                : source image (copied in as brain_only_ExtRm.tif)
-    krendl_masks_path         : Krendl segmentation output (copied in as
-                                masks_corrected.tif -- the correction starting point)
+    corrected_masks_path      : whichever Cellpose-SAM correction stage is
+                                being sent (Krendl-only, auto-corrected, or
+                                sanded -- caller's choice, typically the
+                                most-advanced one available, see
+                                _gt_toolkit.best_corrected_masks()); copied
+                                in as cp_corrected.tif, the correction
+                                starting point
     raw_cellpose_masks_path   : optional raw pre-merge Cellpose masks
                                 (copied in as cp_masks_3D.tif, reference only)
     scale_zyx                 : (Z, Y, X) um/voxel, for the statistics CSV
@@ -119,8 +128,8 @@ def build_gt_package(stem, out_dir, image_path, krendl_masks_path,
     _report("copying source image...")
     shutil.copy2(image_path, package_dir / f"{stem}_brain_only_ExtRm.tif")
 
-    _report("copying Krendl segmentation (correction starting point)...")
-    shutil.copy2(krendl_masks_path, package_dir / f"{stem}_masks_corrected.tif")
+    _report("copying corrected masks (correction starting point)...")
+    shutil.copy2(corrected_masks_path, package_dir / f"{stem}_cp_corrected.tif")
 
     if raw_cellpose_masks_path:
         _report("copying raw pre-merge Cellpose masks (reference)...")
@@ -130,7 +139,7 @@ def build_gt_package(stem, out_dir, image_path, krendl_masks_path,
     shutil.copy2(guide_path, package_dir / "GROUND_TRUTH_CREATION_GUIDE.md")
 
     _report("computing per-cell statistics CSV...")
-    labels = tifffile.imread(krendl_masks_path).astype(np.int32)
+    labels = tifffile.imread(corrected_masks_path).astype(np.int32)
     n_cells = _cell_statistics_csv(labels, scale_zyx, package_dir / f"{stem}_cell_statistics.csv")
 
     _report("zipping package...")
