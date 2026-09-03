@@ -644,7 +644,7 @@ class ZFMicrogliaAIWidget(QWidget):
         gtk_path_note = QLabel(
             "  Established convention: <parent>/<stem>/<stem>_<artifact>.tif "
             "for every derived file (ExtRm/NoBG/RndFill, brain_mask, "
-            "cp/cp_krendl/cp_krendl_ac/cp_krendl_ac_sanded, GROUND_TRUTH, "
+            "cp/cp_krendl/cp_krendl_ac/cp_krendl_ac_snd, GROUND_TRUTH, "
             "statistics.csv) -- the same folder \"Build GT-Correction "
             "Package\" below delivers into too. Point here at either the "
             "raw source file (its sibling folder is found automatically) "
@@ -7880,7 +7880,7 @@ class ZFMicrogliaAIWidget(QWidget):
             # ever got written to disk). Naming is cumulative/self-
             # documenting -- see _gt_toolkit.py's module docstring: each
             # stage's filename is the previous stage's with one more
-            # suffix appended, so `_cp_krendl_ac_sanded.tif` tells you at
+            # suffix appended, so `_cp_krendl_ac_snd.tif` tells you at
             # a glance every stage that ran, not just the last one.
             out_dir = self._output_dir()
             cp_raw_path = out_dir / f"{stem}_cp.tif"
@@ -8132,7 +8132,7 @@ class ZFMicrogliaAIWidget(QWidget):
             else:
                 self._viewer.add_labels(new_labels, name=lname, scale=scale)
 
-            sanded_path = out_dir / f"{stem}_cp_krendl_ac_sanded.tif"
+            sanded_path = out_dir / f"{stem}_cp_krendl_ac_snd.tif"
             tifffile.imwrite(str(sanded_path), new_labels.astype(np.int32))
 
             report_text = format_sanding_report(report)

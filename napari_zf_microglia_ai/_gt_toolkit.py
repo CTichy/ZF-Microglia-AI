@@ -40,7 +40,7 @@ stem --
                                                   large-contact merge)
   <parent>/<stem>/<stem>_cp_krendl_ac.tif       (post auto-correct, if
                                                   that stage ran)
-  <parent>/<stem>/<stem>_cp_krendl_ac_sanded.tif (post sanding, if that
+  <parent>/<stem>/<stem>_cp_krendl_ac_snd.tif   (post sanding, if that
                                                   stage ran too)
   <parent>/<stem>/<stem>_GROUND_TRUTH.tif       (hand-corrected cell
                                                   instance labels)
@@ -49,11 +49,11 @@ stem --
 Cellpose-SAM naming is cumulative and self-documenting: each stage's
 filename is the previous stage's filename with one more suffix
 appended, so reading it left to right tells you exactly which
-processing steps were actually applied -- `_cp_krendl_ac_sanded.tif`
+processing steps were actually applied -- `_cp_krendl_ac_snd.tif`
 went through Krendl, then auto-correct, then sanding; `_cp_krendl.tif`
 only went through Krendl. Only `_cp.tif` (raw) and `_cp_krendl.tif`
 (post-Krendl) are always saved by a normal segmentation run --
-`_cp_krendl_ac.tif`/`_cp_krendl_ac_sanded.tif` only exist if
+`_cp_krendl_ac.tif`/`_cp_krendl_ac_snd.tif` only exist if
 auto-correct/sanding were left enabled for that run.
 """
 from pathlib import Path
@@ -67,7 +67,7 @@ SUFFIXES = {
     "cp":                  "_cp.tif",
     "cp_krendl":           "_cp_krendl.tif",
     "cp_krendl_ac":        "_cp_krendl_ac.tif",
-    "cp_krendl_ac_sanded": "_cp_krendl_ac_sanded.tif",
+    "cp_krendl_ac_snd":    "_cp_krendl_ac_snd.tif",
     "ground_truth":        "_GROUND_TRUTH.tif",
     "statistics_csv":      "_statistics.csv",
 }
@@ -77,7 +77,7 @@ SUFFIXES = {
 # Deliberately does NOT include "cp" (the raw pre-merge stage): that one
 # is always kept as a separate reference file, never used as the GT
 # package's own correction starting point.
-_CORRECTED_MASKS_PRIORITY = ("cp_krendl_ac_sanded", "cp_krendl_ac", "cp_krendl")
+_CORRECTED_MASKS_PRIORITY = ("cp_krendl_ac_snd", "cp_krendl_ac", "cp_krendl")
 
 
 def best_corrected_masks(found):

@@ -565,7 +565,7 @@ When a full run finishes, this chains a second, fully automatic stage onto it �
 
 A cell that genuinely doesn't reach the calibrated threshold anywhere (rare, but possible for a very faint true positive) is skipped and left exactly as Cellpose-SAM originally produced it — this never aborts the run or erases a cell.
 
-Saves the auto-corrected result to `<stem>_cp_krendl_ac.tif`, then — if sanding is enabled — saves the sanded result on top as `<stem>_cp_krendl_ac_sanded.tif`, updating the `*_cellpose_labels` layer in place at each stage; `<stem>_cp.tif`/`<stem>_cp_krendl.tif` are unaffected — those stay the raw Krendl-pipeline output, unchanged. On-disk naming is cumulative: each stage's filename is the previous one with one more suffix appended (see [9f's naming table](#9f-build-gt-correction-package)), so the filename alone tells you which stages actually ran. The status line and log box report the calibrated `lo`, how many cells/touching-groups were corrected vs. skipped, how much debris was removed, and (if sanding ran) how many cells were softened. Untick the auto-correct checkbox to skip both this stage and sanding entirely and keep the older, single-pass behavior; untick only the sanding checkbox to keep auto-correct but skip the softening pass.
+Saves the auto-corrected result to `<stem>_cp_krendl_ac.tif`, then — if sanding is enabled — saves the sanded result on top as `<stem>_cp_krendl_ac_snd.tif`, updating the `*_cellpose_labels` layer in place at each stage; `<stem>_cp.tif`/`<stem>_cp_krendl.tif` are unaffected — those stay the raw Krendl-pipeline output, unchanged. On-disk naming is cumulative: each stage's filename is the previous one with one more suffix appended (see [9f's naming table](#9f-build-gt-correction-package)), so the filename alone tells you which stages actually ran. The status line and log box report the calibrated `lo`, how many cells/touching-groups were corrected vs. skipped, how much debris was removed, and (if sanding ran) how many cells were softened. Untick the auto-correct checkbox to skip both this stage and sanding entirely and keep the older, single-pass behavior; untick only the sanding checkbox to keep auto-correct but skip the softening pass.
 
 #### Re-run This Cell Only
 
@@ -1119,7 +1119,7 @@ The statistics CSV is deliberately minimal (label, volume, centroid, bounding bo
 > | `<stem>_cp.tif` | raw `do_3D` output, pre-merge |
 > | `<stem>_cp_krendl.tif` | + Krendl safe-merge + large-contact merge (always saved by a normal run) |
 > | `<stem>_cp_krendl_ac.tif` | + auto-correct (only if that stage was left enabled) |
-> | `<stem>_cp_krendl_ac_sanded.tif` | + sanding (only if that stage was left enabled too) |
+> | `<stem>_cp_krendl_ac_snd.tif` | + sanding (only if that stage was left enabled too) |
 
 ---
 
