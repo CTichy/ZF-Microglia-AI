@@ -32,6 +32,7 @@ from ._labeling import (
     correct_label_from_intensity, correct_label_from_intensity_3d,
     correct_adjacent_labels_2d,
     copy_label_to_adjacent_slice,
+    sand_label,
 )
 from ._statistics import compute_stats
 from ._contrast_sweep import (
@@ -42,6 +43,7 @@ from ._cellpose_seg import run_full_pipeline as _run_cellpose_pipeline
 from ._cellpose_seg import rerun_single_cell as _rerun_single_cell
 from ._cellpose_seg import masks_from_flows as _masks_from_flows
 from ._auto_correction import auto_contrast_correct_stack, format_auto_correction_report
+from ._sanding import sand_labels_stack, format_sanding_report, sanding_pad
 from . import _pixel_sweep as _psw
 from . import _brain_sweep as _bsw
 from . import _gt_score as _gts
@@ -1183,6 +1185,52 @@ class ZFMicrogliaAIWidget(QWidget):
         finalfrac_note.setWordWrap(True)
         common_layout.addWidget(finalfrac_note)
 
+        self._sanding_cb = QCheckBox("Soften label contours (sanding) after any label correction")
+        self._sanding_cb.setChecked(True)
+        common_layout.addWidget(self._sanding_cb)
+        sanding_note = QLabel(
+            "  Applies after Correct Label (2D or 3D), Correct Adjacent "
+            "Labels, and Cellpose-SAM Segmentation's own auto-correct "
+            "stage: the touched label's own binary mask is 3D "
+            "Gaussian-blurred and re-thresholded at 0.5, rounding off "
+            "small jagged/blocky voxel edges without meaningfully "
+            "changing the cell's real shape or volume. Purely geometric "
+            "-- no image/intensity involved. Foreign-protected like every "
+            "other Correct Label tool -- can never grow into a "
+            "neighboring cell's already-claimed voxels."
+        )
+        sanding_note.setWordWrap(True)
+        sanding_note.setStyleSheet("color: #888; font-size: 10px;")
+        common_layout.addWidget(sanding_note)
+
+        sandxy_row = QHBoxLayout()
+        sandxy_row.addWidget(QLabel("Sanding sigma XY (vox):"))
+        self._sanding_sigxy_slider = QLabeledDoubleSlider(Qt.Horizontal)
+        self._sanding_sigxy_slider.setDecimals(2)
+        self._sanding_sigxy_slider.setMinimum(0.0)
+        self._sanding_sigxy_slider.setMaximum(3.0)
+        self._sanding_sigxy_slider.setSingleStep(0.1)
+        self._sanding_sigxy_slider.setValue(_root_cfg.get("sanding_sigma_xy", 0.7))
+        sandxy_row.addWidget(self._sanding_sigxy_slider)
+        self._sanding_sigxy_spin = _add_reliable_spinbox(
+            sandxy_row, self._sanding_sigxy_slider, 0.0, 3.0, 0.1, decimals=2
+        )
+        common_layout.addLayout(sandxy_row)
+
+        sandz_row = QHBoxLayout()
+        sandz_row.addWidget(QLabel("Sanding sigma Z (vox):"))
+        self._sanding_sigz_slider = QLabeledDoubleSlider(Qt.Horizontal)
+        self._sanding_sigz_slider.setDecimals(2)
+        self._sanding_sigz_slider.setMinimum(0.0)
+        self._sanding_sigz_slider.setMaximum(3.0)
+        self._sanding_sigz_slider.setSingleStep(0.1)
+        self._sanding_sigz_slider.setValue(_root_cfg.get("sanding_sigma_z", 0.7))
+        sandz_row.addWidget(self._sanding_sigz_slider)
+        self._sanding_sigz_spin = _add_reliable_spinbox(
+            sandz_row, self._sanding_sigz_slider, 0.0, 3.0, 0.1, decimals=2
+        )
+        common_layout.addLayout(sandz_row)
+
         common_group.setLayout(common_layout)
         t2.addWidget(common_group)
 
@@ -1801,6 +1849,18 @@ class ZFMicrogliaAIWidget(QWidget):
         cp_autocorrect_note.setWordWrap(True)
         cp_autocorrect_note.setStyleSheet("color: #888; font-size: 10px;")
         cpg.addWidget(cp_autocorrect_note)
+
+        cp_sanding_note = QLabel(
+            "  After auto-correct above (if enabled): labels get their "
+            "contours softened (sanding), using the shared \"Soften label "
+            "contours\" checkbox + sigma XY/Z fields in Common Settings "
+            "above -- same setting Correct Label and Correct Adjacent "
+            "Labels use, so a cell touched by any of these tools ends up "
+            "consistently smooth."
+        )
+        cp_sanding_note.setWordWrap(True)
+        cp_sanding_note.setStyleSheet("color: #888; font-size: 10px;")
+        cpg.addWidget(cp_sanding_note)
 
         self._cp_run_notify_cb = _make_notify_checkbox()
         cpg.addWidget(self._cp_run_notify_cb)
@@ -6518,6 +6578,11 @@ class ZFMicrogliaAIWidget(QWidget):
         # surrounding background instead).
         lo, hi = (float(v) for v in signal_lyr.contrast_limits)
 
+        sanding_on = self._sanding_cb.isChecked()
+        sand_sigma_xy = self._sanding_sigxy_slider.value()
+        sand_sigma_z = self._sanding_sigz_slider.value()
+        sand_pad = sanding_pad(sand_sigma_xy, sand_sigma_z)
+
         self._correct_btn.setEnabled(False)
         self._correct_report_view.hide()
         self._correct_report_view.clear()
@@ -6533,9 +6598,14 @@ class ZFMicrogliaAIWidget(QWidget):
 
             def _worker():
                 try:
-                    result["labels"] = correct_label_from_intensity(
+                    new_labels = correct_label_from_intensity(
                         labels, image, label_id, z, lo, hi, pad=pad
                     )
+                    if sanding_on:
+                        new_labels, result["sanding_info"] = sand_label(
+                            new_labels, label_id, sand_sigma_xy, sand_sigma_z, pad=sand_pad
+                        )
+                    result["labels"] = new_labels
                 except Exception as exc:
                     traceback.print_exc()
                     result["error"] = str(exc)
@@ -6549,10 +6619,15 @@ class ZFMicrogliaAIWidget(QWidget):
 
             def _worker():
                 try:
-                    result["labels"], result["report"] = correct_label_from_intensity_3d(
+                    new_labels, result["report"] = correct_label_from_intensity_3d(
                         labels, image, label_id, lo, pad=pad,
                         min_volume=min_volume, final_min_fraction=final_min_fraction,
                     )
+                    if sanding_on:
+                        new_labels, result["sanding_info"] = sand_label(
+                            new_labels, label_id, sand_sigma_xy, sand_sigma_z, pad=sand_pad
+                        )
+                    result["labels"] = new_labels
                 except Exception as exc:
                     traceback.print_exc()
                     result["error"] = str(exc)
@@ -6573,10 +6648,18 @@ class ZFMicrogliaAIWidget(QWidget):
             lyr.data[:] = result["labels"]  # in-place -- see Resort Labels above for why
             lyr.refresh()
 
+            sand_info = result.get("sanding_info")
+            sand_note = ""
+            if sand_info is not None:
+                sand_note = (
+                    " Sanded." if sand_info["applied"]
+                    else f" Sanding skipped ({sand_info['reason']})."
+                )
+
             if mode == "2d":
                 self._correct_status_lbl.setText(
                     f"Done — label {label_id} regenerated on slice {z} "
-                    f"(signal = intensity >= {lo:.3g})."
+                    f"(signal = intensity >= {lo:.3g}).{sand_note}"
                 )
             else:
                 report = result["report"]
@@ -6609,7 +6692,7 @@ class ZFMicrogliaAIWidget(QWidget):
                 self._correct_status_lbl.setText(
                     f"Done — label {label_id} corrected in 3D, "
                     f"{len(slices)} slice(s) ({slices[0]}..{slices[-1]}){trim_note}, "
-                    f"{report['n_debris_removed_px']} debris px removed. "
+                    f"{report['n_debris_removed_px']} debris px removed.{sand_note} "
                     f"See report below."
                 )
             self._correct_btn.setEnabled(True)
@@ -6750,6 +6833,11 @@ class ZFMicrogliaAIWidget(QWidget):
         lo, _hi = (float(v) for v in signal_lyr.contrast_limits)
         z = int(self._viewer.dims.current_step[0])
 
+        sanding_on = self._sanding_cb.isChecked()
+        sand_sigma_xy = self._sanding_sigxy_slider.value()
+        sand_sigma_z = self._sanding_sigz_slider.value()
+        sand_pad = sanding_pad(sand_sigma_xy, sand_sigma_z)
+
         self._adjcorr_btn.setEnabled(False)
         self._adjcorr_status_lbl.setText(
             f"Correcting labels {label_a} and {label_b} together on slice "
@@ -6760,9 +6848,17 @@ class ZFMicrogliaAIWidget(QWidget):
 
         def _worker():
             try:
-                result["labels"], result["info"] = correct_adjacent_labels_2d(
+                new_labels, result["info"] = correct_adjacent_labels_2d(
                     labels, image, label_a, label_b, z, lo, pad=pad
                 )
+                if sanding_on:
+                    sand_infos = {}
+                    for lid in (label_a, label_b):
+                        new_labels, sand_infos[lid] = sand_label(
+                            new_labels, lid, sand_sigma_xy, sand_sigma_z, pad=sand_pad
+                        )
+                    result["sanding_info"] = sand_infos
+                result["labels"] = new_labels
             except Exception as exc:
                 traceback.print_exc()
                 result["error"] = str(exc)
@@ -6784,9 +6880,14 @@ class ZFMicrogliaAIWidget(QWidget):
             lyr.refresh()
             info = result["info"]
             lost_note = f", {info['n_lost']} px lost at the cut" if info["n_lost"] > 0 else ""
+            sand_infos = result.get("sanding_info")
+            sand_note = ""
+            if sand_infos is not None:
+                n_applied = sum(1 for i in sand_infos.values() if i["applied"])
+                sand_note = f" Sanded {n_applied}/{len(sand_infos)} label(s)."
             self._adjcorr_status_lbl.setText(
                 f"Done — slice {z}: label {label_a}={info['n_a']} px, "
-                f"label {label_b}={info['n_b']} px{lost_note}."
+                f"label {label_b}={info['n_b']} px{lost_note}.{sand_note}"
             )
             self._adjcorr_btn.setEnabled(True)
 
@@ -7905,12 +8006,121 @@ class ZFMicrogliaAIWidget(QWidget):
             tifffile.imwrite(str(autocorrected_path), new_labels.astype(np.int32))
 
             report_text = format_auto_correction_report(report)
-            self._cp_status_lbl.setText(
+            autocorrect_status = (
                 f"{base_status} Auto-correct done — lo={report['best_lo']:.4g}, "
                 f"{report['n_cells_corrected']}/{report['n_cells_total']} cells corrected, "
                 f"{report['n_groups_corrected']}/{report['n_group_slices']} touching-group(s) "
                 f"corrected, {report['n_debris_fragments_removed']} debris fragment(s) removed. "
                 f"Saved {autocorrected_path.name}."
+            )
+            self._cp_status_lbl.setText(autocorrect_status)
+            self._cp_log_view.append("\n" + report_text)
+            sb = self._cp_log_view.verticalScrollBar()
+            sb.setValue(sb.maximum())
+
+            print(f"{'='*70}")
+            print(f"AUTO-CORRECTION COMPLETE — {stem}")
+            print(report_text)
+            print(f"{'='*70}\n")
+
+            if not self._sanding_cb.isChecked():
+                self._cp_run_btn.setEnabled(True)
+                self._maybe_send_notify(
+                    self._cp_run_notify_cb,
+                    f"[ZF-Microglia-AI] Cellpose-SAM Segmentation + auto-correct done — {stem}",
+                    f"{base_email}\n\n{report_text}",
+                )
+                return
+
+            self._cp_status_lbl.setText(autocorrect_status + " Sanding label contours...")
+            self._run_sanding_stage(
+                stem=stem, lname=lname, labels=new_labels, scale=scale,
+                out_dir=out_dir, base_status=autocorrect_status,
+                base_email=f"{base_email}\n\n{report_text}",
+            )
+
+        timer3.timeout.connect(_poll3)
+        timer3.start(500)
+
+    def _run_sanding_stage(self, stem, lname, labels, scale, out_dir, base_status, base_email):
+        """
+        Third stage chained onto Cellpose-SAM Segmentation -> auto-correct,
+        gated by self._sanding_cb: softens every label's contour
+        (sand_labels_stack(), see _sanding.py's own docstring for why this
+        runs after auto-correct rather than before/instead of it). Same
+        background-thread + QTimer-poll pattern as the two stages before
+        it, chained after since it sands THIS run's own auto-corrected
+        labels.
+        """
+        sigma_xy = self._sanding_sigxy_slider.value()
+        sigma_z = self._sanding_sigz_slider.value()
+        min_volume = self._current_min_volume()
+        final_min_fraction = self._finalfrac_spin.value()
+
+        result4 = {}
+
+        def _worker4():
+            try:
+                def _progress4(msg):
+                    result4["_progress"] = msg
+                new_labels, report = sand_labels_stack(
+                    labels, sigma_xy=sigma_xy, sigma_z=sigma_z,
+                    min_volume=min_volume, final_min_fraction=final_min_fraction,
+                    progress_cb=_progress4,
+                )
+                result4["labels"] = new_labels
+                result4["report"] = report
+            except Exception as exc:
+                traceback.print_exc()
+                result4["error"] = str(exc)
+
+        thread4 = threading.Thread(target=_worker4, daemon=True)
+        thread4.start()
+
+        timer4 = QTimer(self)
+
+        def _poll4():
+            if thread4.is_alive():
+                if "_progress" in result4:
+                    self._cp_status_lbl.setText(result4["_progress"])
+                return
+            timer4.stop()
+
+            if "error" in result4:
+                self._cp_status_lbl.setText(
+                    f"{base_status} Sanding FAILED: {result4['error']} "
+                    f"(the auto-corrected result above is unaffected)."
+                )
+                self._cp_run_btn.setEnabled(True)
+                self._maybe_send_notify(
+                    self._cp_run_notify_cb,
+                    f"[ZF-Microglia-AI] Cellpose-SAM Segmentation done, sanding failed — {stem}",
+                    f"{base_email}\n\nSanding failed: {result4['error']}\n"
+                    f"The auto-corrected result itself is unaffected.",
+                )
+                return
+
+            new_labels = result4["labels"]
+            report = result4["report"]
+
+            # Mutate in place, not `.data =` -- same napari-thumbnail-race
+            # reason as every other label-editing tool in this plugin.
+            if lname in self._viewer.layers:
+                lyr = self._viewer.layers[lname]
+                lyr.data[:] = new_labels
+                lyr.refresh()
+            else:
+                self._viewer.add_labels(new_labels, name=lname, scale=scale)
+
+            sanded_path = out_dir / f"{stem}_cellpose_labels_sanded.tif"
+            tifffile.imwrite(str(sanded_path), new_labels.astype(np.int32))
+
+            report_text = format_sanding_report(report)
+            self._cp_status_lbl.setText(
+                f"{base_status} Sanding done — "
+                f"{report['n_cells_sanded']}/{report['n_cells_total']} cells softened, "
+                f"{report['n_debris_fragments_removed']} debris fragment(s) removed. "
+                f"Saved {sanded_path.name}."
             )
             self._cp_log_view.append("\n" + report_text)
             sb = self._cp_log_view.verticalScrollBar()
@@ -7919,17 +8129,17 @@ class ZFMicrogliaAIWidget(QWidget):
             self._cp_run_btn.setEnabled(True)
             self._maybe_send_notify(
                 self._cp_run_notify_cb,
-                f"[ZF-Microglia-AI] Cellpose-SAM Segmentation + auto-correct done — {stem}",
+                f"[ZF-Microglia-AI] Cellpose-SAM Segmentation + auto-correct + sanding done — {stem}",
                 f"{base_email}\n\n{report_text}",
             )
 
             print(f"{'='*70}")
-            print(f"AUTO-CORRECTION COMPLETE — {stem}")
+            print(f"SANDING COMPLETE — {stem}")
             print(report_text)
             print(f"{'='*70}\n")
 
-        timer3.timeout.connect(_poll3)
-        timer3.start(500)
+        timer4.timeout.connect(_poll4)
+        timer4.start(500)
 
     def _on_rerun_single_cell(self):
         # _active_layer() only ever returns an Image layer -- if the

@@ -1090,6 +1090,99 @@ def correct_label_from_intensity_3d(
     return new_labels.astype(np.int32), report
 
 
+def sand_label(
+    labels: np.ndarray,
+    label_id: int,
+    sigma_xy: float,
+    sigma_z: float,
+    pad: int = 10,
+) -> "tuple[np.ndarray, dict]":
+    """
+    Softens one label's contour ("sanding"): 3D anisotropic Gaussian-blurs
+    its own binary mask and re-thresholds at 0.5, rounding off small
+    jagged/blocky voxel edges without meaningfully changing the cell's
+    real shape or volume. Purely geometric -- no image/intensity involved,
+    unlike Correct Label.
+
+    Foreign-protected like every other Correct Label tool: a neighbor's
+    already-claimed voxels can never be grown into, even where the blur
+    would otherwise cross into them.
+
+    labels             : (Z, Y, X) label volume
+    label_id            : the label to soften
+    sigma_xy, sigma_z    : Gaussian sigma in voxels (same units/meaning as
+                          Create Labels' own Smooth sigma XY/Z)
+    pad                  : bbox padding (voxels, all 3 axes) around the
+                          label's own extent, giving the blur room to
+                          round the boundary without being clipped by the
+                          crop edge
+
+    Returns (new_labels, info). info = {
+        "applied": bool, "reason": str | None,
+        "n_before": int, "n_after": int,
+    } -- applied=False (labels returned unchanged) if smoothing collapses
+    the label to nothing (usually because foreign neighbors already
+    surround it tightly) or if the result loses all contact with the
+    label's own original footprint.
+
+    Raises ValueError if label_id isn't found anywhere in the volume.
+    """
+    mask3d = labels == label_id
+    if not np.any(mask3d):
+        raise ValueError(f"label {label_id} not found anywhere in the volume")
+
+    zs, ys, xs = np.nonzero(mask3d)
+    Z, Y, X = labels.shape
+    z0, z1 = max(0, int(zs.min()) - pad), min(Z, int(zs.max()) + pad + 1)
+    y0, y1 = max(0, int(ys.min()) - pad), min(Y, int(ys.max()) + pad + 1)
+    x0, x1 = max(0, int(xs.min()) - pad), min(X, int(xs.max()) + pad + 1)
+
+    crop = labels[z0:z1, y0:y1, x0:x1]
+    own = crop == label_id
+    foreign = (crop != 0) & ~own
+    n_before = int(own.sum())
+
+    own_f = own.astype(np.float32)
+    if _BACKEND == "cuda" and _CP is not None:
+        try:
+            own_gpu = _CP.asarray(own_f)
+            blurred_gpu = _CPND.gaussian_filter(own_gpu, sigma=(sigma_z, sigma_xy, sigma_xy))
+            blurred = blurred_gpu.get()
+            del own_gpu, blurred_gpu
+            _free_gpu_cache()
+        except Exception as exc:
+            print(f"   Sanding: GPU smooth failed ({exc}), using CPU")
+            blurred = cpu_gaussian(own_f, sigma=(sigma_z, sigma_xy, sigma_xy))
+    else:
+        blurred = cpu_gaussian(own_f, sigma=(sigma_z, sigma_xy, sigma_xy))
+
+    candidate = (blurred >= 0.5) & ~foreign
+    n_after = int(candidate.sum())
+
+    if n_after == 0:
+        return labels, {
+            "applied": False,
+            "reason": "smoothing collapsed the label to nothing "
+                      "(blocked by neighboring labels or too small for this sigma)",
+            "n_before": n_before, "n_after": 0,
+        }
+    if not np.any(candidate & own):
+        return labels, {
+            "applied": False,
+            "reason": "smoothed shape lost all contact with the label's original footprint",
+            "n_before": n_before, "n_after": n_after,
+        }
+
+    new_labels = labels.copy()
+    new_crop = new_labels[z0:z1, y0:y1, x0:x1]
+    new_crop[own] = 0
+    new_crop[candidate] = label_id
+    return new_labels.astype(np.int32), {
+        "applied": True, "reason": None,
+        "n_before": n_before, "n_after": n_after,
+    }
+
+
 def _intensity_correct_2d(
     labels_z: np.ndarray,
     image_z: np.ndarray,
