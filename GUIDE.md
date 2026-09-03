@@ -393,6 +393,18 @@ Unlike Min volume above, this one is a real, editable slider — it's the actual
 
 The golden ratio is the default for a specific reason, not decoration: it needs to be strict enough that a fragment genuinely that much smaller than the smallest real GT cell ever measured is a defensible "almost certainly not a real cell" cutoff, while staying lenient enough not to reject a legitimately smaller-than-average real cell the way using Min volume itself (fraction = 1.0) would. Set to `1.0` to recover the old, unrelaxed behavior (cutoff == Min volume exactly) on either route; `0.0` disables the Cellpose-SAM safety-net stage entirely and, on the Pixel Classifier, removes its volume filter's floor altogether (every non-zero object survives).
 
+#### Soften label contours (sanding) after any label correction
+
+**Default: on** — plus **Sanding sigma XY** and **Sanding sigma Z**, both in voxels, **default 0.7/0.7**.
+
+A shared setting used by every tool that regenerates a label's shape from scratch: **Correct Label** (2D or 3D), **Correct Adjacent Labels**, and Cellpose-SAM Segmentation's own **Auto-correct** stage ([6c](#6c-cellpose-sam-segmentation)). All of these rebuild a label voxel-by-voxel from an intensity threshold, which can leave contours blocky or spiky at the pixel scale. Sanding runs immediately after, on just the label(s) that tool touched: each one's own binary mask is 3D Gaussian-blurred (anisotropic — separate XY/Z sigma) and re-thresholded at 0.5, rounding off small jagged edges without meaningfully changing the cell's real shape or volume. Purely geometric — no image/intensity involved, unlike the correction itself.
+
+**Foreign-protected, same as every Correct Label tool**: a neighboring label's already-claimed voxels can never be grown into, even where the blur would otherwise cross into them — so sanding one cell can never merge it into, or eat into, another. If a label's own shape shrinks to nothing under the blur (rare — usually means it was already tightly boxed in by neighbors) or loses all contact with its pre-sanding footprint, sanding is skipped for that label and the tool's status message says so; the correction itself is unaffected either way.
+
+This is a **separate, independent setting from the Pixel Classifier's own Smooth σ XY/Z** ([6b](#6b-pixel-classifier--union-find-labels), default 1.5/3.0) — that pair decides whether raw blobs merge into one 3D object in the first place, before any labels exist. Sanding runs after labels already exist, only ever polishes one already-correct label's own edges, and is foreign-protected so it structurally cannot merge cells — which is why its default sigmas are much smaller: this is meant to be a light "sand the edges and spikes down" pass, not a reshape.
+
+Uncheck this box to skip sanding entirely and get the older, unsoftened behavior back on all four tools at once.
+
 ---
 
 ### 6b. Pixel Classifier — Union-Find Labels
@@ -549,10 +561,11 @@ When a full run finishes, this chains a second, fully automatic stage onto it �
 2. **Corrects every cell, whole-volume (3D)** at that threshold — the same engine as **Correct Label**'s **3D (whole cell, from centroid)** mode (below), run once per label automatically.
 3. **Re-derives the boundary jointly, per slice, wherever two or more cells end up directly touching** — the same marker-seeded watershed as **Correct Adjacent Labels**, generalized to however many cells are actually touching there (not just pairs). This exists because step 2, run independently per cell, is order-dependent exactly at a shared boundary: whichever cell was corrected first wins the contested pixels by accident of processing order, not by anything about the real signal — this step replaces that with a real, symmetric split.
 4. **Removes debris** once over the whole result (same golden-ratio floor as every other final-safety-net stage in this plugin).
+5. **Softens every cell's contour (sanding)** — a fifth stage chained on afterward, gated by its own checkbox (Common Settings, above — see [Soften label contours (sanding)](#soften-label-contours-sanding-after-any-label-correction)), on by default. Purely geometric, runs on the full set of auto-corrected labels.
 
 A cell that genuinely doesn't reach the calibrated threshold anywhere (rare, but possible for a very faint true positive) is skipped and left exactly as Cellpose-SAM originally produced it — this never aborts the run or erases a cell.
 
-Saves the result to `<stem>_cellpose_labels_autocorrected.tif` and updates the `*_cellpose_labels` layer in place; `<stem>_cp_masks.tif`/`<stem>_cp_masks_corrected.tif` are unaffected — those stay the raw Krendl-pipeline output, unchanged. The status line and log box report the calibrated `lo`, how many cells/touching-groups were corrected vs. skipped, and how much debris was removed. Untick the checkbox before running to skip this stage entirely and keep the older, single-pass behavior.
+Saves the auto-corrected result to `<stem>_cellpose_labels_autocorrected.tif`, then — if sanding is enabled — saves the sanded result on top as `<stem>_cellpose_labels_sanded.tif`, updating the `*_cellpose_labels` layer in place at each stage; `<stem>_cp_masks.tif`/`<stem>_cp_masks_corrected.tif` are unaffected — those stay the raw Krendl-pipeline output, unchanged. The status line and log box report the calibrated `lo`, how many cells/touching-groups were corrected vs. skipped, how much debris was removed, and (if sanding ran) how many cells were softened. Untick the auto-correct checkbox to skip both this stage and sanding entirely and keep the older, single-pass behavior; untick only the sanding checkbox to keep auto-correct but skip the softening pass.
 
 #### Re-run This Cell Only
 
@@ -705,6 +718,8 @@ Regenerates a label's shape from the raw signal layer's own live contrast displa
 
 Click **Correct Label**. A neighboring label's own pixels are never touched, absorbed, or grown into — even if they sit inside the same padded box and share the exact same intensity range as the label being corrected. If the chosen contrast window doesn't connect to the label's existing shape at all (2D), or not even at the starting/centroid slice (3D), the tool refuses to apply rather than silently emptying the label — adjust the window and try again.
 
+If [Soften label contours (sanding)](#soften-label-contours-sanding-after-any-label-correction) (Common Settings) is checked — the default — the corrected label is sanded immediately afterward, in either mode: same foreign-label protection, purely geometric, rounds off blocky edges left by the intensity-threshold correction. The status line reports whether it was applied.
+
 ---
 
 ### Copy Label to Adjacent Slice
@@ -734,6 +749,8 @@ For two labels that end up touching or merged on **one slice** — two real cell
 **Bbox padding (px)** — default 15. The correction works within the *union* of both labels' existing footprints (+ padding) on the current slice.
 
 Click **Correct Adjacent Labels**. A third, unrelated label is never touched, absorbed, or grown into — same protection as every other Correct Label tool. If the threshold leaves one label's own existing footprint with nothing to anchor to at all, the tool refuses rather than silently erasing that label — adjust the contrast window and try again. The status message reports each label's final pixel count and how many pixels (if any) were lost right at the cut boundary.
+
+If [Soften label contours (sanding)](#soften-label-contours-sanding-after-any-label-correction) (Common Settings) is checked — the default — **both** Label A and Label B are sanded immediately afterward, each independently, same foreign-label protection. The status message reports how many of the two were actually softened.
 
 ---
 
@@ -1826,6 +1843,8 @@ Shown automatically based on active layer suffix — `_ExtRm` → Cellpose-SAM, 
 | Max volume | not yet measured (until a GT-verified Statistics run measures one) | **Informative only, not editable** — largest cell ever confirmed real by GT; drives no pipeline stage, only flags `is_volume_outlier` (Tab 3 CSV) |
 | Min hole size | 0 (until a GT sweep or GT-verified Statistics run measures a real recommendation) | Editable slider — shared by both routes — minimum voxels for an enclosed gap to survive as real background instead of being filled |
 | Final min-size fraction | 0.618 (golden ratio) | Editable slider — both routes — the real deletion cutoff is this fraction of Min volume, not Min volume itself (Cellpose-SAM: last-stage safety net; Pixel Classifier: the volume filter's own cutoff) |
+| Soften label contours (sanding) | Checked | Shared by Correct Label, Correct Adjacent Labels, and Cellpose-SAM auto-correct — sands the touched label(s) right after each, foreign-protected, purely geometric |
+| Sanding sigma XY / Z | 0.7 / 0.7 vox | Blur strength for sanding — deliberately much smaller than Pixel Classifier's Smooth σ XY/Z below (different job: polishing an existing label, not merging blobs into one) |
 
 **Pixel Classifier**
 
