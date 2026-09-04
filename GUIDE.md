@@ -1690,6 +1690,14 @@ Then **fully close and reopen napari**. If napari is running when you reinstall,
 
 ## 15. Troubleshooting
 
+### napari crashed / was killed — how much did I lose?
+
+Every Labels layer currently in the viewer is auto-saved to `<output folder>/<layer_name>_recovery.tif` every 10 minutes for the whole session, overwriting the previous recovery save each time — independent of Save Labels, and independent of whatever caused the crash. Look for a `*_recovery.tif` file next to your fish's other output files; at most ~10 minutes of manual editing (Correct Label, Correct Adjacent Labels, Split/Join Labels, etc.) should be missing from it.
+
+If napari itself was silently killed (no error dialog, the window just vanishes) rather than crashing with a visible Python traceback, that's almost always the Linux OOM-killer, not a bug in whatever you were doing at the time — confirm with `journalctl -k --since "-1 hour" | grep -i "out of memory"` in a terminal; it will name the exact process and how much memory it had grown to. See `[[workstation_hardware]]`-style guidance in this project's own memory for the established pattern (2026-08-27, 2026-09-04): a single napari session can, under specific conditions, balloon to the entire machine's RAM. As of 2026-09-04 every background-worker QTimer in this plugin properly releases its result once done (previously, every completed operation — Correct Label, segmentation, sweeps, etc. — permanently leaked its own result for the rest of the session), so a repeat of that specific cause is fixed; the recovery file above is the safety net regardless.
+
+---
+
 ### `conda env create -f environment.yml` fails on Windows with `Didn't find wheel for cucim-cu12`
 
 Fixed in the current `environment.yml` (`cucim-cu12` is now Linux-only there — it has no Windows wheels at all, since it's a Linux/WSL2-only RAPIDS package, and isn't something a different pip flag or index fixes on native Windows). It only accelerates Tab 3 statistics, which fall back to CPU cleanly without it; Tab 1 and Tab 2 are unaffected.
