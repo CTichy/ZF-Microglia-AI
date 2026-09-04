@@ -512,6 +512,7 @@ class ZFMicrogliaAIWidget(QWidget):
         self._connect_signals()
         self._refresh_layer_info()
         self._refresh_stats_layers()
+        self._start_recovery_timer()
 
     # ------------------------------------------------------------------ #
     # UI construction
@@ -4228,6 +4229,7 @@ class ZFMicrogliaAIWidget(QWidget):
             if thread.is_alive():
                 return
             timer.stop()
+            timer.deleteLater()
             self._pd_run_btn.setEnabled(True)
             if "error" in result:
                 self._pd_status_lbl.setText(f"ERROR: {result['error']}")
@@ -4279,6 +4281,7 @@ class ZFMicrogliaAIWidget(QWidget):
                 if chk["exceeded"]:
                     _tj.kill_process_tree(pid)
                     timer.stop()
+                    timer.deleteLater()
                     self._monai_job["timer"] = None
                     self._mt_status_lbl.setText(
                         f"Early-stopped (PID {pid}): {chk['checkpoints_since_best']} checkpoints "
@@ -4291,6 +4294,7 @@ class ZFMicrogliaAIWidget(QWidget):
 
             if pid and not _tj.is_running(pid):
                 timer.stop()
+                timer.deleteLater()
                 self._monai_job["timer"] = None
                 # train.py auto-saves its own best_model_fullstack.pth whenever
                 # a new best Full-brain Dice lands, so there's nothing for the
@@ -4385,6 +4389,7 @@ class ZFMicrogliaAIWidget(QWidget):
         self._save_cfg(monai_active_pid=None, monai_active_log="")
         if self._monai_job.get("timer"):
             self._monai_job["timer"].stop()
+            self._monai_job["timer"].deleteLater()
             self._monai_job["timer"] = None
 
     def _resume_monai_job_if_active(self):
@@ -4478,6 +4483,7 @@ class ZFMicrogliaAIWidget(QWidget):
             if thread.is_alive():
                 return
             timer.stop()
+            timer.deleteLater()
             self._branch_calib_job["timer"] = None
             self._ct_calib_run_btn.setEnabled(True)
 
@@ -4565,6 +4571,7 @@ class ZFMicrogliaAIWidget(QWidget):
                 if chk["exceeded"]:
                     _tj.kill_process_tree(pid)
                     timer.stop()
+                    timer.deleteLater()
                     self._cellpose_job["timer"] = None
                     pointer_msg = self._write_cellpose_best_pointer(self._cellpose_job, chk["best_epoch"])
                     self._ct_status_lbl.setText(
@@ -4578,6 +4585,7 @@ class ZFMicrogliaAIWidget(QWidget):
 
             if pid and not _tj.is_running(pid):
                 timer.stop()
+                timer.deleteLater()
                 self._cellpose_job["timer"] = None
                 if log_path:
                     best = _tj.patience_exceeded(log_path, _tj.CELLPOSE_METRIC, patience=0)
@@ -4671,6 +4679,7 @@ class ZFMicrogliaAIWidget(QWidget):
         self._save_cfg(cellpose_active_pid=None, cellpose_active_log="")
         if self._cellpose_job.get("timer"):
             self._cellpose_job["timer"].stop()
+            self._cellpose_job["timer"].deleteLater()
             self._cellpose_job["timer"] = None
 
     def _resume_cellpose_job_if_active(self):
@@ -4869,6 +4878,7 @@ class ZFMicrogliaAIWidget(QWidget):
             if job["thread"].is_alive():
                 return
             timer.stop()
+            timer.deleteLater()
             job["timer"] = None
             self._es_run_btn.setEnabled(True)
             self._es_stop_btn.setEnabled(False)
@@ -5061,6 +5071,7 @@ class ZFMicrogliaAIWidget(QWidget):
                     self._ccal_status_lbl.setText(result["_progress"])
                 return
             timer.stop()
+            timer.deleteLater()
             if "error" in result:
                 self._ccal_status_lbl.setText(f"ERROR: {result['error']}")
                 self._ccal_run_btn.setEnabled(True)
@@ -5282,6 +5293,7 @@ class ZFMicrogliaAIWidget(QWidget):
             if thread.is_alive():
                 return
             timer.stop()
+            timer.deleteLater()
             self._open_btn.setEnabled(True)
             if "error" in result:
                 self._status(f"ERROR: {result['error']}")
@@ -5308,6 +5320,58 @@ class ZFMicrogliaAIWidget(QWidget):
             out = Path(".")
         out.mkdir(parents=True, exist_ok=True)
         return out
+
+    def _start_recovery_timer(self, interval_ms: int = 10 * 60 * 1000):
+        """
+        Safety net, independent of whatever else might go wrong: every
+        10 minutes, saves every Labels layer currently in the viewer to
+        <output_dir>/<layer_name>_recovery.tif, overwriting the previous
+        recovery save each time -- so a crash loses at most ~10 minutes
+        of manual label editing (Correct Label, Correct Adjacent Labels,
+        Split/Join, etc.), not the whole session.
+
+        This is the one QTimer in this plugin that's SUPPOSED to live
+        for the entire session, unlike every other background-worker
+        QTimer here (see the 2026-09-04 fix: every other one-shot
+        QTimer now calls deleteLater() once its job finishes -- a
+        QTimer parented to `self` that's never explicitly destroyed
+        stays alive, and Qt's parent-child ownership keeps its connected
+        closure alive right along with it, which meant every completed
+        background operation permanently pinned its own result -- often
+        a full label-array copy -- in memory for the rest of the
+        session. That leak, accumulated across a normal working
+        session's worth of button clicks, is what actually OOM-killed
+        napari that day, not any single operation on its own).
+
+        The save itself runs in a background thread (writing a large
+        TIFF can take a few seconds) -- fire-and-forget; a failure is
+        printed but never interrupts the session or the timer.
+        """
+        self._recovery_timer = QTimer(self)
+
+        def _do_recovery_save():
+            layers = [lyr for lyr in self._viewer.layers if isinstance(lyr, napari.layers.Labels)]
+            if not layers:
+                return
+            out_dir = self._output_dir()
+            # Snapshot (name, data) on the main thread -- cheap, no copy,
+            # just grabs each layer's current array reference -- so the
+            # background thread never touches napari's own layer objects.
+            layers_data = [(lyr.name, lyr.data) for lyr in layers]
+
+            def _worker():
+                for name, data in layers_data:
+                    try:
+                        path = out_dir / f"{name}_recovery.tif"
+                        tifffile.imwrite(str(path), np.asarray(data).astype(np.int32))
+                        print(f"[recovery] saved {path}")
+                    except Exception as exc:
+                        print(f"[recovery] FAILED to save {name}_recovery.tif: {exc}")
+
+            threading.Thread(target=_worker, daemon=True).start()
+
+        self._recovery_timer.timeout.connect(_do_recovery_save)
+        self._recovery_timer.start(interval_ms)
 
     def _get_notify_creds(self):
         """Read the shared Email notification fields (Tab 5 -- Sweeps &
@@ -5444,6 +5508,7 @@ class ZFMicrogliaAIWidget(QWidget):
             if thread.is_alive():
                 return
             timer.stop()
+            timer.deleteLater()
             self._notify_test_btn.setEnabled(True)
             if result["error"]:
                 self._notify_test_status_lbl.setText(f"ERROR: {result['error']}")
@@ -5757,6 +5822,7 @@ class ZFMicrogliaAIWidget(QWidget):
         idx += 1
         if idx >= len(queue):
             job["timer"].stop()
+            job["timer"].deleteLater()
             job["timer"] = None
             job["running"] = False
             self._gtk_run_btn.setEnabled(True)
@@ -5954,6 +6020,7 @@ class ZFMicrogliaAIWidget(QWidget):
                 return
 
             timer.stop()
+            timer.deleteLater()
 
             if "error" in result:
                 self._status(f"ERROR: {result['error']}")
@@ -6180,6 +6247,7 @@ class ZFMicrogliaAIWidget(QWidget):
             if job["thread"].is_alive():
                 return
             timer.stop()
+            timer.deleteLater()
             job["timer"] = None
             self._bs_run_btn.setEnabled(True)
             self._bs_stop_btn.setEnabled(False)
@@ -6290,6 +6358,7 @@ class ZFMicrogliaAIWidget(QWidget):
             if thread.is_alive():
                 return
             timer.stop()
+            timer.deleteLater()
             if "error" in result:
                 self._resort_status_lbl.setText(f"ERROR: {result['error']}")
                 self._resort_btn.setEnabled(True)
@@ -6348,6 +6417,7 @@ class ZFMicrogliaAIWidget(QWidget):
             if thread.is_alive():
                 return
             timer.stop()
+            timer.deleteLater()
             if "error" in result:
                 self._debris_status_lbl.setText(f"ERROR: {result['error']}")
                 self._debris_btn.setEnabled(True)
@@ -6451,6 +6521,7 @@ class ZFMicrogliaAIWidget(QWidget):
             if thread.is_alive():
                 return
             timer.stop()
+            timer.deleteLater()
             if "error" in result:
                 self._split_status_lbl.setText(f"ERROR: {result['error']}")
                 self._split_btn.setEnabled(True)
@@ -6531,6 +6602,7 @@ class ZFMicrogliaAIWidget(QWidget):
             if thread.is_alive():
                 return
             timer.stop()
+            timer.deleteLater()
             if "error" in result:
                 self._join_status_lbl.setText(f"ERROR: {result['error']}")
                 self._join_btn.setEnabled(True)
@@ -6659,6 +6731,7 @@ class ZFMicrogliaAIWidget(QWidget):
             if thread.is_alive():
                 return
             timer.stop()
+            timer.deleteLater()
             if "error" in result:
                 self._correct_status_lbl.setText(f"ERROR: {result['error']}")
                 self._correct_btn.setEnabled(True)
@@ -6772,6 +6845,7 @@ class ZFMicrogliaAIWidget(QWidget):
             if thread.is_alive():
                 return
             timer.stop()
+            timer.deleteLater()
             if "error" in result:
                 self._copyslice_status_lbl.setText(f"ERROR: {result['error']}")
                 self._copyslice_btn.setEnabled(True)
@@ -6890,6 +6964,7 @@ class ZFMicrogliaAIWidget(QWidget):
             if thread.is_alive():
                 return
             timer.stop()
+            timer.deleteLater()
             if "error" in result:
                 self._adjcorr_status_lbl.setText(f"ERROR: {result['error']}")
                 self._adjcorr_btn.setEnabled(True)
@@ -7051,6 +7126,7 @@ class ZFMicrogliaAIWidget(QWidget):
             if thread.is_alive():
                 return
             timer.stop()
+            timer.deleteLater()
             if "error" in result:
                 self._stats_status_lbl.setText(f"ERROR: {result['error']}")
                 self._stats_btn.setEnabled(True)
@@ -7196,6 +7272,7 @@ class ZFMicrogliaAIWidget(QWidget):
             if thread.is_alive():
                 return
             timer.stop()
+            timer.deleteLater()
 
             if "error" in result:
                 self._labels_status_lbl.setText(f"ERROR: {result['error']}")
@@ -7376,6 +7453,7 @@ class ZFMicrogliaAIWidget(QWidget):
             if job["thread"].is_alive():
                 return
             timer.stop()
+            timer.deleteLater()
             job["timer"] = None
             self._ps_run_btn.setEnabled(True)
             self._ps_stop_btn.setEnabled(False)
@@ -7653,6 +7731,7 @@ class ZFMicrogliaAIWidget(QWidget):
             if job["thread"].is_alive():
                 return
             timer.stop()
+            timer.deleteLater()
             job["timer"] = None
             self._sg_run_btn.setEnabled(True)
             self._sg_stop_btn.setEnabled(False)
@@ -7858,6 +7937,7 @@ class ZFMicrogliaAIWidget(QWidget):
                     self._cp_status_lbl.setText(result["_progress"])
                 return
             timer2.stop()
+            timer2.deleteLater()
 
             if "error" in result:
                 self._cp_status_lbl.setText(f"ERROR: {result['error']}")
@@ -7992,6 +8072,7 @@ class ZFMicrogliaAIWidget(QWidget):
                     self._cp_status_lbl.setText(result3["_progress"])
                 return
             timer3.stop()
+            timer3.deleteLater()
 
             if "error" in result3:
                 self._cp_status_lbl.setText(
@@ -8105,6 +8186,7 @@ class ZFMicrogliaAIWidget(QWidget):
                     self._cp_status_lbl.setText(result4["_progress"])
                 return
             timer4.stop()
+            timer4.deleteLater()
 
             if "error" in result4:
                 self._cp_status_lbl.setText(
@@ -8307,6 +8389,7 @@ class ZFMicrogliaAIWidget(QWidget):
                     self._cp_status_lbl.setText(result["_progress"])
                 return
             timer3.stop()
+            timer3.deleteLater()
             self._cp_run_btn.setEnabled(True)
             self._cp_relabel_btn.setEnabled(True)
 
@@ -8527,6 +8610,7 @@ class ZFMicrogliaAIWidget(QWidget):
             if job["thread"].is_alive():
                 return
             timer.stop()
+            timer.deleteLater()
             job["timer"] = None
             self._kr_run_btn.setEnabled(True)
             self._kr_stop_btn.setEnabled(False)
@@ -8741,6 +8825,7 @@ class ZFMicrogliaAIWidget(QWidget):
             if thread.is_alive():
                 return
             timer.stop()
+            timer.deleteLater()
             self._gt_package_job["timer"] = None
             self._gtp_run_btn.setEnabled(True)
 
@@ -8837,6 +8922,7 @@ class ZFMicrogliaAIWidget(QWidget):
             if thread.is_alive():
                 return
             timer.stop()
+            timer.deleteLater()
             self._xz_patches_job["timer"] = None
             self._xz_run_btn.setEnabled(True)
 
