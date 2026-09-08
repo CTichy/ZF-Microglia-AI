@@ -86,9 +86,16 @@ def grow_correct_label_2d(
 
     labels, image  : (Z, Y, X) volumes, same shape
     label_ids       : the label(s) to correct -- a single int (Correct
-                      Label's own use) or a list of 2+ ints (Correct
-                      Adjacent Labels' own use, seeding the group with
-                      both labels from the start instead of just one)
+                      Label's own use) or a list of 2+ ints, FIRST
+                      element = "label A" (Correct Adjacent Labels' own
+                      use -- [label_a, label_b], seeding the group with
+                      both from the start instead of just one). The
+                      working rectangle is always scoped to just this
+                      first id's own extent (see correct_label_group_2d's
+                      own focus_ids parameter) -- label B and any
+                      further folded-in neighbor still fully take part
+                      in discovery/convergence/the joint watershed, only
+                      the rectangle itself stays anchored on A.
     z               : slice index -- only this slice is touched
     lo              : one-sided intensity cutoff (signal = image >= lo)
     initial_pad, growth_step, max_iterations : padding starts at
@@ -116,8 +123,23 @@ def grow_correct_label_2d(
         if progress_cb:
             progress_cb(msg)
 
-    group = set(label_ids) if isinstance(label_ids, (list, tuple, set)) else {int(label_ids)}
-    original_group = frozenset(group)  # convergence only ever judged on these, never a folded-in neighbor
+    if isinstance(label_ids, (list, tuple)):
+        ids_list = [int(i) for i in label_ids]
+    elif isinstance(label_ids, set):
+        ids_list = sorted(int(i) for i in label_ids)  # a set has no defined order -- deterministic fallback
+    else:
+        ids_list = [int(label_ids)]
+    group = set(ids_list)
+    original_group = frozenset(group)  # convergence/discovery judged on these, never a folded-in neighbor
+    # The working RECTANGLE, though, is scoped to just the FIRST id as
+    # given -- "label A" in Correct Adjacent Labels' own terms (its
+    # widget call always passes [label_a, label_b] in that order; for
+    # plain Correct Label, label_ids is a single int, so this is
+    # trivially that same label). Label B (and any further folded-in
+    # neighbor) still fully participates in discovery/convergence/the
+    # joint watershed -- only the RECTANGLE stays anchored on A, exactly
+    # as correct_adjacent_labels_2d() itself now does standalone.
+    rect_focus = frozenset({ids_list[0]})
     pad = int(initial_pad)
     group_grew = False
     last_new_labels = labels
@@ -131,6 +153,12 @@ def grow_correct_label_2d(
         _report(f"Attempt {iteration}: pad={used_pad}px, group={sorted(group)}")
         new_labels, info = correct_label_group_2d(
             labels, image, sorted(group), z, lo, pad=used_pad, sigma=sigma,
+            # Rectangle scoped to label A alone (rect_focus), never label
+            # B or a folded-in neighbor -- same principle as 3D Pass 1
+            # (see the module docstring above): a large/far-flung label
+            # must never balloon the working area (or the watershed's own
+            # cost) beyond what's actually needed near A's own neighborhood.
+            focus_ids=sorted(rect_focus),
         )
         last_new_labels, last_info = new_labels, info
 
@@ -322,6 +350,12 @@ def grow_correct_label_3d(
             try:
                 working, _info = correct_label_group_2d(
                     working, image, tgroup, z, lo, pad=used_pad, sigma=sigma,
+                    # Same scoping principle as Pass 1 and the 2D
+                    # orchestrator above: the rectangle is sized from
+                    # only the originally-requested label(s) actually
+                    # present in this touching group, never a folded-in
+                    # neighbor's own extent.
+                    focus_ids=sorted(set(tgroup) & original_group),
                 )
             except ValueError:
                 pass  # same tolerant skip auto_contrast_correct_stack's own Pass 2 uses

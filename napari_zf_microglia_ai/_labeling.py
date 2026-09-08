@@ -1419,19 +1419,40 @@ def correct_adjacent_labels_2d(
     real per-pixel signal (so it isn't just re-drawing the stale shape
     either), rather than being pulled toward some other, unrelated dip.
 
+    The working rectangle is sized from label_a's OWN existing footprint
+    alone (+ pad) -- NOT the union with label_b. label_a is the focus:
+    this is the correction "for" label_a, using label_b only to resolve
+    the local boundary between them right where they're actually
+    adjacent. If label_b is larger, or its own bounding box extends far
+    beyond label_a's own neighborhood, none of that distant territory is
+    ever read or touched -- only whatever portion of label_b happens to
+    fall inside label_a's own (padded) rectangle takes part, exactly the
+    same way any other foreign label would if it happened to be there.
+    (An earlier version sized the rectangle from the UNION of both
+    labels' footprints instead, which could balloon the working area --
+    and the cost of watershedding it -- far beyond label_a's own
+    neighborhood whenever label_b was large or far-flung, the same class
+    of scope problem already fixed for 3D auto-grow's Pass 1.)
+
     labels, image    : (Z, Y, X) volumes, same shape
-    label_a, label_b : the two labels being corrected together (must be
-                       different, both present on slice z)
+    label_a, label_b : label_a is the label being corrected (its own
+                       footprint sizes the working rectangle); label_b
+                       is the adjacent label the boundary is resolved
+                       against. Must be different, both present on
+                       slice z.
     z                : slice index -- only this slice is touched
     lo               : one-sided intensity cutoff (signal = image >= lo)
-    pad              : bbox padding in pixels around the UNION of both
-                       labels' existing footprints on this slice
+    pad              : bbox padding in pixels around label_a's OWN
+                       existing footprint on this slice
     sigma            : Gaussian smoothing of the signal before watershed
                        (higher = less sensitive to single-pixel noise
                        nudging the boundary around)
 
     Returns (new_labels, info). info is a dict:
-        n_a, n_b -- final pixel counts for label_a/label_b after correction
+        n_a, n_b -- final pixel counts for label_a/label_b within the
+                    working rectangle after correction (label_b's own
+                    territory outside the rectangle, if any, is
+                    unaffected and not reflected here)
         n_lost   -- pixels that were label_a or label_b before, but ended
                     up neither after the joint correction/split (e.g. a
                     sliver the threshold no longer supports, or that
@@ -1439,11 +1460,12 @@ def correct_adjacent_labels_2d(
                     hidden, so a meaningful loss doesn't go unnoticed
 
     Raises ValueError if label_a == label_b, either label isn't present
-    on slice z, the joint threshold connects to neither label's existing
-    footprint at all, or one label's own marker ends up with zero
-    reachable candidate pixels within the combined region (its own
-    existing footprint doesn't meet the new threshold at all) -- refuses
-    to silently erase one label rather than returning a 1-label result.
+    on slice z, label_b doesn't reach into label_a's own working
+    rectangle at all (nothing to resolve a boundary against there), the
+    joint threshold connects to neither label's existing footprint at
+    all, or one label's own marker ends up with zero reachable candidate
+    pixels within the combined region -- refuses to silently erase one
+    label rather than returning a 1-label result.
     """
     if label_a == label_b:
         raise ValueError("label_a and label_b must be different labels")
@@ -1461,8 +1483,8 @@ def correct_adjacent_labels_2d(
     if not np.any(existing_b):
         raise ValueError(f"label {label_b} not found on slice {z}")
 
-    seed = existing_a | existing_b
-    ys, xs = np.nonzero(seed)
+    # Rectangle sized from label_a ALONE -- see the docstring above.
+    ys, xs = np.nonzero(existing_a)
     y0 = max(int(ys.min()) - pad, 0)
     y1 = min(int(ys.max()) + pad + 1, labels_z.shape[0])
     x0 = max(int(xs.min()) - pad, 0)
@@ -1470,9 +1492,17 @@ def correct_adjacent_labels_2d(
 
     crop_labels = labels_z[y0:y1, x0:x1]
     crop_image  = image_z[y0:y1, x0:x1]
-    crop_seed   = seed[y0:y1, x0:x1]
     crop_a      = existing_a[y0:y1, x0:x1]
     crop_b      = existing_b[y0:y1, x0:x1]
+    crop_seed   = crop_a | crop_b
+
+    if not np.any(crop_b):
+        raise ValueError(
+            f"label {label_b} does not reach into label {label_a}'s own "
+            f"working rectangle (its bbox + {pad}px padding) on slice {z} "
+            f"-- nothing of it there to resolve a boundary against; "
+            f"increase padding or correct label {label_a} alone instead."
+        )
 
     candidate = crop_image >= lo  # one-sided, same convention as every other Correct Label tool
     foreign = (crop_labels != 0) & (crop_labels != label_a) & (crop_labels != label_b)
@@ -1558,6 +1588,7 @@ def correct_label_group_2d(
     lo: float,
     pad: int = 15,
     sigma: float = 1.0,
+    focus_ids: "list[int] | None" = None,
 ) -> "tuple[np.ndarray, dict]":
     """
     N-label generalization of correct_adjacent_labels_2d(): jointly
@@ -1576,6 +1607,19 @@ def correct_label_group_2d(
                 threshold connects it to) -- supported for uniformity,
                 though the pipeline that drives this only ever calls it
                 with real touching groups (size >= 2).
+    focus_ids : optional subset of label_ids. When given, the working
+                rectangle is sized from ONLY these labels' own existing
+                footprints (+ pad) -- not the whole group -- mirroring
+                correct_adjacent_labels_2d()'s own label_a-only scoping
+                (see its docstring). Any OTHER member of label_ids only
+                takes part via whatever portion of its own territory
+                happens to fall inside that smaller rectangle; territory
+                elsewhere is never read or touched. None (default) uses
+                the UNION of the whole group instead, matching
+                auto_contrast_correct_stack()'s own Pass 2 use, where
+                every group member is a genuine peer already independently
+                corrected in Pass 1 -- there's no single "label we're
+                concerned about" to scope around there.
 
     Returns (new_labels, info). info is a dict:
         n_lost   -- pixels that were one of label_ids before, but ended
@@ -1585,11 +1629,12 @@ def correct_label_group_2d(
                     group
 
     Raises ValueError if label_ids has duplicates, fewer than 1 label
-    is found on slice z, the joint threshold connects to none of the
-    group's existing footprint at all, or any one label's own marker
-    ends up with zero reachable pixels within the combined region --
-    refuses to silently erase a label rather than returning a result
-    missing one.
+    is found on slice z, any non-focus member of label_ids doesn't
+    reach into the focus rectangle at all (when focus_ids is given),
+    the joint threshold connects to none of the group's existing
+    footprint at all, or any one label's own marker ends up with zero
+    reachable pixels within the combined region -- refuses to silently
+    erase a label rather than returning a result missing one.
     """
     if len(label_ids) < 1:
         raise ValueError("label_ids must contain at least one label")
@@ -1612,11 +1657,32 @@ def correct_label_group_2d(
         existing[lid] = m
         seed |= m
 
-    ys, xs = np.nonzero(seed)
+    # Rectangle sized from focus_ids alone when given -- see the
+    # parameter's own docstring above -- otherwise the whole group
+    # (unchanged, existing behavior).
+    scope_seed = seed
+    if focus_ids is not None:
+        scope_seed = np.zeros(labels_z.shape, dtype=bool)
+        for lid in focus_ids:
+            scope_seed |= existing[lid]
+
+    ys, xs = np.nonzero(scope_seed)
     y0 = max(int(ys.min()) - pad, 0)
     y1 = min(int(ys.max()) + pad + 1, labels_z.shape[0])
     x0 = max(int(xs.min()) - pad, 0)
     x1 = min(int(xs.max()) + pad + 1, labels_z.shape[1])
+
+    if focus_ids is not None:
+        for lid in label_ids:
+            if lid in focus_ids:
+                continue
+            if not np.any(existing[lid][y0:y1, x0:x1]):
+                raise ValueError(
+                    f"label {lid} does not reach into the focus label(s) "
+                    f"{sorted(focus_ids)}'s own working rectangle (bbox + "
+                    f"{pad}px padding) on slice {z} -- nothing of it there "
+                    f"to resolve a boundary against."
+                )
 
     crop_labels = labels_z[y0:y1, x0:x1]
     crop_image  = image_z[y0:y1, x0:x1]
