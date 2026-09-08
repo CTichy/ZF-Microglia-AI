@@ -773,6 +773,8 @@ If [Soften label contours (sanding)](#soften-label-contours-sanding-after-any-la
 
 **Auto-grow until signal clears the border** — same behavior as [Correct Label's own auto-grow](#auto-grow-until-signal-clears-the-border), just seeded with both Label A and Label B from the start instead of one label — the working rectangle stays scoped to Label A throughout, exactly as above, even as growth retries with a bigger pad or folds in a third label. If growth reveals a third label, it's folded into the joint correction too (only via whatever portion of it falls inside A's own rectangle). Same **Growth step (px)** / **Max growth iterations** fields, same non-convergence reporting.
 
+**Convergence is judged on Label A alone.** Label B is the adjacent label, usually larger or reaching further than A's own rectangle — it will typically keep touching the edge of that rectangle no matter how much the pad grows, since it was never meant to be grown to its own true extent here. Only Label A's own border status decides whether auto-grow stops; Label B touching the edge is expected and doesn't trigger another retry.
+
 ---
 
 ### Save Labels

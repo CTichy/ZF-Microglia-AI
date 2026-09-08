@@ -181,12 +181,20 @@ def grow_correct_label_2d(
             _report(f"Growing group to include neighbor(s) {sorted(new_neighbors)} -> {sorted(group)}, redoing this attempt")
             continue  # redo with the bigger group, same pad
 
-        # Convergence is judged ONLY on the originally-requested label(s)
-        # -- a neighbor folded in purely to protect its own territory was
-        # never asked to be grown to its own true extent, so its border
-        # status must not keep this looping.
+        # Convergence is judged ONLY on label A (rect_focus) -- NOT on
+        # label B or any folded-in neighbor, even though both are members
+        # of original_group. The working rectangle is sized from A's own
+        # extent alone (see correct_label_group_2d's focus_ids), so B
+        # -- being the adjacent, usually larger/further-reaching label --
+        # will almost always end up touching the edge of A's own small
+        # rectangle; that's expected and not a sign the correction needs
+        # a bigger box, since B was never meant to be grown to its own
+        # true extent here in the first place. Judging convergence on B
+        # too would mean auto-grow essentially never converges whenever
+        # B is bigger than A, which defeats the point of scoping the
+        # rectangle to A at all.
         relevant_touched = any(
-            info["per_label_touched_border"][lid] for lid in original_group
+            info["per_label_touched_border"][lid] for lid in rect_focus
         )
         if not relevant_touched:
             converged = True
