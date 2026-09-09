@@ -6934,11 +6934,20 @@ class ZFMicrogliaAIWidget(QWidget):
                 self._correct_report_view.show()
                 converged_note = "" if gr["converged"] else " -- NOT converged, still touches the border"
                 group_note = f" (group grew to {gr['group']})" if gr["group_grew"] else ""
-                self._correct_status_lbl.setText(
-                    f"Done — label {label_id} auto-grow corrected in {grow_mode_label}, "
-                    f"{gr['n_iterations']} attempt(s), final pad={gr['pad_used']}px{group_note}"
-                    f"{converged_note}.{sand_note} See report below."
-                )
+                if mode == "3d":
+                    n_grown = len(gr.get("slices_grown", {}))
+                    grow_note = f", {n_grown} slice(s) needed a bigger pad" if n_grown else ", every slice fit the base pad"
+                    self._correct_status_lbl.setText(
+                        f"Done — label {label_id} auto-grow corrected in 3D, "
+                        f"base pad={gr['pad_used']}px{grow_note}{group_note}"
+                        f"{converged_note}.{sand_note} See report below."
+                    )
+                else:
+                    self._correct_status_lbl.setText(
+                        f"Done — label {label_id} auto-grow corrected in {grow_mode_label}, "
+                        f"{gr['n_iterations']} attempt(s), final pad={gr['pad_used']}px{group_note}"
+                        f"{converged_note}.{sand_note} See report below."
+                    )
             elif mode == "2d":
                 self._correct_status_lbl.setText(
                     f"Done — label {label_id} regenerated on slice {z} "

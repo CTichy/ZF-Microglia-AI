@@ -22,15 +22,19 @@ near the target, that neighbor's own touches elsewhere are never looked
 at, since a large/sprawling label folded in this way could otherwise
 cascade the group into everything else it happens to touch.
 
-3D mode (grow_correct_label_3d) is now just a retry-on-touched-border
-loop around correct_label_from_intensity_3d() -- no separate neighbor-
-discovery/group-folding pass, unlike 2D. That's because
-correct_label_from_intensity_3d() itself already resolves any
+3D mode (grow_correct_label_3d) is now just a single, thin pass-
+through to correct_label_from_intensity_3d(auto_grow=True) -- no
+separate neighbor-discovery/group-folding pass, unlike 2D (that's
+because correct_label_from_intensity_3d() itself already resolves any
 genuinely adjacent label ENTIRELY ON ITS OWN, per slice, as part of its
-own walk (see its own docstring in _labeling.py) -- there's nothing
-left over here for a second pass to discover or fix. This orchestrator
-only widens `pad` when the label's own corrected shape keeps reaching
-the edge of its own local working area.
+own walk -- see its own docstring in _labeling.py), and no outer
+retry-the-whole-cell-at-a-bigger-pad loop either any more: growth is
+PER-SLICE, entirely internal to that function's own walk. A cell with
+one long branch on a single slice only ever regrows that one slice's
+own pad -- every other slice keeps its own already-correct result and
+its own (smaller) pad untouched, which is both cheaper and converges
+far more easily than redoing the whole cell whenever any one slice
+needs more room.
 """
 
 from __future__ import annotations
@@ -206,21 +210,31 @@ def grow_correct_label_3d(
     progress_cb=None,
 ) -> "tuple[np.ndarray, dict]":
     """
-    Auto-grows Correct Label's 3D whole-cell correction: retries with a
-    progressively bigger `pad` whenever the result touches the edge of
-    its own (per-slice-local) working area, exactly like the 2D
-    orchestrator above -- just wrapping correct_label_from_intensity_3d()
-    instead of correct_label_group_2d().
+    Auto-grows Correct Label's 3D whole-cell correction. UNLIKE the 2D
+    orchestrator above, this is now just a single, thin pass-through to
+    correct_label_from_intensity_3d(auto_grow=True) -- growth itself
+    happens entirely INSIDE that function's own per-slice walk, not
+    here. A cell with 40 well-behaved slices and one long branch on
+    slice 23 only ever regrows slice 23's own pad, at whatever size IT
+    needs -- every other slice keeps its own already-correct result and
+    its own (smaller) pad. This is both cheaper (no reason to reprocess
+    30+ already-fine slices just because one needed more room) and
+    converges far more easily (one slice needing extra room no longer
+    means the WHOLE cell has to be redone at that bigger pad before it
+    can be judged converged) -- see correct_label_from_intensity_3d()'s
+    own auto_grow docstring for the full rationale. An earlier version
+    of this function instead redid the entire cell from scratch with a
+    bigger GLOBAL pad on every retry, exactly like the 2D orchestrator
+    still does (2D genuinely needs that, since Correct Adjacent Labels'
+    2-label case has no "per slice" concept at all -- it only ever
+    touches the one slice the user is looking at).
 
     No separate neighbor-discovery/group-folding pass is needed here
-    any more (an earlier version had one, mirroring the 2D
+    either (an even earlier version had one, mirroring the 2D
     orchestrator's Pass 1 + Pass 2 split): correct_label_from_intensity_3d()
     itself now resolves any genuinely adjacent label ENTIRELY ON ITS
     OWN, per slice, as part of its own walk (see its own docstring) --
     there's nothing left over for a second pass to discover or fix.
-    This orchestrator's only remaining job is widening `pad` when the
-    label's own corrected shape keeps reaching the edge of its own
-    local working area.
 
     label_ids : a single int in every real use today (3D-mode "Correct
                 Label" only ever corrects one label; "Correct Adjacent
@@ -233,9 +247,12 @@ def grow_correct_label_3d(
     Returns (new_labels, report): group (the corrected label plus every
     OTHER label reported as foreign_nearby by the final attempt --
     informational, for sanding/reporting, not something this function
-    itself grows into), pad_used, n_iterations, converged, group_grew
-    (always False now -- kept for report-shape compatibility),
-    per_label_reports ({label_id: the final attempt's own
+    itself grows into), pad_used (the BASE pad -- growth is per-slice
+    now, see slices_grown), n_iterations (the CAP each slice may use,
+    not an actual global attempt count), converged, group_grew (always
+    False now -- kept for report-shape compatibility), slices_grown
+    ({z: final pad used}, only for slices that actually needed more
+    than the base pad), per_label_reports ({label_id: the underlying
     correct_label_from_intensity_3d() report}).
 
     Raises ValueError only if even the first attempt fails outright
@@ -250,46 +267,41 @@ def grow_correct_label_3d(
     else:
         label_id = int(label_ids)
 
-    pad = int(initial_pad)
-    converged = False
-    used_pad = pad
-    iteration = 0
-    new_labels = labels
-    rep: dict = {}
-
-    for iteration in range(1, max_iterations + 1):
-        used_pad = pad
-        _report(f"Attempt {iteration}: pad={used_pad}px, label={label_id}")
-        new_labels, rep = correct_label_from_intensity_3d(
-            labels, image, label_id, lo, pad=used_pad,
-            min_volume=min_volume, final_min_fraction=final_min_fraction,
-            # Deliberately the FIXED initial_pad, not the growing
-            # used_pad: this bound stops the walk's own Z-extension from
-            # leaking into a genuinely-touching-but-different structure
-            # and cascading along however far THAT signal extends --
-            # legitimate Z-growth for this label's own real signal is
-            # already handled by the walk's own copy-and-verify logic,
-            # no extra room needed for that. If z_extent_pad grew in
-            # lockstep with used_pad (needed for genuinely large Y/X
-            # padding), it would eventually relax enough to reach
-            # whatever it was meant to guard against.
-            z_extent_pad=initial_pad,
-            sigma=sigma,
-        )
-        if not rep["touched_border"]:
-            converged = True
-            break
-        pad += growth_step
+    _report(f"Correcting label={label_id}, base pad={initial_pad}px, per-slice auto-grow up to {max_iterations} attempt(s)...")
+    new_labels, rep = correct_label_from_intensity_3d(
+        labels, image, label_id, lo, pad=initial_pad,
+        min_volume=min_volume, final_min_fraction=final_min_fraction,
+        # Deliberately the FIXED initial_pad, not a growing value: this
+        # bound stops the walk's own Z-extension from leaking into a
+        # genuinely-touching-but-different structure and cascading
+        # along however far THAT signal extends -- legitimate Z-growth
+        # for this label's own real signal is already handled by the
+        # walk's own copy-and-verify logic, no extra room needed for
+        # that. If it grew in lockstep with the per-slice Y/X pad, it
+        # would eventually relax enough to reach whatever it was meant
+        # to guard against.
+        z_extent_pad=initial_pad,
+        sigma=sigma,
+        # Growth is now entirely INSIDE the walk, per slice -- see
+        # correct_label_from_intensity_3d()'s own auto_grow docstring.
+        # No outer retry loop needed here any more: a single call
+        # already lets each slice grow only as much as IT individually
+        # needs, instead of redoing the whole cell at a bigger pad
+        # every time any one slice touches its own edge.
+        auto_grow=True, growth_step=growth_step, max_iterations=max_iterations,
+    )
+    converged = not rep["touched_border"]
 
     group = sorted({label_id} | {i for ids in rep.get("foreign_nearby", {}).values() for i in ids})
 
     report = {
         "group": group,
-        "pad_used": used_pad,
-        "n_iterations": iteration,
+        "pad_used": initial_pad,  # the BASE pad -- growth is per-slice now, see slices_grown
+        "n_iterations": max_iterations,  # the CAP each slice may use, not an actual global count
         "converged": converged,
         "group_grew": False,
         "per_label_reports": {label_id: rep},
+        "slices_grown": rep.get("slices_grown", {}),
     }
     report["n_debris_removed_px"] = rep.get("n_debris_removed_px", 0)
     return new_labels, report
@@ -298,10 +310,27 @@ def grow_correct_label_3d(
 def format_grow_report(report: dict, mode: str) -> str:
     lines = []
     group = report["group"]
-    lines.append(
-        f"Auto-grow ({mode}): {report['n_iterations']} attempt(s), final pad={report['pad_used']}px, "
-        f"group={group}{' (grew from neighbor discovery)' if report['group_grew'] else ''}"
-    )
+    is_3d = mode.upper().startswith("3D")
+    if is_3d:
+        # Growth is per-slice in 3D now -- there's no single "final
+        # pad" or "attempt count" for the whole cell any more, just a
+        # base pad and a per-slice cap; see slices_grown below for what
+        # actually happened.
+        lines.append(
+            f"Auto-grow (3D, per-slice): base pad={report['pad_used']}px, "
+            f"up to {report['n_iterations']} attempt(s) per slice, group={group}"
+        )
+        slices_grown = report.get("slices_grown", {})
+        if slices_grown:
+            grown_txt = ", ".join(f"{z}: {p}px" for z, p in sorted(slices_grown.items()))
+            lines.append(f"  Slice(s) that needed a bigger pad: {grown_txt}")
+        else:
+            lines.append("  No slice needed more than the base pad.")
+    else:
+        lines.append(
+            f"Auto-grow ({mode}): {report['n_iterations']} attempt(s), final pad={report['pad_used']}px, "
+            f"group={group}{' (grew from neighbor discovery)' if report['group_grew'] else ''}"
+        )
     if report["converged"]:
         lines.append("  Converged -- no part of the result touches the padded region's own edge.")
     else:
@@ -314,9 +343,10 @@ def format_grow_report(report: dict, mode: str) -> str:
         # border_touching_slices (2D's own report has no per-slice
         # concept at all -- it only ever touches the ONE slice the
         # caller gave it, already known to whoever's reading this).
-        # Naming exactly which slice(s) are still cut off lets a user
-        # go correct those individually (Correct Label 2D on just that
-        # slice with a bigger pad, or by hand) instead of guessing.
+        # Naming exactly which slice(s) are still cut off (even after
+        # THEIR OWN per-slice growth was exhausted) lets a user go
+        # correct those individually (a bigger pad on just that slice
+        # via Correct Label 2D, or by hand) instead of guessing.
         still_touching = sorted({
             z for rep in report.get("per_label_reports", {}).values()
             for z in rep.get("border_touching_slices", [])

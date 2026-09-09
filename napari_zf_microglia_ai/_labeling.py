@@ -891,6 +891,9 @@ def correct_label_from_intensity_3d(
     z_extent_pad: "int | None" = None,
     sigma: float = 1.0,
     resolve_adjacent: bool = True,
+    auto_grow: bool = False,
+    growth_step: int = 15,
+    max_iterations: int = 5,
 ) -> "tuple[np.ndarray, dict]":
     """
     3D version of correct_label_from_intensity(): corrects the WHOLE
@@ -982,6 +985,27 @@ def correct_label_from_intensity_3d(
                           isn't "the same kind of thing" as a real cell
                           whose boundary needs resolving) and far more
                           expensive than simply excluding them.
+    auto_grow           : False (default) -- when True, any slice whose
+                          own result touches the edge of ITS OWN local
+                          working area retries with a bigger pad, for
+                          THAT SLICE ONLY, up to max_iterations times --
+                          growth_step/max_iterations same meaning as
+                          the widget's own Auto-grow fields. Growing is
+                          entirely LOCAL and per-slice, not a global
+                          "redo the whole cell with a bigger pad"
+                          retry: a cell with 40 well-behaved slices and
+                          one long branch on slice 23 alone only ever
+                          regrows slice 23, at whatever bigger pad IT
+                          needs -- every other slice keeps its own
+                          original, already-correct result and its own
+                          (smaller) pad, untouched. This also makes
+                          convergence far easier to reach: one slice
+                          needing a bigger pad no longer means EVERY
+                          slice must be redone at that same bigger pad
+                          before the whole cell can be judged converged.
+                          growth_step/max_iterations are ignored when
+                          auto_grow is False (every slice uses `pad`
+                          exactly once, unchanged prior behavior).
 
     Returns (new_labels, report). report is a dict:
         z_center            -- informative only (status-message
@@ -1008,13 +1032,23 @@ def correct_label_from_intensity_3d(
                                local working area, even where not
                                touching (exactly the set that decided
                                single-label vs. joint correction there)
-        border_touching_slices, touched_border -- did the label's own
+        border_touching_slices, touched_border -- does the label's own
                                corrected footprint reach the edge of
-                               ITS OWN local area on that slice (Y/X
-                               only -- never whether Z-growth stopped
-                               early against its own cap; see
-                               z_extent_pad below for why Z deliberately
-                               stays out of this signal)
+                               ITS OWN local area on that slice, AFTER
+                               auto_grow's own per-slice retries (if
+                               any) are exhausted -- i.e. these are the
+                               slices genuinely still cut off even at
+                               their own biggest attempted pad, worth a
+                               manual look (Y/X only -- never whether
+                               Z-growth stopped early against its own
+                               cap; see z_extent_pad below for why Z
+                               deliberately stays out of this signal)
+        slices_grown        -- {z: final pad used}, only for slices
+                               whose own final pad ended up bigger than
+                               the base `pad` -- i.e. where per-slice
+                               auto_grow actually kicked in. Empty
+                               unless auto_grow=True and at least one
+                               slice needed the extra room.
 
     z_extent_pad        : hard cap, in slices, on how far Z-growth may
                           ever extend beyond the label's own original
@@ -1076,26 +1110,32 @@ def correct_label_from_intensity_3d(
     slices_corrected: "list[int]" = []
     foreign_touching: "dict[int, list[int]]" = {}
     foreign_nearby: "dict[int, list[int]]" = {}
-    border_touching_slices: "list[int]" = []
+    border_touching_slices: "set[int]" = set()
+    pad_used_by_slice: "dict[int, int]" = {}
 
-    def _local_bbox(z: int) -> "tuple[int, int, int, int] | None":
+    def _local_bbox(z: int, use_pad: int) -> "tuple[int, int, int, int] | None":
         own = new_labels[z] == label_id
         if not own.any():
             return None
         ys, xs = np.nonzero(own)
-        y0 = max(int(ys.min()) - pad, 0)
-        y1 = min(int(ys.max()) + pad + 1, Y_dim)
-        x0 = max(int(xs.min()) - pad, 0)
-        x1 = min(int(xs.max()) + pad + 1, X_dim)
+        y0 = max(int(ys.min()) - use_pad, 0)
+        y1 = min(int(ys.max()) + use_pad + 1, Y_dim)
+        x0 = max(int(xs.min()) - use_pad, 0)
+        x1 = min(int(xs.max()) + use_pad + 1, X_dim)
         return y0, y1, x0, x1
 
-    def _correct_one_slice(z: int) -> bool:
-        """Correct label_id on slice z from its OWN local neighborhood,
-        mutating new_labels in place. Returns True if label_id ends up
-        with a non-empty footprint there afterward, False if the
-        correction found no real signal to support it there at all
-        (nothing written; the caller decides what that means)."""
-        bbox = _local_bbox(z)
+    def _correct_one_slice(z: int, use_pad: int) -> bool:
+        """One attempt at correcting label_id on slice z from its OWN
+        local neighborhood (sized from use_pad), mutating new_labels in
+        place. Returns True if label_id ends up with a non-empty
+        footprint there afterward, False if the correction found no
+        real signal to support it there at all (nothing written; the
+        caller decides what that means). Updates foreign_touching/
+        foreign_nearby/border_touching_slices for z to reflect THIS
+        attempt -- a later retry at a bigger pad simply overwrites/
+        clears the previous attempt's entries for the same z, so only
+        the final attempt's state survives into the report."""
+        bbox = _local_bbox(z, use_pad)
         if bbox is None:
             return False
         y0, y1, x0, x1 = bbox
@@ -1106,7 +1146,7 @@ def correct_label_from_intensity_3d(
         try:
             if not foreign_ids or not resolve_adjacent:
                 corrected, crop_existing, (cy0, cy1, cx0, cx1) = _intensity_correct_2d(
-                    new_labels[z], image[z], label_id, lo, pad
+                    new_labels[z], image[z], label_id, lo, use_pad
                 )
                 crop = new_labels[z, cy0:cy1, cx0:cx1]
                 crop[crop_existing] = 0
@@ -1114,7 +1154,7 @@ def correct_label_from_intensity_3d(
             else:
                 group_ids = [label_id] + foreign_ids
                 (cy0, cy1, cx0, cx1, crop_existing, finals, _info) = _correct_label_group_2d_core(
-                    new_labels, image, group_ids, z, lo, pad, sigma, focus_ids=[label_id],
+                    new_labels, image, group_ids, z, lo, use_pad, sigma, focus_ids=[label_id],
                 )
                 crop = new_labels[z, cy0:cy1, cx0:cx1]
                 for lid in group_ids:
@@ -1133,8 +1173,12 @@ def correct_label_from_intensity_3d(
         touching_ids = sorted(int(i) for i in np.unique(touching_here) if i not in (0, label_id))
         if touching_ids:
             foreign_touching[z] = touching_ids
+        else:
+            foreign_touching.pop(z, None)
         if foreign_ids:
             foreign_nearby[z] = foreign_ids
+        else:
+            foreign_nearby.pop(z, None)
 
         crop_own = own_now[y0:y1, x0:x1]
         touched = (
@@ -1144,8 +1188,29 @@ def correct_label_from_intensity_3d(
             or (x1 < X_dim and bool(crop_own[:, -1].any()))
         )
         if touched:
-            border_touching_slices.append(z)
+            border_touching_slices.add(z)
+        else:
+            border_touching_slices.discard(z)
+        pad_used_by_slice[z] = use_pad
         return True
+
+    def _correct_slice_with_growth(z: int) -> bool:
+        """Correct slice z, retrying with a bigger LOCAL pad -- just
+        for this one slice -- as long as auto_grow is on and this
+        slice's own result keeps touching the edge of its own working
+        area, up to max_iterations attempts. A slice that needs more
+        room (a long branch reaching further in Y/X, say) grows on its
+        own, without inflating every other slice's own pad too -- see
+        the auto_grow parameter's own docstring for why."""
+        use_pad = pad
+        ok = False
+        attempts = max_iterations if auto_grow else 1
+        for _attempt in range(attempts):
+            ok = _correct_one_slice(z, use_pad)
+            if not ok or not auto_grow or z not in border_touching_slices:
+                break
+            use_pad += growth_step
+        return ok
 
     def _copy_forced(src_z: int, dst_z: int) -> bool:
         """Paste label_id's CURRENT shape from src_z onto dst_z,
@@ -1185,7 +1250,7 @@ def correct_label_from_intensity_3d(
                 _copy_forced(z, z + 1)
             else:
                 _copy_forced(z + 1, z)
-        if _correct_one_slice(z):
+        if _correct_slice_with_growth(z):
             slices_corrected.append(z)
 
     if not slices_corrected:
@@ -1225,7 +1290,7 @@ def correct_label_from_intensity_3d(
             if not _copy_forced(z, z_next):
                 break  # nothing of the shape could even be copied here -- true edge
 
-            if not _correct_one_slice(z_next):
+            if not _correct_slice_with_growth(z_next):
                 new_labels[z_next][new_labels[z_next] == label_id] = 0  # undo -- no real signal here
                 break
 
@@ -1237,6 +1302,11 @@ def correct_label_from_intensity_3d(
         threshold = final_min_fraction * min_volume
         new_labels, n_debris_removed_px = remove_debris_for_label(new_labels, label_id, threshold)
 
+    # Slices whose own final pad ended up bigger than the base pad --
+    # i.e. where per-slice auto-grow actually kicked in. Empty unless
+    # auto_grow=True and at least one slice needed the extra room.
+    slices_grown = {z: p for z, p in pad_used_by_slice.items() if p != pad}
+
     report = {
         "z_center": z_center,
         "slices_corrected": sorted(slices_corrected),
@@ -1247,6 +1317,7 @@ def correct_label_from_intensity_3d(
         "foreign_nearby": foreign_nearby,
         "border_touching_slices": sorted(border_touching_slices),
         "touched_border": bool(border_touching_slices),
+        "slices_grown": dict(sorted(slices_grown.items())),
     }
     return new_labels.astype(np.int32), report
 
