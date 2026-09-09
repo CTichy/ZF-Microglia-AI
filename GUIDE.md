@@ -777,6 +777,24 @@ If [Soften label contours (sanding)](#soften-label-contours-sanding-after-any-la
 
 ---
 
+### Protect Skin as Label
+
+Turns everything OUTSIDE the brain mask into a real, ordinary label (ID **-1** by default) — so it's structurally protected by the exact same foreign-label exclusion every Correct Label / Correct Adjacent Labels / auto-grow / Cellpose-SAM auto-correct call already has, instead of relying on those tools' own intensity threshold happening to stay below skin's own signal everywhere. A real cell's own correction bleeding into skin residue — a genuine, recurring failure mode even with a correctly-scoped local working area, since skin can be just as bright as real signal — is exactly what this rules out structurally: skin becomes just another label nothing else is ever allowed to grow into, absorb, or jointly split against.
+
+**How it works:** one click does both steps. First, every background voxel outside the brain mask is bulk-filled with the skin label (never overwriting a real cell's own territory, never touching anything inside the brain mask). Then that label is immediately run through the same 3D per-slice correction engine [Correct Label](#correct-label) uses — trimming it down from "the whole outside-brain region" to just the real, signal-supported skin territory (everything at or above the signal layer's own contrast lower limit). The one difference from a normal 3D correction: skin never jointly re-derives a boundary against a real cell it happens to be touching — it only ever excludes it, exactly like any other foreign label, since skin borders essentially every cell in the fish and a joint watershed split against each one would be both wrong (skin isn't "the same kind of thing" as a cell whose boundary needs resolving) and needlessly expensive.
+
+**Signal layer** — the Image layer whose current contrast window sets the threshold, same convention as every other Correct Label tool.
+
+**Brain mask layer** — the Labels layer holding the brain mask (populated from any Labels layer in the viewer — typically `<stem>_brain_mask`, already created by a normal Tab 1 run).
+
+**Bbox padding (px)** — same meaning as elsewhere, though largely irrelevant here since skin's own local working area on any slice is already close to the whole slice.
+
+Click **Protect Skin as Label**. The status line reports the skin label's own final pixel count, and — if any real label ended up touching or sitting near skin anywhere in the fish — **which ones**, so you know exactly which cells sit closest to the brain edge and are worth a closer manual look (they're the ones most at risk of already having a pre-existing bleed from before this run, which protecting skin now doesn't retroactively undo on its own).
+
+**Remove Skin Label** — clears every voxel currently equal to the given label ID back to background, a plain bulk clear (not connected-component-restricted). The field is pre-filled with whatever ID the last "Protect Skin as Label" run used; use it whenever the skin label is no longer needed, e.g. right before Save Labels or Statistics if you don't want it in the final output.
+
+---
+
 ### Save Labels
 
 Opens a file-save dialog pre-filled with the output folder (see Section 10) and the current layer name as the filename. Choose a location and filename, then click Save.
@@ -1914,9 +1932,10 @@ Shown automatically based on active layer suffix — `_ExtRm` → Cellpose-SAM, 
 | Split σ | 1.0 | Smoothness for watershed split |
 | Min distance | 5 | Peak separation for split detection |
 | Join Labels | — | Merges Label B into Label A — the inverse of Split Label |
-| Correct Label | 2D mode | Regenerates a label's shape from the signal layer's live contrast window — 2D (current slice) or 3D (whole cell from centroid, walks outward, trims false-positive extension beyond real signal, auto debris cleanup, reports nearby/touching foreign labels) — optional auto-grow retries with a bigger pad if signal reaches the box edge, auto-folding in neighbors instead of encroaching |
+| Correct Label | 2D mode | Regenerates a label's shape from the signal layer's live contrast window — 2D (current slice) or 3D (whole cell, per-slice local areas, joint correction wherever a real neighbor is nearby, auto debris cleanup, reports nearby/touching foreign labels and any slice still touching its own local area's edge) — optional auto-grow retries with a bigger pad if signal reaches the edge, auto-folding in neighbors instead of encroaching |
 | Copy Label to Adjacent Slice | — | Copies a label's shape from the current slice onto the next/previous slice |
-| Correct Adjacent Labels | 2D only | Jointly corrects two touching labels on the current slice, cut placed by watershed seeded at each label's own existing footprint — same optional auto-grow as Correct Label, seeded with both labels |
+| Correct Adjacent Labels | 2D only | Jointly corrects two touching labels on the current slice (rectangle scoped to Label A alone), cut placed by watershed seeded at each label's own existing footprint — same optional auto-grow as Correct Label, seeded with both labels |
+| Protect Skin as Label | Brain mask layer | Fills everything outside the brain mask with a real, protected label (ID -1 by default), then trims it to real signal via the same 3D engine — so no other label can ever bleed into skin residue again. Reports which real labels end up touching/nearby skin, worth a closer look |
 
 ### Tab 3 — Statistics
 

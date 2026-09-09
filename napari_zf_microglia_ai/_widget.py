@@ -33,6 +33,7 @@ from ._labeling import (
     correct_adjacent_labels_2d,
     copy_label_to_adjacent_slice,
     sand_label,
+    seed_skin_label, remove_label,
 )
 from ._statistics import compute_stats
 from ._contrast_sweep import (
@@ -2393,22 +2394,26 @@ class ZFMicrogliaAIWidget(QWidget):
         dlt.addLayout(correct_mode_row)
 
         correct_mode_note = QLabel(
-            "  3D corrects the label's own centroid slice first, then "
-            "walks outward in +Z and -Z, each step seeded by the "
-            "PREVIOUS step's own corrected shape -- so it can grow into "
-            "a slice the original label never touched at all, not just "
-            "reshape slices that already carried it. Each direction "
-            "stops naturally the moment a step finds nothing to connect "
-            "to -- and beyond that point, any of this label's OWN "
-            "original pixels still remaining are TRIMMED (Cellpose-SAM "
-            "labeled something there that the recalibrated threshold no "
-            "longer supports as real signal), not left in place. "
+            "  3D is NOT a bounding box: it loops over 2D areas, one Z "
+            "slice at a time, each from its OWN local neighborhood -- "
+            "the label's own current footprint on that one slice, "
+            "padded. No other label nearby -> plain 2D correction "
+            "(same as 2D mode above); another label nearby -> the same "
+            "joint watershed split Correct Adjacent Labels uses, so the "
+            "local boundary against a genuinely adjacent cell is "
+            "properly re-derived too, not just excluded. The label's "
+            "own known Z range is corrected outright (each pair of "
+            "slices first swaps the bigger of the two footprints onto "
+            "the smaller one, so a single spuriously undersized slice "
+            "can't clip real signal); growth beyond that range copies "
+            "the current slice forward, verifying real signal supports "
+            "it before keeping it, stopping the moment it doesn't. "
             "Afterwards, a debris-cleanup pass (same golden-ratio floor "
             "as Cellpose-SAM's own final safety net) removes any small "
-            "disconnected leftover scoped to ONLY this label -- other "
-            "cells are never touched by either step. Reports which "
-            "slices any other label's pixels directly touch or sit "
-            "near, so a close call is never silently invisible."
+            "disconnected leftover scoped to ONLY this label. Reports "
+            "which slices any other label touches or sits near, and "
+            "which slices still touch the edge of their own local area, "
+            "so a close call is never silently invisible."
         )
         correct_mode_note.setWordWrap(True)
         correct_mode_note.setStyleSheet("color: #888; font-size: 10px;")
@@ -2631,6 +2636,73 @@ class ZFMicrogliaAIWidget(QWidget):
         self._adjcorr_status_lbl = QLabel("")
         self._adjcorr_status_lbl.setWordWrap(True)
         dlt.addWidget(self._adjcorr_status_lbl)
+
+        dlt.addWidget(_sep())
+
+        skin_note = QLabel(
+            "  Protect Skin as Label — turns everything OUTSIDE the brain "
+            "mask into a real, ordinary label (default ID -1), so it's "
+            "structurally protected by the same foreign-label exclusion "
+            "every Correct Label / Correct Adjacent Labels / auto-grow / "
+            "auto-correct call already has — a real cell's own correction "
+            "can no longer bleed into skin residue just because the "
+            "intensity threshold happens to be high enough there. Bulk-"
+            "fills outside-brain background first, then trims that label "
+            "down to real signal only (same 3D per-slice engine as "
+            "Correct Label, but never jointly splits against a real cell "
+            "it's touching — it only ever excludes it)."
+        )
+        skin_note.setWordWrap(True)
+        skin_note.setStyleSheet("color: #888; font-size: 10px;")
+        dlt.addWidget(skin_note)
+
+        skin_signal_row = QHBoxLayout()
+        skin_signal_row.addWidget(QLabel("Signal layer:"))
+        self._skin_signal_combo = QComboBox()
+        skin_signal_row.addWidget(self._skin_signal_combo)
+        dlt.addLayout(skin_signal_row)
+
+        skin_mask_row = QHBoxLayout()
+        skin_mask_row.addWidget(QLabel("Brain mask layer:"))
+        self._skin_mask_combo = QComboBox()
+        skin_mask_row.addWidget(self._skin_mask_combo)
+        dlt.addLayout(skin_mask_row)
+
+        skin_pad_row = QHBoxLayout()
+        skin_pad_row.addWidget(QLabel("Bbox padding (px):"))
+        self._skin_pad_spin = QSpinBox()
+        self._skin_pad_spin.setMinimum(0)
+        self._skin_pad_spin.setMaximum(500)
+        self._skin_pad_spin.setValue(15)
+        skin_pad_row.addWidget(self._skin_pad_spin)
+        dlt.addLayout(skin_pad_row)
+
+        self._skin_protect_btn = QPushButton("Protect Skin as Label")
+        self._skin_protect_btn.setStyleSheet("QPushButton { padding: 5px; }")
+        dlt.addWidget(self._skin_protect_btn)
+
+        self._skin_status_lbl = QLabel("")
+        self._skin_status_lbl.setWordWrap(True)
+        dlt.addWidget(self._skin_status_lbl)
+
+        self._skin_report_view = QTextEdit()
+        self._skin_report_view.setReadOnly(True)
+        self._skin_report_view.setStyleSheet("font-family: monospace; font-size: 9px;")
+        self._skin_report_view.setFixedHeight(80)
+        self._skin_report_view.hide()
+        dlt.addWidget(self._skin_report_view)
+
+        skin_remove_row = QHBoxLayout()
+        skin_remove_row.addWidget(QLabel("Skin label ID to remove:"))
+        self._skin_id_spin = QSpinBox()
+        self._skin_id_spin.setMinimum(-99999)
+        self._skin_id_spin.setMaximum(99999)
+        self._skin_id_spin.setValue(-1)
+        skin_remove_row.addWidget(self._skin_id_spin)
+        dlt.addLayout(skin_remove_row)
+
+        self._skin_remove_btn = QPushButton("Remove Skin Label")
+        dlt.addWidget(self._skin_remove_btn)
 
         dlt.addWidget(_sep())
 
@@ -4108,6 +4180,8 @@ class ZFMicrogliaAIWidget(QWidget):
         self._adjcorr_a_use_sel_btn.clicked.connect(self._on_use_selected_label_adjcorr_a)
         self._adjcorr_b_use_sel_btn.clicked.connect(self._on_use_selected_label_adjcorr_b)
         self._adjcorr_btn.clicked.connect(self._on_correct_adjacent_labels)
+        self._skin_protect_btn.clicked.connect(self._on_protect_skin)
+        self._skin_remove_btn.clicked.connect(self._on_remove_skin_label)
         self._save_labels_btn.clicked.connect(self._on_save_labels)
         self._stats_backend_combo.currentIndexChanged.connect(self._on_stats_backend_changed)
         self._stats_btn.clicked.connect(self._on_generate_stats)
@@ -5168,7 +5242,7 @@ class ZFMicrogliaAIWidget(QWidget):
         image_combos = (
             self._stats_image_combo, self._correct_signal_combo,
             self._split_signal_combo, self._ccal_signal_combo,
-            self._adjcorr_signal_combo,
+            self._adjcorr_signal_combo, self._skin_signal_combo,
         )
         cur_by_combo = {c: c.currentData() for c in image_combos}
         for c in image_combos:
@@ -5199,7 +5273,7 @@ class ZFMicrogliaAIWidget(QWidget):
         self._stats_shapes_combo.blockSignals(False)
 
         # Labels layers (Score Against GT)
-        for combo in (self._gtscore_pred_combo, self._gtscore_gt_combo, self._ccal_labels_combo):
+        for combo in (self._gtscore_pred_combo, self._gtscore_gt_combo, self._ccal_labels_combo, self._skin_mask_combo):
             cur = combo.currentData()
             combo.blockSignals(True)
             combo.clear()
@@ -7137,6 +7211,140 @@ class ZFMicrogliaAIWidget(QWidget):
 
         timer.timeout.connect(_poll)
         timer.start(200)
+
+    def _on_protect_skin(self):
+        lyr = self._active_labels_layer()
+        if lyr is None:
+            self._skin_status_lbl.setText("No Labels layer selected.")
+            return
+
+        signal_name = self._skin_signal_combo.currentData()
+        if not signal_name or signal_name not in self._viewer.layers:
+            self._skin_status_lbl.setText("ERROR: pick a signal layer first.")
+            return
+        signal_lyr = self._viewer.layers[signal_name]
+
+        mask_name = self._skin_mask_combo.currentData()
+        if not mask_name or mask_name not in self._viewer.layers:
+            self._skin_status_lbl.setText("ERROR: pick a brain mask layer first.")
+            return
+        mask_lyr = self._viewer.layers[mask_name]
+
+        labels = np.asarray(lyr.data)
+        image = np.asarray(signal_lyr.data)
+        brain_mask = np.asarray(mask_lyr.data).astype(bool)
+        if labels.shape != image.shape:
+            self._skin_status_lbl.setText(
+                f"ERROR: labels shape {labels.shape} != signal shape "
+                f"{image.shape} -- pick the matching signal layer."
+            )
+            return
+        if labels.shape != brain_mask.shape:
+            self._skin_status_lbl.setText(
+                f"ERROR: labels shape {labels.shape} != brain mask shape "
+                f"{brain_mask.shape} -- pick the matching brain mask layer."
+            )
+            return
+
+        pad = self._skin_pad_spin.value()
+        lo, _hi = (float(v) for v in signal_lyr.contrast_limits)
+
+        self._skin_protect_btn.setEnabled(False)
+        self._skin_report_view.hide()
+        self._skin_status_lbl.setText(
+            f"Protecting skin -- seeding outside brain mask, then trimming "
+            f"to real signal (>= {lo:.3g}) from '{signal_name}'…"
+        )
+
+        result = {}
+
+        def _worker():
+            try:
+                seeded, skin_id = seed_skin_label(labels, brain_mask)
+                new_labels, rep = correct_label_from_intensity_3d(
+                    seeded, image, skin_id, lo, pad=pad,
+                    min_volume=None, resolve_adjacent=False,
+                )
+                result["labels"] = new_labels
+                result["skin_id"] = skin_id
+                result["report"] = rep
+            except Exception as exc:
+                traceback.print_exc()
+                result["error"] = str(exc)
+
+        thread = threading.Thread(target=_worker, daemon=True)
+        thread.start()
+
+        timer = QTimer(self)
+
+        def _poll():
+            if thread.is_alive():
+                return
+            timer.stop()
+            timer.deleteLater()
+            if "error" in result:
+                self._skin_status_lbl.setText(f"ERROR: {result['error']}")
+                self._skin_protect_btn.setEnabled(True)
+                return
+            lyr.data[:] = result["labels"]  # in-place -- see Resort Labels above for why
+            lyr.refresh()
+            skin_id = result["skin_id"]
+            self._skin_id_spin.setValue(skin_id)
+            n_px = int((result["labels"] == skin_id).sum())
+
+            # Every real label the skin correction found touching or nearby,
+            # anywhere across the whole fish -- these are the cells sitting
+            # right at the brain edge, closest to skin residue, worth a
+            # closer manual look since they're the ones most at risk of a
+            # real (pre-existing) bleed the skin label doesn't retroactively
+            # fix on its own.
+            rep = result["report"]
+            touching_ids = sorted({i for ids in rep["foreign_touching"].values() for i in ids})
+            nearby_ids = sorted({i for ids in rep["foreign_nearby"].values() for i in ids})
+            report_lines = []
+            if touching_ids:
+                report_lines.append(f"Labels directly touching skin: {touching_ids}")
+            if nearby_ids:
+                report_lines.append(f"Labels nearby skin (within its own working area): {nearby_ids}")
+            if report_lines:
+                report_lines.append(
+                    "These sit closest to the brain edge -- worth a closer "
+                    "look with Correct Label to confirm they don't already "
+                    "have a real (pre-existing) bleed into skin from before "
+                    "this run."
+                )
+                self._skin_report_view.setPlainText("\n".join(report_lines))
+                self._skin_report_view.show()
+            else:
+                self._skin_report_view.hide()
+
+            touch_note = f" {len(touching_ids)} label(s) touching skin -- see report below." if touching_ids else ""
+            self._skin_status_lbl.setText(
+                f"Done — skin protected as label {skin_id}, {n_px:,} px "
+                f"(real signal only, outside the brain mask). Every other "
+                f"Correct Label / auto-correct call now treats it as "
+                f"ordinary protected territory. Use 'Remove Skin Label' "
+                f"below whenever you no longer need it.{touch_note}"
+            )
+            self._skin_protect_btn.setEnabled(True)
+
+        timer.timeout.connect(_poll)
+        timer.start(200)
+
+    def _on_remove_skin_label(self):
+        lyr = self._active_labels_layer()
+        if lyr is None:
+            self._skin_status_lbl.setText("No Labels layer selected.")
+            return
+        label_id = self._skin_id_spin.value()
+        labels = np.asarray(lyr.data)
+        new_labels, n_removed = remove_label(labels, label_id)
+        if n_removed == 0:
+            self._skin_status_lbl.setText(f"Label {label_id} not found -- nothing removed.")
+            return
+        lyr.data[:] = new_labels
+        lyr.refresh()
+        self._skin_status_lbl.setText(f"Done — removed label {label_id} ({n_removed:,} px).")
 
     def _on_save_labels(self):
         lyr = self._active_labels_layer()

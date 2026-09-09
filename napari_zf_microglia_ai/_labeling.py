@@ -890,6 +890,7 @@ def correct_label_from_intensity_3d(
     final_min_fraction: float = 0.618,
     z_extent_pad: "int | None" = None,
     sigma: float = 1.0,
+    resolve_adjacent: bool = True,
 ) -> "tuple[np.ndarray, dict]":
     """
     3D version of correct_label_from_intensity(): corrects the WHOLE
@@ -960,8 +961,27 @@ def correct_label_from_intensity_3d(
                           every other final-safety-net stage in this plugin
     sigma               : Gaussian smoothing before the watershed split,
                           only used on a slice where another label is
-                          actually nearby -- same meaning/default as
-                          Correct Adjacent Labels' own sigma
+                          actually nearby AND resolve_adjacent is True
+                          -- same meaning/default as Correct Adjacent
+                          Labels' own sigma
+    resolve_adjacent    : True (default) -- when another label is
+                          present in a slice's own local area, jointly
+                          re-derive the boundary against it (the normal
+                          single-cell behavior described above). False
+                          treats every other label purely as protected,
+                          excluded territory instead -- never grown
+                          into, never jointly split against, just
+                          skipped -- exactly the plain single-label
+                          engine's own behavior. Meant for correcting a
+                          label that's deliberately expected to be
+                          touching many other labels everywhere (e.g.
+                          seed_skin_label()'s sentinel skin label, which
+                          borders essentially every real cell in the
+                          fish) -- jointly watershed-splitting against
+                          every one of them would be both wrong (skin
+                          isn't "the same kind of thing" as a real cell
+                          whose boundary needs resolving) and far more
+                          expensive than simply excluding them.
 
     Returns (new_labels, report). report is a dict:
         z_center            -- informative only (status-message
@@ -1084,7 +1104,7 @@ def correct_label_from_intensity_3d(
             if i not in (0, label_id)
         )
         try:
-            if not foreign_ids:
+            if not foreign_ids or not resolve_adjacent:
                 corrected, crop_existing, (cy0, cy1, cx0, cx1) = _intensity_correct_2d(
                     new_labels[z], image[z], label_id, lo, pad
                 )
@@ -2061,6 +2081,101 @@ def copy_label_to_adjacent_slice(
     new_dst[new_dst == label_id] = 0  # clear this label's own old footprint on the target slice
     new_dst[paint_mask] = label_id
     return new_labels, n_excluded_px
+
+
+def seed_skin_label(
+    labels: np.ndarray,
+    brain_mask: np.ndarray,
+    skin_label_id: int = -1,
+) -> "tuple[np.ndarray, int]":
+    """
+    Bulk-fills every BACKGROUND voxel (labels == 0) OUTSIDE the brain
+    mask with a new sentinel label, skin_label_id -- turning "skin"
+    (everything the brain mask didn't keep) into a real, ordinary
+    label that every other Correct Label / Correct Adjacent Labels /
+    auto-grow / auto-correct call already protects against by
+    construction (foreign-label exclusion), instead of relying on
+    those tools' own intensity threshold happening to stay below
+    skin's own signal everywhere -- which it doesn't always, and a
+    real cell's own correction bleeding into skin residue is exactly
+    the failure this exists to structurally rule out.
+
+    Never overwrites an existing real label's own territory (only
+    fills background voxels) and never touches anything INSIDE the
+    brain mask, labeled or not.
+
+    Defaults to -1, not max(labels)+1: a fixed sentinel below zero
+    rather than a moving target that depends on however many real
+    cells happen to exist right now. Every place elsewhere in this
+    plugin that enumerates "real" labels already does so via
+    `present[present > 0]` (or an equivalent positive-only filter) --
+    -1 is automatically excluded from all of those without any special
+    casing, so labels 1..N keep meaning exactly what they always have.
+    The foreign-exclusion checks that actually matter for protection
+    (`labels != 0` and `labels != label_id`) don't care about sign at
+    all, so -1 is excluded from another label's candidate signal just
+    as reliably as any positive ID would be.
+
+    This is only a bulk SEED -- it fills the WHOLE outside-brain
+    region unconditionally, including empty background far from any
+    real tissue. Follow up with correct_label_from_intensity_3d() on
+    the returned skin_label_id (same as any other label, but pass
+    resolve_adjacent=False -- see that parameter's own docstring for
+    why) to trim it down to just the real, signal-supported skin
+    territory.
+
+    labels, brain_mask : (Z, Y, X) arrays, same shape. brain_mask is
+                          boolean-like (nonzero = brain, kept).
+    skin_label_id       : -1 by default. Pass a different value only
+                          if -1 is already in use for something else;
+                          it must not be 0 or already present in `labels`.
+
+    Returns (new_labels, skin_label_id).
+
+    Raises ValueError if brain_mask covers the entire volume (nothing
+    outside it to protect), if labels/brain_mask shapes don't match,
+    or if skin_label_id is 0 or already an existing label.
+    """
+    if labels.shape != brain_mask.shape:
+        raise ValueError(f"labels shape {labels.shape} != brain_mask shape {brain_mask.shape}")
+
+    outside_brain = ~brain_mask.astype(bool)
+    if not np.any(outside_brain):
+        raise ValueError("brain mask covers the entire volume -- nothing outside it to protect as skin")
+
+    if skin_label_id == 0:
+        raise ValueError("skin_label_id must not be 0 (that's background)")
+    if np.any(labels == skin_label_id):
+        raise ValueError(
+            f"skin_label_id {skin_label_id} is already an existing label in "
+            f"this volume -- pick a different value"
+        )
+
+    new_labels = labels.copy()
+    fill_mask = outside_brain & (new_labels == 0)
+    new_labels[fill_mask] = skin_label_id
+    return new_labels.astype(np.int32), skin_label_id
+
+
+def remove_label(labels: np.ndarray, label_id: int) -> "tuple[np.ndarray, int]":
+    """
+    Clears every voxel currently equal to label_id back to background
+    (0) -- a plain bulk clear, NOT connected-component-restricted (the
+    label doesn't need to be one contiguous blob for this to remove it
+    entirely, unlike remove_debris_for_label()'s size filter). Used to
+    remove the sentinel skin label (seed_skin_label()) once it's no
+    longer needed, but works on any label.
+
+    Returns (new_labels, n_removed_px) -- (labels.copy(), 0) if
+    label_id isn't present at all.
+    """
+    mask = labels == label_id
+    n = int(mask.sum())
+    if n == 0:
+        return labels.copy(), 0
+    new_labels = labels.copy()
+    new_labels[mask] = 0
+    return new_labels.astype(np.int32), n
 
 
 def create_labels(
