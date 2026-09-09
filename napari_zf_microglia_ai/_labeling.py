@@ -894,6 +894,8 @@ def correct_label_from_intensity_3d(
     auto_grow: bool = False,
     growth_step: int = 15,
     max_iterations: int = 5,
+    until_stable: bool = False,
+    max_stability_passes: int = 10,
 ) -> "tuple[np.ndarray, dict]":
     """
     3D version of correct_label_from_intensity(): corrects the WHOLE
@@ -917,15 +919,24 @@ def correct_label_from_intensity_3d(
       an immovable wall the way plain foreign-exclusion alone would.
 
     The label's own ORIGINAL Z range [zmin, zmax] is corrected this way
-    outright (the label already exists on every one of those slices).
-    Growth beyond that range works by COPYING the current slice's own
-    just-corrected footprint onto the next Z first (foreign-protected,
-    same principle as Copy Label to Adjacent Slice), then running the
-    exact same local-area correction there; if that correction finds no
-    real signal to support the copied position at all, the copy is
-    undone and growth in that direction stops -- the true edge has been
-    found. A hard cap, z_extent_pad, still bounds how far this can ever
-    extend regardless (see its own docstring below).
+    outright (the label already exists on every one of those slices) --
+    but NOT in plain Z order. Slices with no foreign label anywhere
+    nearby (the safely-isolated "core" of the cell) are corrected
+    first; slices actually touching or near another label (a real
+    neighbor, or a Protect-Skin-as-Label sentinel) are corrected LAST,
+    in order of increasing proximity to that contact -- the core
+    settles first and completely, so the genuinely contested boundary
+    has a fully-formed interior to anchor against by the time it's
+    resolved, instead of settling into an arbitrary, order-dependent
+    shape before the rest of the cell is even known. Growth beyond the
+    original range works by COPYING the current slice's own just-
+    corrected footprint onto the next Z first (foreign-protected, same
+    principle as Copy Label to Adjacent Slice), then running the exact
+    same local-area correction there; if that correction finds no real
+    signal to support the copied position at all, the copy is undone
+    and growth in that direction stops -- the true edge has been found.
+    A hard cap, z_extent_pad, still bounds how far this can ever extend
+    regardless (see its own docstring below).
 
     (An earlier version instead sized ONE Y/X window from the label's
     OWN ENTIRE 3D extent and applied that SAME fixed window to every Z
@@ -1006,6 +1017,42 @@ def correct_label_from_intensity_3d(
                           growth_step/max_iterations are ignored when
                           auto_grow is False (every slice uses `pad`
                           exactly once, unchanged prior behavior).
+    until_stable        : False (default) -- a SEPARATE, independent
+                          switch from auto_grow: growing decides how
+                          much ROOM one attempt gets; this decides
+                          whether to RE-RUN a slice's correction
+                          repeatedly. A slice with a genuinely adjacent
+                          label doesn't just get its own shape
+                          corrected -- the joint watershed split also
+                          updates the NEIGHBOR's boundary there, seeded
+                          from each label's CURRENT shape. Re-running
+                          that same slice again, now that the neighbor
+                          (and this label) both hold their just-updated
+                          shapes, re-seeds the watershed from a
+                          slightly different marker than before, which
+                          can nudge the split a little closer to a
+                          mutually-consistent position each time --
+                          repeated enough, this converges toward a
+                          genuine fixed point where re-running the
+                          slice produces the identical result again.
+                          When True, EACH slice (independently, exactly
+                          like auto_grow above) keeps re-correcting
+                          itself -- with its own auto_grow retries
+                          still applying on every one of those attempts
+                          if auto_grow is also True -- until ITS OWN
+                          footprint on that one slice matches what the
+                          PREVIOUS attempt on that same slice produced,
+                          or max_stability_passes is reached, whichever
+                          comes first. A slice with no adjacent label at
+                          all still needs a minimum of 2 attempts to
+                          CONFIRM nothing is changing (there's no
+                          baseline to compare against on the first
+                          attempt) -- cheap, and the only way to be sure
+                          without assuming. False runs exactly one
+                          attempt per slice, unchanged prior behavior.
+    max_stability_passes : hard per-slice cap on until_stable's re-runs
+                          (default 10), so a slice can never loop
+                          forever. Ignored when until_stable is False.
 
     Returns (new_labels, report). report is a dict:
         z_center            -- informative only (status-message
@@ -1049,6 +1096,14 @@ def correct_label_from_intensity_3d(
                                auto_grow actually kicked in. Empty
                                unless auto_grow=True and at least one
                                slice needed the extra room.
+        slices_stability_passes -- {z: n passes}, only for slices that
+                               took MORE than 1 pass to stop changing
+                               -- i.e. where per-slice until_stable
+                               actually kept re-running. Empty unless
+                               until_stable=True.
+        stable              -- True unless at least one slice hit
+                               max_stability_passes still changing.
+                               Always True when until_stable=False.
 
     z_extent_pad        : hard cap, in slices, on how far Z-growth may
                           ever extend beyond the label's own original
@@ -1112,6 +1167,8 @@ def correct_label_from_intensity_3d(
     foreign_nearby: "dict[int, list[int]]" = {}
     border_touching_slices: "set[int]" = set()
     pad_used_by_slice: "dict[int, int]" = {}
+    slices_stability_passes: "dict[int, int]" = {}
+    slices_unstable: "set[int]" = set()
 
     def _local_bbox(z: int, use_pad: int) -> "tuple[int, int, int, int] | None":
         own = new_labels[z] == label_id
@@ -1212,6 +1269,40 @@ def correct_label_from_intensity_3d(
             use_pad += growth_step
         return ok
 
+    def _correct_slice_full(z: int) -> bool:
+        """Correct slice z, wrapping _correct_slice_with_growth() (per-
+        slice auto_grow, above) with a further per-slice STABILITY
+        loop: if until_stable is on, keep re-running THIS SAME SLICE --
+        each attempt re-seeded from the previous attempt's own result
+        on this slice, including whatever a joint correction just did
+        to a genuinely adjacent label there too -- until this slice's
+        own footprint matches what the immediately preceding attempt on
+        this slice produced, or max_stability_passes is hit. Entirely
+        local to z: a neighboring slice settling slowly never causes
+        THIS slice to be redone, and vice versa -- see the until_stable
+        parameter's own docstring for the full rationale."""
+        if not until_stable:
+            return _correct_slice_with_growth(z)
+        prev_mask_here = None
+        ok = False
+        for sp in range(1, max_stability_passes + 1):
+            ok = _correct_slice_with_growth(z)
+            if not ok:
+                return False
+            cur_mask_here = new_labels[z] == label_id
+            if prev_mask_here is not None and np.array_equal(cur_mask_here, prev_mask_here):
+                if sp > 1:
+                    slices_stability_passes[z] = sp
+                slices_unstable.discard(z)
+                return True
+            prev_mask_here = cur_mask_here
+        # exhausted max_stability_passes without two consecutive
+        # attempts agreeing -- still changing, report it rather than
+        # silently keeping whatever the last attempt happened to produce
+        slices_stability_passes[z] = max_stability_passes
+        slices_unstable.add(z)
+        return True
+
     def _copy_forced(src_z: int, dst_z: int) -> bool:
         """Paste label_id's CURRENT shape from src_z onto dst_z,
         foreign-protected. Returns True if anything was actually
@@ -1242,28 +1333,65 @@ def correct_label_from_intensity_3d(
             return 0
         return int((ys.max() - ys.min() + 1) * (xs.max() - xs.min() + 1))
 
-    # 1. The label's own known original Z range -- corrected outright,
-    #    slice by slice, each from its own freshly-derived local area
-    #    (see the docstring above for why NOT one shared window). Before
-    #    correcting each slice (except the last), whichever of it and
-    #    its immediate next neighbor has the SMALLER bounding-box area
-    #    first inherits the bigger one's shape (foreign-protected) -- a
-    #    single spuriously undersized original label on one slice (raw
-    #    Cellpose-SAM prediction noise, not necessarily a real taper)
-    #    can otherwise size that slice's own local working window too
-    #    tightly, clipping real signal a properly-sized window would
-    #    have caught. This only ever widens the WINDOW the correction
-    #    looks within -- what actually gets painted still comes purely
-    #    from the real signal threshold there, so a genuinely tapering
-    #    slice still comes out correctly smaller; only the risk of a
-    #    too-small window is removed, not the correction's own honesty.
+    # 1a. Propagate the bigger of each consecutive pair's bounding-box
+    #     area first, as a single SEQUENTIAL sweep over the whole known
+    #     range, before any actual correction runs -- see _bbox_area()'s
+    #     own docstring for why area (not voxel count), and the note
+    #     below for why this stays sequential even though the actual
+    #     correction pass (1b) no longer is. A single spuriously
+    #     undersized original label on one slice (raw Cellpose-SAM
+    #     prediction noise, not necessarily a real taper) can otherwise
+    #     size that slice's own local working window too tightly,
+    #     clipping real signal a properly-sized window would have
+    #     caught. This only ever widens the WINDOW the correction looks
+    #     within -- what actually gets painted still comes purely from
+    #     the real signal threshold there, so a genuinely tapering slice
+    #     still comes out correctly smaller; only the risk of a
+    #     too-small window is removed, not the correction's own honesty.
+    for z in range(z_orig_min, z_orig_max):
+        if _bbox_area(z) > _bbox_area(z + 1):
+            _copy_forced(z, z + 1)
+        else:
+            _copy_forced(z + 1, z)
+
+    # 1b. Correct every slice in the known range -- but NOT in plain Z
+    #     order. A lightweight lookahead first finds which slices are
+    #     already near ANY foreign label (before anything is corrected,
+    #     using the same local-bbox neighborhood _correct_one_slice()
+    #     itself would look at); every OTHER slice is then corrected in
+    #     order of DECREASING distance from the nearest such slice --
+    #     i.e. the safely-isolated "core" of the cell settles first and
+    #     completely, and only the genuinely contested boundary (right
+    #     where a real neighbor or Protect-Skin-as-Label's sentinel
+    #     label is actually touching) is corrected last, once it has a
+    #     fully-settled interior to anchor against instead of one that's
+    #     still mid-correction itself. Without this, a fixed min->max
+    #     walk order means the FIRST slice ever corrected could be one
+    #     sitting right against skin, settling its own joint watershed
+    #     boundary before the rest of the cell's own true shape is even
+    #     known yet -- a real risk of never stabilizing cleanly, or
+    #     settling into an order-dependent boundary that isn't actually
+    #     the best one, rather than a genuinely converged result.
+    foreign_contact_zs: "set[int]" = set()
     for z in range(z_orig_min, z_orig_max + 1):
-        if z < z_orig_max:
-            if _bbox_area(z) > _bbox_area(z + 1):
-                _copy_forced(z, z + 1)
-            else:
-                _copy_forced(z + 1, z)
-        if _correct_slice_with_growth(z):
+        bbox = _local_bbox(z, pad)
+        if bbox is None:
+            continue
+        y0, y1, x0, x1 = bbox
+        crop_lbls = new_labels[z, y0:y1, x0:x1]
+        if np.any((crop_lbls != 0) & (crop_lbls != label_id)):
+            foreign_contact_zs.add(z)
+
+    all_zs = list(range(z_orig_min, z_orig_max + 1))
+    if foreign_contact_zs:
+        def _dist_to_contact(z: int) -> int:
+            return min(abs(z - fz) for fz in foreign_contact_zs)
+        order = sorted(all_zs, key=lambda z: (-_dist_to_contact(z), z))
+    else:
+        order = all_zs
+
+    for z in order:
+        if _correct_slice_full(z):
             slices_corrected.append(z)
 
     if not slices_corrected:
@@ -1303,7 +1431,7 @@ def correct_label_from_intensity_3d(
             if not _copy_forced(z, z_next):
                 break  # nothing of the shape could even be copied here -- true edge
 
-            if not _correct_slice_with_growth(z_next):
+            if not _correct_slice_full(z_next):
                 new_labels[z_next][new_labels[z_next] == label_id] = 0  # undo -- no real signal here
                 break
 
@@ -1331,6 +1459,8 @@ def correct_label_from_intensity_3d(
         "border_touching_slices": sorted(border_touching_slices),
         "touched_border": bool(border_touching_slices),
         "slices_grown": dict(sorted(slices_grown.items())),
+        "slices_stability_passes": dict(sorted(slices_stability_passes.items())),
+        "stable": not slices_unstable,
     }
     return new_labels.astype(np.int32), report
 

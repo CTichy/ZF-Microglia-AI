@@ -208,6 +208,9 @@ def grow_correct_label_3d(
     min_volume: "int | None" = None,
     final_min_fraction: float = 0.618,
     progress_cb=None,
+    until_stable: bool = False,
+    max_stability_passes: int = 10,
+    auto_grow: bool = True,
 ) -> "tuple[np.ndarray, dict]":
     """
     Auto-grows Correct Label's 3D whole-cell correction. UNLIKE the 2D
@@ -236,6 +239,27 @@ def grow_correct_label_3d(
     OWN, per slice, as part of its own walk (see its own docstring) --
     there's nothing left over for a second pass to discover or fix.
 
+    until_stable, max_stability_passes: forwarded straight through to
+    correct_label_from_intensity_3d()'s own PER-SLICE stability loop --
+    see its own until_stable docstring for the full mechanism (the
+    same "keep re-seeding from this slice's own latest result until it
+    stops changing" idea auto_grow already uses for padding, just for
+    settling a boundary against a genuinely adjacent label instead).
+    An earlier version of this ran the stability loop HERE instead,
+    redoing the ENTIRE cell every pass if even one slice's shape had
+    changed -- moved down into the per-slice engine for the exact same
+    reason auto_grow's own whole-cell retry loop was removed from here
+    earlier: a cell with 40 stable slices and 2-3 still settling near a
+    neighbor only needs those 2-3 re-run, not all 40, every pass.
+
+    auto_grow : True by default (unchanged prior behavior) -- passed
+                straight through to each pass's own
+                correct_label_from_intensity_3d() call. Independent of
+                until_stable: a caller can ask for stability passes
+                with per-slice growth off (auto_grow=False), or growth
+                without stability passes (the original default), or
+                both together.
+
     label_ids : a single int in every real use today (3D-mode "Correct
                 Label" only ever corrects one label; "Correct Adjacent
                 Labels" is 2D-only). Accepted as int | list[int] for
@@ -252,7 +276,12 @@ def grow_correct_label_3d(
     not an actual global attempt count), converged, group_grew (always
     False now -- kept for report-shape compatibility), slices_grown
     ({z: final pad used}, only for slices that actually needed more
-    than the base pad), per_label_reports ({label_id: the underlying
+    than the base pad), slices_stability_passes ({z: n passes it took
+    to settle}, only present for slices that needed more than 1 -- see
+    correct_label_from_intensity_3d()'s own until_stable docstring),
+    stable (True unless at least one slice hit max_stability_passes
+    still changing -- always True when until_stable is False),
+    per_label_reports ({label_id: the underlying
     correct_label_from_intensity_3d() report}).
 
     Raises ValueError only if even the first attempt fails outright
@@ -267,7 +296,12 @@ def grow_correct_label_3d(
     else:
         label_id = int(label_ids)
 
-    _report(f"Correcting label={label_id}, base pad={initial_pad}px, per-slice auto-grow up to {max_iterations} attempt(s)...")
+    _report(
+        f"Correcting label={label_id}, base pad={initial_pad}px"
+        + (f", per-slice auto-grow up to {max_iterations} attempt(s)" if auto_grow else "")
+        + (f", per-slice stability up to {max_stability_passes} pass(es)" if until_stable else "")
+        + "..."
+    )
     new_labels, rep = correct_label_from_intensity_3d(
         labels, image, label_id, lo, pad=initial_pad,
         min_volume=min_volume, final_min_fraction=final_min_fraction,
@@ -282,13 +316,15 @@ def grow_correct_label_3d(
         # to guard against.
         z_extent_pad=initial_pad,
         sigma=sigma,
-        # Growth is now entirely INSIDE the walk, per slice -- see
-        # correct_label_from_intensity_3d()'s own auto_grow docstring.
-        # No outer retry loop needed here any more: a single call
-        # already lets each slice grow only as much as IT individually
-        # needs, instead of redoing the whole cell at a bigger pad
-        # every time any one slice touches its own edge.
-        auto_grow=True, growth_step=growth_step, max_iterations=max_iterations,
+        # Both growth and stability are entirely INSIDE the walk now,
+        # per slice -- see correct_label_from_intensity_3d()'s own
+        # auto_grow/until_stable docstrings. No outer retry loop needed
+        # here at all any more: a single call already lets each slice
+        # grow and/or stabilize only as much as IT individually needs,
+        # instead of redoing the whole cell every time any one slice
+        # needs more room or its own boundary is still settling.
+        auto_grow=auto_grow, growth_step=growth_step, max_iterations=max_iterations,
+        until_stable=until_stable, max_stability_passes=max_stability_passes,
     )
     converged = not rep["touched_border"]
 
@@ -302,6 +338,8 @@ def grow_correct_label_3d(
         "group_grew": False,
         "per_label_reports": {label_id: rep},
         "slices_grown": rep.get("slices_grown", {}),
+        "slices_stability_passes": rep.get("slices_stability_passes", {}),
+        "stable": rep.get("stable", True),
     }
     report["n_debris_removed_px"] = rep.get("n_debris_removed_px", 0)
     return new_labels, report
@@ -326,6 +364,15 @@ def format_grow_report(report: dict, mode: str) -> str:
             lines.append(f"  Slice(s) that needed a bigger pad: {grown_txt}")
         else:
             lines.append("  No slice needed more than the base pad.")
+        slices_stability = report.get("slices_stability_passes", {})
+        if slices_stability:
+            stab_txt = ", ".join(f"{z}: {p} pass(es)" for z, p in sorted(slices_stability.items()))
+            lines.append(f"  Slice(s) that took more than one pass to settle: {stab_txt}")
+        if not report.get("stable", True):
+            lines.append(
+                "  STILL CHANGING -- at least one slice hit the stability-pass "
+                "cap without settling; a larger cap may let it finish converging."
+            )
     else:
         lines.append(
             f"Auto-grow ({mode}): {report['n_iterations']} attempt(s), final pad={report['pad_used']}px, "

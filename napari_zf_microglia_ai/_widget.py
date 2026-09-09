@@ -2449,15 +2449,17 @@ class ZFMicrogliaAIWidget(QWidget):
         self._correct_grow_cb = QCheckBox("Auto-grow until signal clears the border")
         dlt.addWidget(self._correct_grow_cb)
         correct_grow_note = QLabel(
-            "  Retries with a bigger padded box whenever the corrected label's own "
-            "edge touches the box's border, to catch real signal a too-small pad "
-            "would otherwise cut off. If growth starts overlapping a neighboring "
-            "label, that neighbor is automatically folded into a joint correction "
-            "instead of being encroached on -- 3D mode does this with a real 3D "
-            "group correction (independent-per-label pass, then a joint "
-            "re-derivation wherever the group ends up touching), not just "
-            "per-slice. If it still touches the border after the max iterations "
-            "below, it stops and tells you rather than growing forever."
+            "  Retries with a bigger padding whenever the corrected label's own "
+            "edge touches the edge of its own working area, to catch real signal "
+            "too small a pad would otherwise cut off. In 3D mode this grows PER "
+            "SLICE, not the whole cell at once -- only the slice(s) that actually "
+            "need more room regrow, at whatever pad each one individually needs; "
+            "every other slice keeps its own already-correct result untouched. "
+            "In 2D mode, if growth starts overlapping a neighboring label, that "
+            "neighbor is automatically folded into a joint correction instead of "
+            "being encroached on. If it's still touching the edge after the max "
+            "iterations below, it stops and tells you (naming exactly which "
+            "slice(s), in 3D) rather than growing forever."
         )
         correct_grow_note.setWordWrap(True)
         correct_grow_note.setStyleSheet("color: #888; font-size: 10px;")
@@ -2480,6 +2482,32 @@ class ZFMicrogliaAIWidget(QWidget):
         self._correct_maxiter_spin.setValue(5)
         correct_maxiter_row.addWidget(self._correct_maxiter_spin)
         dlt.addLayout(correct_maxiter_row)
+
+        self._correct_stable_cb = QCheckBox("Keep re-running until the shape stabilizes (3D only)")
+        dlt.addWidget(self._correct_stable_cb)
+        correct_stable_note = QLabel(
+            "  Independent of auto-grow above. Each 3D correction doesn't just "
+            "reshape this label -- wherever it finds a genuinely adjacent label "
+            "(e.g. a Protect-Skin-as-Label neighbor), the joint watershed split "
+            "also updates THAT label's own boundary, seeded from each label's "
+            "CURRENT shape. Feeding one pass's result back in as the next pass's "
+            "starting point lets the boundary settle a little closer each time, "
+            "instead of stopping after just the first (possibly still-settling) "
+            "placement. Re-runs until this label's own shape is IDENTICAL to the "
+            "previous pass, or the pass cap below is hit."
+        )
+        correct_stable_note.setWordWrap(True)
+        correct_stable_note.setStyleSheet("color: #888; font-size: 10px;")
+        dlt.addWidget(correct_stable_note)
+
+        correct_maxstable_row = QHBoxLayout()
+        correct_maxstable_row.addWidget(QLabel("Max stability passes:"))
+        self._correct_maxstable_spin = QSpinBox()
+        self._correct_maxstable_spin.setMinimum(2)
+        self._correct_maxstable_spin.setMaximum(100)
+        self._correct_maxstable_spin.setValue(10)
+        correct_maxstable_row.addWidget(self._correct_maxstable_spin)
+        dlt.addLayout(correct_maxstable_row)
 
         self._correct_btn = QPushButton("Correct Label")
         self._correct_btn.setStyleSheet("QPushButton { padding: 5px; }")
@@ -6815,6 +6843,8 @@ class ZFMicrogliaAIWidget(QWidget):
         grow_on = self._correct_grow_cb.isChecked()
         growth_step = self._correct_growstep_spin.value()
         max_iterations = self._correct_maxiter_spin.value()
+        until_stable = self._correct_stable_cb.isChecked()
+        max_stability_passes = self._correct_maxstable_spin.value()
 
         def _sand_group(new_labels, group_ids):
             """Sand every label in group_ids (1+), skipping already-
@@ -6873,11 +6903,17 @@ class ZFMicrogliaAIWidget(QWidget):
 
             def _worker():
                 try:
-                    if grow_on:
+                    # Auto-grow and "until stable" are independent switches --
+                    # route through the orchestrator whenever EITHER is on,
+                    # so a user can ask for stability passes without also
+                    # turning on per-slice growth (or vice versa).
+                    if grow_on or until_stable:
                         new_labels, grow_report = grow_correct_label_3d(
                             labels, image, label_id, lo,
                             initial_pad=pad, growth_step=growth_step, max_iterations=max_iterations,
                             min_volume=min_volume, final_min_fraction=final_min_fraction,
+                            auto_grow=grow_on, until_stable=until_stable,
+                            max_stability_passes=max_stability_passes,
                         )
                         result["grow_report"] = grow_report
                         if sanding_on:
@@ -6935,11 +6971,20 @@ class ZFMicrogliaAIWidget(QWidget):
                 converged_note = "" if gr["converged"] else " -- NOT converged, still touches the border"
                 group_note = f" (group grew to {gr['group']})" if gr["group_grew"] else ""
                 if mode == "3d":
-                    n_grown = len(gr.get("slices_grown", {}))
-                    grow_note = f", {n_grown} slice(s) needed a bigger pad" if n_grown else ", every slice fit the base pad"
+                    grow_note = ""
+                    if grow_on:
+                        n_grown = len(gr.get("slices_grown", {}))
+                        grow_note = f", {n_grown} slice(s) needed a bigger pad" if n_grown else ", every slice fit the base pad"
+                    what = "auto-grow corrected" if grow_on else "corrected"
+                    stable_note = ""
+                    if until_stable:
+                        n_settling = len(gr.get("slices_stability_passes", {}))
+                        stable_note = f", {n_settling} slice(s) took extra passes to settle" if n_settling else ", every slice settled in 1 pass"
+                        if not gr.get("stable", True):
+                            stable_note += " (still changing)"
                     self._correct_status_lbl.setText(
-                        f"Done — label {label_id} auto-grow corrected in 3D, "
-                        f"base pad={gr['pad_used']}px{grow_note}{group_note}"
+                        f"Done — label {label_id} {what} in 3D, "
+                        f"base pad={gr['pad_used']}px{grow_note}{stable_note}{group_note}"
                         f"{converged_note}.{sand_note} See report below."
                     )
                 else:
