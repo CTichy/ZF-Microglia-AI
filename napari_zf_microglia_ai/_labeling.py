@@ -1127,10 +1127,44 @@ def correct_label_from_intensity_3d(
             border_touching_slices.append(z)
         return True
 
+    def _copy_forced(src_z: int, dst_z: int) -> bool:
+        """Paste label_id's CURRENT shape from src_z onto dst_z,
+        foreign-protected. Returns True if anything was actually
+        painted (False if every pixel of the shape landed on foreign
+        territory -- nothing to copy at all)."""
+        src_mask = new_labels[src_z] == label_id
+        dst_slice = new_labels[dst_z]
+        foreign_here = (dst_slice != 0) & (dst_slice != label_id)
+        paint_mask = src_mask & ~foreign_here
+        if not paint_mask.any():
+            return False
+        dst_slice[dst_slice == label_id] = 0
+        dst_slice[paint_mask] = label_id
+        return True
+
     # 1. The label's own known original Z range -- corrected outright,
     #    slice by slice, each from its own freshly-derived local area
-    #    (see the docstring above for why NOT one shared window).
+    #    (see the docstring above for why NOT one shared window). Before
+    #    correcting each slice (except the last), whichever of it and
+    #    its immediate next neighbor has the SMALLER footprint first
+    #    inherits the bigger one's shape (foreign-protected) -- a
+    #    single spuriously undersized original label on one slice (raw
+    #    Cellpose-SAM prediction noise, not necessarily a real taper)
+    #    can otherwise size that slice's own local working window too
+    #    tightly, clipping real signal a properly-sized window would
+    #    have caught. This only ever widens the WINDOW the correction
+    #    looks within -- what actually gets painted still comes purely
+    #    from the real signal threshold there, so a genuinely tapering
+    #    slice still comes out correctly smaller; only the risk of a
+    #    too-small window is removed, not the correction's own honesty.
     for z in range(z_orig_min, z_orig_max + 1):
+        if z < z_orig_max:
+            area_z = int(np.count_nonzero(new_labels[z] == label_id))
+            area_z1 = int(np.count_nonzero(new_labels[z + 1] == label_id))
+            if area_z > area_z1:
+                _copy_forced(z, z + 1)
+            else:
+                _copy_forced(z + 1, z)
         if _correct_one_slice(z):
             slices_corrected.append(z)
 
@@ -1168,14 +1202,8 @@ def correct_label_from_intensity_3d(
             if (direction == 1 and z_next > cap_z) or (direction == -1 and z_next < cap_z):
                 break
 
-            src_mask = new_labels[z] == label_id
-            dst_slice = new_labels[z_next]
-            foreign_here = (dst_slice != 0) & (dst_slice != label_id)
-            paint_mask = src_mask & ~foreign_here
-            if not paint_mask.any():
+            if not _copy_forced(z, z_next):
                 break  # nothing of the shape could even be copied here -- true edge
-            dst_slice[dst_slice == label_id] = 0
-            dst_slice[paint_mask] = label_id
 
             if not _correct_one_slice(z_next):
                 new_labels[z_next][new_labels[z_next] == label_id] = 0  # undo -- no real signal here
