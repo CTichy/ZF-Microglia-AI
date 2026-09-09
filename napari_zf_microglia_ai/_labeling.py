@@ -1227,12 +1227,27 @@ def correct_label_from_intensity_3d(
         dst_slice[paint_mask] = label_id
         return True
 
+    def _bbox_area(z: int) -> int:
+        """Area of label_id's own bounding box on slice z (0 if not
+        present there). Deliberately NOT voxel count: a sparse, spread-
+        out shape (a branch reaching wide, say) can have FEWER voxels
+        than a small dense blob while still needing a much bigger local
+        working window -- since _local_bbox() sizes that window from
+        the footprint's own min/max extent (+ pad), not from how many
+        of its pixels are actually filled in, the bounding box's own
+        area is what actually predicts how much room a slice needs,
+        not raw pixel count."""
+        ys, xs = np.nonzero(new_labels[z] == label_id)
+        if ys.size == 0:
+            return 0
+        return int((ys.max() - ys.min() + 1) * (xs.max() - xs.min() + 1))
+
     # 1. The label's own known original Z range -- corrected outright,
     #    slice by slice, each from its own freshly-derived local area
     #    (see the docstring above for why NOT one shared window). Before
     #    correcting each slice (except the last), whichever of it and
-    #    its immediate next neighbor has the SMALLER footprint first
-    #    inherits the bigger one's shape (foreign-protected) -- a
+    #    its immediate next neighbor has the SMALLER bounding-box area
+    #    first inherits the bigger one's shape (foreign-protected) -- a
     #    single spuriously undersized original label on one slice (raw
     #    Cellpose-SAM prediction noise, not necessarily a real taper)
     #    can otherwise size that slice's own local working window too
@@ -1244,9 +1259,7 @@ def correct_label_from_intensity_3d(
     #    too-small window is removed, not the correction's own honesty.
     for z in range(z_orig_min, z_orig_max + 1):
         if z < z_orig_max:
-            area_z = int(np.count_nonzero(new_labels[z] == label_id))
-            area_z1 = int(np.count_nonzero(new_labels[z + 1] == label_id))
-            if area_z > area_z1:
+            if _bbox_area(z) > _bbox_area(z + 1):
                 _copy_forced(z, z + 1)
             else:
                 _copy_forced(z + 1, z)
