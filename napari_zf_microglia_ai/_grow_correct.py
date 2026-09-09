@@ -310,6 +310,24 @@ def format_grow_report(report: dict, mode: str) -> str:
             f"{report['n_iterations']} attempt(s). Real signal may extend further; "
             "consider a larger starting pad or more max iterations, or correct this cell by hand."
         )
+        # 3D mode only: per_label_reports carries each label's own
+        # border_touching_slices (2D's own report has no per-slice
+        # concept at all -- it only ever touches the ONE slice the
+        # caller gave it, already known to whoever's reading this).
+        # Naming exactly which slice(s) are still cut off lets a user
+        # go correct those individually (Correct Label 2D on just that
+        # slice with a bigger pad, or by hand) instead of guessing.
+        still_touching = sorted({
+            z for rep in report.get("per_label_reports", {}).values()
+            for z in rep.get("border_touching_slices", [])
+        })
+        if still_touching:
+            lines.append(
+                f"  Still touching the edge on slice(s) {still_touching} -- "
+                f"correct those individually (e.g. a bigger pad on just that "
+                f"slice via Correct Label 2D, or by hand) rather than growing "
+                f"the whole cell further."
+            )
     if "n_debris_removed_px" in report:
         lines.append(f"  Debris removed: {report['n_debris_removed_px']} px")
     return "\n".join(lines)

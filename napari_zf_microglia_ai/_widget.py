@@ -6895,13 +6895,22 @@ class ZFMicrogliaAIWidget(QWidget):
                         lines.append(f"  slice {z_}: label(s) {ids}")
                 if not report["foreign_touching"] and not report["foreign_nearby"]:
                     lines.append("No foreign labels touching or nearby on any corrected slice.")
+                if report["touched_border"]:
+                    lines.append(
+                        f"Still touching the edge of its own local working area on "
+                        f"slice(s) {report['border_touching_slices']} -- real signal may "
+                        f"extend further there; correct those individually with a bigger "
+                        f"pad (or enable auto-grow), rather than assuming this run reached "
+                        f"the true edge on every slice."
+                    )
                 self._correct_report_view.setPlainText("\n".join(lines))
                 self._correct_report_view.show()
                 trim_note = f", {report['n_trimmed_px']} trimmed px" if trimmed else ""
+                border_note = f", still touching edge on slice(s) {report['border_touching_slices']}" if report["touched_border"] else ""
                 self._correct_status_lbl.setText(
                     f"Done — label {label_id} corrected in 3D, "
                     f"{len(slices)} slice(s) ({slices[0]}..{slices[-1]}){trim_note}, "
-                    f"{report['n_debris_removed_px']} debris px removed.{sand_note} "
+                    f"{report['n_debris_removed_px']} debris px removed{border_note}.{sand_note} "
                     f"See report below."
                 )
             self._correct_btn.setEnabled(True)
