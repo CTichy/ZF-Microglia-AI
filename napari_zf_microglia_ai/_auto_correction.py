@@ -173,6 +173,7 @@ def auto_contrast_correct_stack(
             new_labels, _cell_report = correct_label_from_intensity_3d(
                 new_labels, image, lid, best_lo, pad=pad,
                 min_volume=min_volume, final_min_fraction=final_min_fraction,
+                sigma=sigma,
             )
             n_corrected += 1
         except ValueError as exc:

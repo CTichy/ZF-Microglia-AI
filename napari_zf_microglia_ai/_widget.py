@@ -2388,7 +2388,7 @@ class ZFMicrogliaAIWidget(QWidget):
         correct_mode_row.addWidget(QLabel("Correction mode:"))
         self._correct_mode_combo = QComboBox()
         self._correct_mode_combo.addItem("2D (current slice only)", "2d")
-        self._correct_mode_combo.addItem("3D (whole cell, from centroid)", "3d")
+        self._correct_mode_combo.addItem("3D (whole cell)", "3d")
         correct_mode_row.addWidget(self._correct_mode_combo)
         dlt.addLayout(correct_mode_row)
 

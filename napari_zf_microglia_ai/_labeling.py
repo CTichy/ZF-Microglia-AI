@@ -889,51 +889,59 @@ def correct_label_from_intensity_3d(
     min_volume: "int | None" = None,
     final_min_fraction: float = 0.618,
     z_extent_pad: "int | None" = None,
+    sigma: float = 1.0,
 ) -> "tuple[np.ndarray, dict]":
     """
     3D version of correct_label_from_intensity(): corrects the WHOLE
     cell, not just one slice.
 
-    Y/X is a single bounded box fill, same as the 2D tool: the label's
-    own real Y/X extent plus `pad` becomes one fixed window, and every
-    pixel in it at or above `lo`, not already claimed by a different
-    label, counts -- connected or not (see _intensity_grow_2d's own
-    docstring for why that's deliberate).
+    NOT a bounding box. This loops over 2D areas, one Z slice at a
+    time, each with its OWN local neighborhood -- the label's own
+    CURRENT footprint on that one slice, padded -- exactly the same
+    neighborhood the already-correct 2D tools use, reused directly:
 
-    Z is handled differently: the label's own ORIGINAL Z range [zmin,
-    zmax] is filled outright (the label already exists on every one of
-    those slices, so there's nothing to decide), then EXTENDED one
-    slice at a time in each direction as long as real signal actually
-    continues there -- tested by whether the next slice's own candidate
-    signal overlaps (a slight dilation of) the immediately PREVIOUS
-    slice's own accepted footprint. The moment a step finds no such
-    overlap, growth in that direction stops -- that slice gets nothing,
-    and everything already accepted stands. A hard cap, `z_extent_pad`,
-    bounds how far this can ever extend beyond the label's own original
-    range regardless (see its own docstring below for why that's still
-    needed even with the overlap test).
+    - No other label anywhere in that local area -> plain single-label
+      2D correction (_intensity_correct_2d, the exact engine behind
+      Correct Label's own 2D mode).
+    - One or more other labels present in that local area -> the same
+      joint marker-seeded watershed split Correct Adjacent Labels uses
+      standalone (_correct_label_group_2d_core, scoped to label_id via
+      focus_ids so only ITS OWN local neighborhood is ever touched --
+      see correct_label_group_2d's own focus_ids docstring), so the
+      LOCAL boundary against a genuinely adjacent cell gets properly
+      re-derived at that one slice too, not just excluded/protected as
+      an immovable wall the way plain foreign-exclusion alone would.
 
-    (An earlier version instead threshold-tested "is there ANY signal
-    left in the padded Y/X window on the next slice" as its stopping
-    rule, with no cap at all by default. On real, dense biological data
-    that's a far weaker test than overlap-with-the-previous-footprint:
-    any stray signal anywhere in that whole window, at any Z, kept the
-    walk going, in the worst case through most of the fish's remaining
-    depth -- confirmed as the actual cause of a real ~10-minute single-
-    label 3D correction. A version right before this one instead filled
-    one big FIXED box the full z_extent_pad in each direction regardless
-    of whether the cell actually continued that far -- fast and safe,
-    but wasteful (always pays for the full pad even when the real cell
-    is much shorter) and imprecise (can pull in unrelated signal
-    anywhere within that pad distance, not just where the cell truly
-    is). Testing overlap against the immediately preceding slice's own
-    footprint is tight enough to find the TRUE Z extent on its own in
-    the common case, while z_extent_pad still catches the case where a
-    real, different, genuinely-touching structure happens to overlap
-    slice-to-slice too -- exactly the auto-grow cascade scenario
-    z_extent_pad already existed to bound.)
+    The label's own ORIGINAL Z range [zmin, zmax] is corrected this way
+    outright (the label already exists on every one of those slices).
+    Growth beyond that range works by COPYING the current slice's own
+    just-corrected footprint onto the next Z first (foreign-protected,
+    same principle as Copy Label to Adjacent Slice), then running the
+    exact same local-area correction there; if that correction finds no
+    real signal to support the copied position at all, the copy is
+    undone and growth in that direction stops -- the true edge has been
+    found. A hard cap, z_extent_pad, still bounds how far this can ever
+    extend regardless (see its own docstring below).
 
-    After the fill, remove_debris_for_label() (golden-ratio-relaxed
+    (An earlier version instead sized ONE Y/X window from the label's
+    OWN ENTIRE 3D extent and applied that SAME fixed window to every Z
+    slice being corrected or walked through. That's a real design
+    flaw, not just an inefficiency: a window sized from the label's
+    whole extent can easily be much bigger, in some direction, than
+    where the cell actually sits on any ONE particular slice -- and
+    since whole-area-fill has no connectivity requirement within a
+    window (see _intensity_grow_2d's own docstring), it would happily
+    claim whatever OTHER real, not-yet-labeled signal -- skin residue,
+    a different unlabeled structure -- happened to also fall inside
+    that oversized window on that slice. Once absorbed, THAT signal's
+    own further extent on the next slice could pull the walk along even
+    further, propagating the error outward. A per-slice, always
+    locally-anchored neighborhood -- re-derived fresh from wherever the
+    label ACTUALLY currently sits, every single slice -- cannot do
+    this: it can only ever reach as far as `pad` from the label's own
+    real, already-verified position one slice ago.)
+
+    After the walk, remove_debris_for_label() (golden-ratio-relaxed
     floor, same as Cellpose-SAM's own final safety net) cleans up any
     small disconnected fragment left over from the correction -- scoped
     to ONLY this label, unlike running the general Remove Debris tool
@@ -942,29 +950,33 @@ def correct_label_from_intensity_3d(
     labels, image      : (Z, Y, X) volumes, same shape
     label_id            : the label being corrected
     lo                  : one-sided intensity cutoff (signal = image >= lo)
-    pad                 : bbox padding in pixels, Y/X axes
+    pad                 : bbox padding in pixels, Y/X axes, applied fresh
+                          around the label's own footprint on EACH slice
     min_volume          : if given (with final_min_fraction), the debris
                           floor is final_min_fraction * min_volume voxels
                           -- pass None to skip the debris-cleanup step
                           entirely (report will show n_debris_removed_px=0)
     final_min_fraction  : golden ratio (0.618) by default, matching
                           every other final-safety-net stage in this plugin
+    sigma               : Gaussian smoothing before the watershed split,
+                          only used on a slice where another label is
+                          actually nearby -- same meaning/default as
+                          Correct Adjacent Labels' own sigma
 
     Returns (new_labels, report). report is a dict:
-        z_center            -- informative only now (status-message
+        z_center            -- informative only (status-message
                                "corrected from centroid slice N") --
                                the label's own pre-correction 3D centroid,
                                snapped to its nearest real Z if the
                                centroid itself lands off the label
-        slices_corrected    -- sorted list of every Z the fill actually
+        slices_corrected    -- sorted list of every Z the walk actually
                                produced label_id on
-        slices_trimmed      -- always [] now -- growth only ever adds a
+        slices_trimmed      -- always [] -- growth only ever adds a
                                slice after confirming real continuation,
-                               and the original range is always kept in
-                               full, so nothing is ever cleared as a
-                               false extension the way the old walk's
-                               separate trim step used to
-        n_trimmed_px        -- always 0 now, kept for report-shape
+                               and the original range is always
+                               corrected in place, so nothing needs a
+                               separate trim step
+        n_trimmed_px        -- always 0, kept for report-shape
                                compatibility with existing callers
         n_debris_removed_px -- pixels removed by the debris-cleanup step
         foreign_touching    -- {z: sorted [foreign label ids]} -- IDs
@@ -972,54 +984,42 @@ def correct_label_from_intensity_3d(
                                this label's corrected footprint on that
                                slice, for slices where this is non-empty
         foreign_nearby      -- {z: sorted [foreign label ids]} -- IDs
-                               present anywhere inside the box's own Y/X
-                               extent on that slice, even where not
-                               touching, for slices where this is
-                               non-empty. (A literal "foreign pixels
-                               included inside this label" check is not
-                               meaningful for a label array -- each voxel
-                               holds exactly one label value, so true
-                               overlap is structurally impossible; this
-                               is the closest real, useful signal: a
-                               foreign blob sitting inside the
-                               correction's own working neighborhood,
-                               worth a manual look even though it was
-                               never actually absorbed -- the
-                               foreign-exclusion guard makes that part
-                               impossible by construction.)
-        border_touching_slices, touched_border -- Y/X-only (never
-                               whether Z-growth stopped early against
-                               its own cap) -- see z_extent_pad below
-                               for why Z deliberately stays out of this
-                               signal.
+                               present anywhere inside that slice's own
+                               local working area, even where not
+                               touching (exactly the set that decided
+                               single-label vs. joint correction there)
+        border_touching_slices, touched_border -- did the label's own
+                               corrected footprint reach the edge of
+                               ITS OWN local area on that slice (Y/X
+                               only -- never whether Z-growth stopped
+                               early against its own cap; see
+                               z_extent_pad below for why Z deliberately
+                               stays out of this signal)
 
     z_extent_pad        : hard cap, in slices, on how far Z-growth may
                           ever extend beyond the label's own original
                           [zmin, zmax] in either direction, regardless
-                          of what the overlap test alone would allow.
-                          Defaults to the same value as `pad` when not
-                          given explicitly. Exists as its own parameter
-                          (decoupled from `pad`) for the auto-grow
-                          orchestrator (_grow_correct.py): its Pass 1
-                          always passes the FIXED initial_pad here, even
-                          while `pad` itself grows across retries, so a
-                          single attempt's Z-growth can never "leak"
-                          further and further into a genuinely-touching-
-                          but-not-yet-corrected neighbor's own real
-                          signal and cascade along however far THAT
-                          neighbor's own signal happens to extend
-                          (overlap alone can't tell "this is still the
-                          same cell" apart from "this is a different,
-                          truly touching cell taking over"), long before
-                          a joint/Pass-2-style correction ever gets a
-                          chance to split the boundary properly.
-                          touched_border/border_touching_slices are
-                          deliberately never based on hitting this cap
-                          -- a real cell taller than the cap silently
-                          stops growing there rather than being treated
-                          as "not converged" by the auto-grow loop
-                          above; that's an accepted trade-off, not a
-                          retriable condition.
+                          of what the copy-and-verify step alone would
+                          allow. Defaults to the same value as `pad`
+                          when not given explicitly. Exists as its own
+                          parameter (decoupled from `pad`) for the
+                          auto-grow orchestrator (_grow_correct.py):
+                          its Pass 1 always passes the FIXED initial_pad
+                          here, even while `pad` itself grows across
+                          retries, so a single attempt's Z-growth can
+                          never cascade into a genuinely-touching-but-
+                          not-yet-corrected neighbor's own real signal
+                          and continue along however far THAT
+                          neighbor's own signal happens to extend,
+                          long before a joint/Pass-2-style correction
+                          ever gets a chance to split the boundary
+                          properly. touched_border/border_touching_slices
+                          are deliberately never based on hitting this
+                          cap -- a real cell taller than the cap
+                          silently stops growing there rather than
+                          being treated as "not converged" by the
+                          auto-grow loop above; that's an accepted
+                          trade-off there, not a retriable condition.
 
     Raises ValueError if label_id isn't found anywhere in the volume,
     or if the threshold leaves no signal at all anywhere in the
@@ -1033,10 +1033,10 @@ def correct_label_from_intensity_3d(
         raise ValueError(f"label {label_id} not found anywhere in the volume")
 
     Z_dim, Y_dim, X_dim = labels.shape
-    zs, ys, xs = np.nonzero(mask3d)
+    zs = np.nonzero(mask3d)[0]
 
-    # Informative only now (status-message "corrected from centroid slice
-    # N") -- the fill below no longer starts from or depends on it.
+    # Informative only (status-message "corrected from centroid slice
+    # N") -- the walk below neither starts from nor depends on this.
     from scipy.ndimage import center_of_mass as _com
     cz, _cy, _cx = _com(mask3d)
     z_center = int(round(cz))
@@ -1045,114 +1045,78 @@ def correct_label_from_intensity_3d(
         z_center = int(zs_with_label[np.argmin(np.abs(zs_with_label - z_center))])
 
     z_orig_min, z_orig_max = int(zs.min()), int(zs.max())
-    y_orig_min, y_orig_max = int(ys.min()), int(ys.max())
-    x_orig_min, x_orig_max = int(xs.min()), int(xs.max())
-
     if z_extent_pad is None:
         z_extent_pad = pad
-    y0 = max(y_orig_min - pad, 0)
-    y1 = min(y_orig_max + pad + 1, Y_dim)
-    x0 = max(x_orig_min - pad, 0)
-    x1 = min(x_orig_max + pad + 1, X_dim)
-
-    def _candidate_at(z: int) -> np.ndarray:
-        crop_labels_orig = labels[z, y0:y1, x0:x1]
-        crop_image = image[z, y0:y1, x0:x1]
-        cand = crop_image >= lo  # one-sided, same convention as every other Correct Label tool
-        foreign = (crop_labels_orig != 0) & (crop_labels_orig != label_id)
-        cand &= ~foreign  # never claim another label's territory
-        return cand
 
     new_labels = labels.copy()
-    footprints: "dict[int, np.ndarray]" = {}
 
-    # Fill the label's own known original Z range outright -- it already
-    # exists on every one of these slices, nothing to decide here.
-    for z in range(z_orig_min, z_orig_max + 1):
-        cand = _candidate_at(z)
-        footprints[z] = cand
-        crop = new_labels[z, y0:y1, x0:x1]
-        crop[labels[z, y0:y1, x0:x1] == label_id] = 0
-        crop[cand] = label_id
-
-    nonempty_orig = [z for z in footprints if footprints[z].any()]
-    if not nonempty_orig:
-        raise ValueError(
-            f"threshold >= {lo} leaves no signal at all anywhere in label "
-            f"{label_id}'s own original Z range -- refusing to erase the "
-            f"label; adjust the contrast window and try again."
-        )
-
-    struct2d = np.ones((3, 3), dtype=bool)
     from scipy.ndimage import binary_dilation
+    struct2d = np.ones((3, 3), dtype=bool)
 
-    for direction, start_z, cap_z in (
-        (1, z_orig_max, min(z_orig_max + z_extent_pad, Z_dim - 1)),
-        (-1, z_orig_min, max(z_orig_min - z_extent_pad, 0)),
-    ):
-        # The overlap test needs a real, non-empty anchor -- fall back
-        # inward to the nearest original slice that actually has
-        # candidate signal if the boundary slice itself came up empty
-        # (rare: e.g. the threshold happens to leave nothing right at
-        # zmin/zmax even though the rest of the original range is fine).
-        prev = footprints[start_z]
-        if not prev.any():
-            search = range(start_z, z_orig_min - 1, -1) if direction == 1 else range(start_z, z_orig_max + 1)
-            for zz in search:
-                if footprints[zz].any():
-                    prev = footprints[zz]
-                    break
-        z = start_z
-        while prev.any():
-            z_next = z + direction
-            if z_next < 0 or z_next >= Z_dim:
-                break
-            if (direction == 1 and z_next > cap_z) or (direction == -1 and z_next < cap_z):
-                break
-            cand = _candidate_at(z_next)
-            if not (cand & binary_dilation(prev, structure=struct2d)).any():
-                break  # true edge found -- nothing written to z_next
-            crop = new_labels[z_next, y0:y1, x0:x1]
-            crop[labels[z_next, y0:y1, x0:x1] == label_id] = 0
-            crop[cand] = label_id
-            footprints[z_next] = cand
-            prev = cand
-            z = z_next
-
-    slices_corrected = sorted(z for z, cand in footprints.items() if cand.any())
-    # No separate trim step needed any more -- the original range is
-    # always kept in full, and growth only ever adds a slice after
-    # confirming real continuation there.
-    slices_trimmed: "list[int]" = []
-    n_trimmed_px = 0
-
-    n_debris_removed_px = 0
-    if min_volume is not None:
-        threshold = final_min_fraction * min_volume
-        new_labels, n_debris_removed_px = remove_debris_for_label(new_labels, label_id, threshold)
-
+    slices_corrected: "list[int]" = []
     foreign_touching: "dict[int, list[int]]" = {}
     foreign_nearby: "dict[int, list[int]]" = {}
     border_touching_slices: "list[int]" = []
-    for z in slices_corrected:
+
+    def _local_bbox(z: int) -> "tuple[int, int, int, int] | None":
         own = new_labels[z] == label_id
-        if not np.any(own):
-            continue  # debris cleanup removed this slice's contribution entirely
-        dilated = binary_dilation(own, structure=struct2d)
-        touching_here = new_labels[z][dilated & ~own]
+        if not own.any():
+            return None
+        ys, xs = np.nonzero(own)
+        y0 = max(int(ys.min()) - pad, 0)
+        y1 = min(int(ys.max()) + pad + 1, Y_dim)
+        x0 = max(int(xs.min()) - pad, 0)
+        x1 = min(int(xs.max()) + pad + 1, X_dim)
+        return y0, y1, x0, x1
+
+    def _correct_one_slice(z: int) -> bool:
+        """Correct label_id on slice z from its OWN local neighborhood,
+        mutating new_labels in place. Returns True if label_id ends up
+        with a non-empty footprint there afterward, False if the
+        correction found no real signal to support it there at all
+        (nothing written; the caller decides what that means)."""
+        bbox = _local_bbox(z)
+        if bbox is None:
+            return False
+        y0, y1, x0, x1 = bbox
+        foreign_ids = sorted(
+            int(i) for i in np.unique(new_labels[z, y0:y1, x0:x1])
+            if i not in (0, label_id)
+        )
+        try:
+            if not foreign_ids:
+                corrected, crop_existing, (cy0, cy1, cx0, cx1) = _intensity_correct_2d(
+                    new_labels[z], image[z], label_id, lo, pad
+                )
+                crop = new_labels[z, cy0:cy1, cx0:cx1]
+                crop[crop_existing] = 0
+                crop[corrected] = label_id
+            else:
+                group_ids = [label_id] + foreign_ids
+                (cy0, cy1, cx0, cx1, crop_existing, finals, _info) = _correct_label_group_2d_core(
+                    new_labels, image, group_ids, z, lo, pad, sigma, focus_ids=[label_id],
+                )
+                crop = new_labels[z, cy0:cy1, cx0:cx1]
+                for lid in group_ids:
+                    crop[crop_existing[lid]] = 0
+                for lid in group_ids:
+                    crop[finals[lid]] = lid
+        except ValueError:
+            return False
+
+        own_now = new_labels[z] == label_id
+        if not np.any(own_now):
+            return False
+
+        dilated = binary_dilation(own_now, structure=struct2d)
+        touching_here = new_labels[z][dilated & ~own_now]
         touching_ids = sorted(int(i) for i in np.unique(touching_here) if i not in (0, label_id))
         if touching_ids:
             foreign_touching[z] = touching_ids
+        if foreign_ids:
+            foreign_nearby[z] = foreign_ids
 
-        nearby_here = new_labels[z, y0:y1, x0:x1]
-        nearby_ids = sorted(int(i) for i in np.unique(nearby_here) if i not in (0, label_id))
-        if nearby_ids:
-            foreign_nearby[z] = nearby_ids
-
-        # Y/X-only -- deliberately NEVER whether Z-growth stopped at its
-        # own cap, see z_extent_pad's own docstring above for why the
-        # auto-grow orchestrator relies on that.
-        crop_own = own[y0:y1, x0:x1]
+        crop_own = own_now[y0:y1, x0:x1]
         touched = (
             (y0 > 0 and bool(crop_own[0, :].any()))
             or (y1 < Y_dim and bool(crop_own[-1, :].any()))
@@ -1161,12 +1125,75 @@ def correct_label_from_intensity_3d(
         )
         if touched:
             border_touching_slices.append(z)
+        return True
+
+    # 1. The label's own known original Z range -- corrected outright,
+    #    slice by slice, each from its own freshly-derived local area
+    #    (see the docstring above for why NOT one shared window).
+    for z in range(z_orig_min, z_orig_max + 1):
+        if _correct_one_slice(z):
+            slices_corrected.append(z)
+
+    if not slices_corrected:
+        raise ValueError(
+            f"threshold >= {lo} leaves no signal at all anywhere in label "
+            f"{label_id}'s own original Z range -- refusing to erase the "
+            f"label; adjust the contrast window and try again."
+        )
+
+    # 2. Extend outward one slice at a time in each direction: copy the
+    #    current footprint forward (foreign-protected), then run the
+    #    same local-area correction there; undo and stop the moment it
+    #    finds nothing to support that position.
+    for direction, start_z, cap_z in (
+        (1, z_orig_max, min(z_orig_max + z_extent_pad, Z_dim - 1)),
+        (-1, z_orig_min, max(z_orig_min - z_extent_pad, 0)),
+    ):
+        z = start_z if start_z in slices_corrected else None
+        if z is None:
+            # the boundary slice itself lost the label entirely (rare)
+            # -- fall back to the nearest slice inward that still has it
+            search = range(start_z, z_orig_min - 1, -1) if direction == 1 else range(start_z, z_orig_max + 1)
+            for zz in search:
+                if zz in slices_corrected:
+                    z = zz
+                    break
+        if z is None:
+            continue  # nothing left in the original range to extend from
+
+        while True:
+            z_next = z + direction
+            if z_next < 0 or z_next >= Z_dim:
+                break
+            if (direction == 1 and z_next > cap_z) or (direction == -1 and z_next < cap_z):
+                break
+
+            src_mask = new_labels[z] == label_id
+            dst_slice = new_labels[z_next]
+            foreign_here = (dst_slice != 0) & (dst_slice != label_id)
+            paint_mask = src_mask & ~foreign_here
+            if not paint_mask.any():
+                break  # nothing of the shape could even be copied here -- true edge
+            dst_slice[dst_slice == label_id] = 0
+            dst_slice[paint_mask] = label_id
+
+            if not _correct_one_slice(z_next):
+                new_labels[z_next][new_labels[z_next] == label_id] = 0  # undo -- no real signal here
+                break
+
+            slices_corrected.append(z_next)
+            z = z_next
+
+    n_debris_removed_px = 0
+    if min_volume is not None:
+        threshold = final_min_fraction * min_volume
+        new_labels, n_debris_removed_px = remove_debris_for_label(new_labels, label_id, threshold)
 
     report = {
         "z_center": z_center,
-        "slices_corrected": slices_corrected,
-        "slices_trimmed": slices_trimmed,
-        "n_trimmed_px": n_trimmed_px,
+        "slices_corrected": sorted(slices_corrected),
+        "slices_trimmed": [],
+        "n_trimmed_px": 0,
         "n_debris_removed_px": n_debris_removed_px,
         "foreign_touching": foreign_touching,
         "foreign_nearby": foreign_nearby,
@@ -1636,6 +1663,46 @@ def correct_label_group_2d(
     reachable pixels within the combined region -- refuses to silently
     erase a label rather than returning a result missing one.
     """
+    (y0, y1, x0, x1, crop_existing, finals, info) = _correct_label_group_2d_core(
+        labels, image, label_ids, z, lo, pad, sigma, focus_ids,
+    )
+
+    new_labels = labels.copy()
+    crop = new_labels[z, y0:y1, x0:x1]
+    for lid in label_ids:
+        crop[crop_existing[lid]] = 0
+    for lid in label_ids:
+        crop[finals[lid]] = lid
+
+    return new_labels.astype(np.int32), info
+
+
+def _correct_label_group_2d_core(
+    labels: np.ndarray,
+    image: np.ndarray,
+    label_ids: "list[int]",
+    z: int,
+    lo: float,
+    pad: int,
+    sigma: float,
+    focus_ids: "list[int] | None",
+):
+    """
+    Crop-only core behind correct_label_group_2d() -- same validation,
+    candidate/foreign-exclusion, and marker-seeded watershed logic, but
+    returns just the crop-level result (bbox + each label's existing
+    and final crop masks + the info dict) instead of writing into a
+    full (Z, Y, X) COPY of `labels`. correct_label_group_2d() itself is
+    now a thin wrapper around this that does that one copy, for its own
+    standalone/2D use; correct_label_from_intensity_3d()'s per-slice
+    walk calls this directly so a tall cell's Z-walk isn't paying for a
+    full-volume copy on every single slice it touches -- on a large
+    fish that cost alone could dominate the whole operation.
+
+    Returns (y0, y1, x0, x1, crop_existing, finals, info) -- crop_existing
+    and finals are {label_id: bool array, shape (y1-y0, x1-x0)}; info is
+    exactly the dict correct_label_group_2d() itself returns.
+    """
     if len(label_ids) < 1:
         raise ValueError("label_ids must contain at least one label")
     if len(set(label_ids)) != len(label_ids):
@@ -1657,9 +1724,9 @@ def correct_label_group_2d(
         existing[lid] = m
         seed |= m
 
-    # Rectangle sized from focus_ids alone when given -- see the
-    # parameter's own docstring above -- otherwise the whole group
-    # (unchanged, existing behavior).
+    # Rectangle sized from focus_ids alone when given -- see
+    # correct_label_group_2d()'s own focus_ids docstring -- otherwise
+    # the whole group (unchanged, existing behavior).
     scope_seed = seed
     if focus_ids is not None:
         scope_seed = np.zeros(labels_z.shape, dtype=bool)
@@ -1739,13 +1806,6 @@ def correct_label_group_2d(
             f"refusing to erase; adjust the contrast window and try again."
         )
 
-    new_labels = labels.copy()
-    crop = new_labels[z, y0:y1, x0:x1]
-    for lid in label_ids:
-        crop[crop_existing[lid]] = 0
-    for lid in label_ids:
-        crop[finals[lid]] = lid
-
     any_final = np.zeros(combined.shape, dtype=bool)
     for lid in label_ids:
         any_final |= finals[lid]
@@ -1786,7 +1846,11 @@ def correct_label_group_2d(
     per_label_foreign_touching: "dict[int, list[int]]" = {}
     for lid in label_ids:
         dilated = _dilate2d(finals[lid], structure=struct2d)
-        touching_here = crop[dilated & ~finals[lid]]
+        # Read from crop_labels (the pre-write labels crop) rather than
+        # a post-write crop -- a label OUTSIDE this group's own identity
+        # never changes from this call, so this is exactly equivalent
+        # and avoids needing the (now not-yet-written) output crop here.
+        touching_here = crop_labels[dilated & ~finals[lid]]
         per_label_foreign_touching[lid] = sorted(
             int(i) for i in np.unique(touching_here) if i != 0 and i not in label_ids
         )
@@ -1799,7 +1863,7 @@ def correct_label_group_2d(
     }
     for lid in label_ids:
         info[lid] = int(finals[lid].sum())
-    return new_labels.astype(np.int32), info
+    return y0, y1, x0, x1, crop_existing, finals, info
 
 
 def _touching_pairs_on_slice(labels_z: np.ndarray) -> "set[frozenset]":
