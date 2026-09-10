@@ -304,7 +304,13 @@ def resort_labels(
     max_lbl    = int(unique.max())
 
     if sort_by == "size":
-        counts = np.bincount(labels.ravel().astype(np.int64), minlength=max_lbl + 1)
+        # np.bincount requires non-negative input -- a sentinel label like
+        # Protect Skin as Label's -1 would otherwise crash this outright
+        # (not just get miscounted). Only positive labels are ever being
+        # resorted anyway (see `unique` above), so voxels belonging to
+        # anything <= 0 are irrelevant to these counts regardless.
+        positive_vals = labels[labels > 0]
+        counts = np.bincount(positive_vals.ravel().astype(np.int64), minlength=max_lbl + 1)
         keyed  = [(int(counts[lbl]), int(lbl)) for lbl in label_list]
         # natural: descending (largest first → label 1)
         keyed.sort(key=lambda t: t[0], reverse=not reverse)
@@ -354,7 +360,17 @@ def resort_labels(
     for new_id, (_key, old_id) in enumerate(keyed, start=1):
         lut[old_id] = new_id
 
-    return lut[labels].astype(np.int32)
+    # `lut[labels]` directly would silently corrupt any sentinel label
+    # like Protect Skin as Label's -1: numpy indexes a negative value
+    # from the END of the array (lut[-1] == lut[max_lbl]), remapping
+    # every skin voxel to whatever real label happens to have just been
+    # renumbered to max_lbl, instead of leaving it alone. Only positive
+    # (real, resorted) labels ever go through the LUT; anything <= 0 is
+    # copied through untouched.
+    out = labels.copy()
+    positive_mask = labels > 0
+    out[positive_mask] = lut[labels[positive_mask]]
+    return out.astype(np.int32)
 
 
 def remove_debris(labels: np.ndarray, threshold: int) -> "tuple[np.ndarray, int]":
@@ -920,23 +936,32 @@ def correct_label_from_intensity_3d(
 
     The label's own ORIGINAL Z range [zmin, zmax] is corrected this way
     outright (the label already exists on every one of those slices) --
-    but NOT in plain Z order. Slices with no foreign label anywhere
-    nearby (the safely-isolated "core" of the cell) are corrected
-    first; slices actually touching or near another label (a real
-    neighbor, or a Protect-Skin-as-Label sentinel) are corrected LAST,
-    in order of increasing proximity to that contact -- the core
-    settles first and completely, so the genuinely contested boundary
-    has a fully-formed interior to anchor against by the time it's
-    resolved, instead of settling into an arbitrary, order-dependent
-    shape before the rest of the cell is even known. Growth beyond the
-    original range works by COPYING the current slice's own just-
-    corrected footprint onto the next Z first (foreign-protected, same
-    principle as Copy Label to Adjacent Slice), then running the exact
-    same local-area correction there; if that correction finds no real
-    signal to support the copied position at all, the copy is undone
-    and growth in that direction stops -- the true edge has been found.
-    A hard cap, z_extent_pad, still bounds how far this can ever extend
-    regardless (see its own docstring below).
+    but NOT in plain Z order. Per explicit user-specified pseudocode,
+    the walk starts at the range's own upper-middle slice (zmid =
+    zmin + ceil((zmax-zmin)/2)) and settles OUTWARD in two halves: zmid
+    down to zmin, then zmid+1 up to zmax. Before each slice's own
+    correction runs, its watershed seed is first OR-unioned (see
+    _or_seed()'s own docstring for why OR, not the source pseudocode's
+    literal but user-corrected "AND") with whichever of its immediate
+    neighbors (z-1, z+1) fall within [zmin, zmax] -- a neighbor already
+    reached by this walk contributes its own JUST-CORRECTED shape; one
+    not yet reached still contributes its own original (pre-walk)
+    shape, useful seeding context that gets refined once the walk gets
+    there. This lets a good correction on one slice actively support
+    its neighbor's own correction instead of every slice being
+    re-derived in isolation from nothing but its own pre-walk footprint,
+    and a spuriously undersized original slice (raw Cellpose-SAM
+    prediction noise) gets topped up by its neighbor's own shape as an
+    integrated part of the walk, without needing a separate global
+    pre-pass to guard against it the way an earlier version of this
+    function did. Growth beyond the original range works by COPYING the
+    current slice's own just-corrected footprint onto the next Z first
+    (foreign-protected, same principle as Copy Label to Adjacent
+    Slice), then running the exact same local-area correction there; if
+    that correction finds no real signal to support the copied position
+    at all, the copy is undone and growth in that direction stops -- the
+    true edge has been found. A hard cap, z_extent_pad, still bounds how
+    far this can ever extend regardless (see its own docstring below).
 
     (An earlier version instead sized ONE Y/X window from the label's
     OWN ENTIRE 3D extent and applied that SAME fixed window to every Z
@@ -1318,79 +1343,66 @@ def correct_label_from_intensity_3d(
         dst_slice[paint_mask] = label_id
         return True
 
-    def _bbox_area(z: int) -> int:
-        """Area of label_id's own bounding box on slice z (0 if not
-        present there). Deliberately NOT voxel count: a sparse, spread-
-        out shape (a branch reaching wide, say) can have FEWER voxels
-        than a small dense blob while still needing a much bigger local
-        working window -- since _local_bbox() sizes that window from
-        the footprint's own min/max extent (+ pad), not from how many
-        of its pixels are actually filled in, the bounding box's own
-        area is what actually predicts how much room a slice needs,
-        not raw pixel count."""
-        ys, xs = np.nonzero(new_labels[z] == label_id)
-        if ys.size == 0:
-            return 0
-        return int((ys.max() - ys.min() + 1) * (xs.max() - xs.min() + 1))
+    def _or_seed(z: int) -> None:
+        """Before z's own correction runs, OR-union whichever of its
+        immediate neighbors (z-1, z+1) are within the label's own
+        FIXED original range [z_orig_min, z_orig_max] into z's own
+        current footprint -- "the label of any cell in i has
+        characteristics of i-1 and i+1 ... carry this characteristic
+        of the neighbour slices to the current one and use this sum of
+        labels as the new basis label to work in the current i slice"
+        (explicit user instruction; the source pseudocode's own literal
+        "AND" was a stated error the user corrected to this OR -- an
+        AND would erase real signal any time a neighbor's shape didn't
+        already exactly agree, which is never true before a boundary
+        has even had a chance to settle). Whichever neighbor this walk
+        hasn't reached yet still contributes its own CURRENT (pre-walk,
+        original) shape -- real signal, useful seeding context, refined
+        by its own correction once the walk gets there. Pasted only
+        into empty background or the skin sentinel (label -1, Protect
+        Skin as Label -- this plugin's one fixed negative label); a
+        real OTHER label's own territory is never touched, exactly
+        matching the pseudocode's own paste rule. This is only a
+        SEED for the watershed marker _correct_slice_full() uses right
+        after -- the final shape is still entirely re-derived from the
+        real intensity threshold there, so pasting can't force-keep a
+        neighbor's pixel that isn't also real signal on THIS slice."""
+        seed = new_labels[z] == label_id
+        if z - 1 >= z_orig_min:
+            seed |= new_labels[z - 1] == label_id
+        if z + 1 <= z_orig_max:
+            seed |= new_labels[z + 1] == label_id
+        to_paste = seed & ~(new_labels[z] == label_id)
+        if not np.any(to_paste):
+            return
+        slice_z = new_labels[z]
+        foreign_blocking = (slice_z != 0) & (slice_z != label_id) & (slice_z != -1)
+        paste_mask = to_paste & ~foreign_blocking
+        slice_z[paste_mask] = label_id
 
-    # 1a. Propagate the bigger of each consecutive pair's bounding-box
-    #     area first, as a single SEQUENTIAL sweep over the whole known
-    #     range, before any actual correction runs -- see _bbox_area()'s
-    #     own docstring for why area (not voxel count), and the note
-    #     below for why this stays sequential even though the actual
-    #     correction pass (1b) no longer is. A single spuriously
-    #     undersized original label on one slice (raw Cellpose-SAM
-    #     prediction noise, not necessarily a real taper) can otherwise
-    #     size that slice's own local working window too tightly,
-    #     clipping real signal a properly-sized window would have
-    #     caught. This only ever widens the WINDOW the correction looks
-    #     within -- what actually gets painted still comes purely from
-    #     the real signal threshold there, so a genuinely tapering slice
-    #     still comes out correctly smaller; only the risk of a
-    #     too-small window is removed, not the correction's own honesty.
-    for z in range(z_orig_min, z_orig_max):
-        if _bbox_area(z) > _bbox_area(z + 1):
-            _copy_forced(z, z + 1)
-        else:
-            _copy_forced(z + 1, z)
+    # Walk the label's own FIXED original range mid-outward, in two
+    # halves, per explicit user-specified pseudocode -- this supersedes
+    # both the old bbox-area propagation pre-pass and the old
+    # foreign-contact-distance ordering (commit 277202a): a spuriously
+    # undersized slice now gets topped up by its neighbor's own current
+    # shape as an integrated part of EACH slice's own walk (_or_seed,
+    # above), not a separate global pre-pass, and the walk order itself
+    # no longer needs to reason about where a foreign label happens to
+    # be touching -- starting from the middle and settling outward in
+    # both directions means every slice always has at least one already
+    # (or originally) shaped neighbor to seed from, mid slice included
+    # (which seeds from whichever of its own two original neighbors are
+    # in range, both still holding their pre-walk shapes at that point).
+    half = -(-(z_orig_max - z_orig_min) // 2)  # ceiling division, integer-only
+    zmid = z_orig_min + half
 
-    # 1b. Correct every slice in the known range -- but NOT in plain Z
-    #     order. A lightweight lookahead first finds which slices are
-    #     already near ANY foreign label (before anything is corrected,
-    #     using the same local-bbox neighborhood _correct_one_slice()
-    #     itself would look at); every OTHER slice is then corrected in
-    #     order of DECREASING distance from the nearest such slice --
-    #     i.e. the safely-isolated "core" of the cell settles first and
-    #     completely, and only the genuinely contested boundary (right
-    #     where a real neighbor or Protect-Skin-as-Label's sentinel
-    #     label is actually touching) is corrected last, once it has a
-    #     fully-settled interior to anchor against instead of one that's
-    #     still mid-correction itself. Without this, a fixed min->max
-    #     walk order means the FIRST slice ever corrected could be one
-    #     sitting right against skin, settling its own joint watershed
-    #     boundary before the rest of the cell's own true shape is even
-    #     known yet -- a real risk of never stabilizing cleanly, or
-    #     settling into an order-dependent boundary that isn't actually
-    #     the best one, rather than a genuinely converged result.
-    foreign_contact_zs: "set[int]" = set()
-    for z in range(z_orig_min, z_orig_max + 1):
-        bbox = _local_bbox(z, pad)
-        if bbox is None:
-            continue
-        y0, y1, x0, x1 = bbox
-        crop_lbls = new_labels[z, y0:y1, x0:x1]
-        if np.any((crop_lbls != 0) & (crop_lbls != label_id)):
-            foreign_contact_zs.add(z)
+    for z in range(zmid, z_orig_min - 1, -1):
+        _or_seed(z)
+        if _correct_slice_full(z):
+            slices_corrected.append(z)
 
-    all_zs = list(range(z_orig_min, z_orig_max + 1))
-    if foreign_contact_zs:
-        def _dist_to_contact(z: int) -> int:
-            return min(abs(z - fz) for fz in foreign_contact_zs)
-        order = sorted(all_zs, key=lambda z: (-_dist_to_contact(z), z))
-    else:
-        order = all_zs
-
-    for z in order:
+    for z in range(zmid + 1, z_orig_max + 1):
+        _or_seed(z)
         if _correct_slice_full(z):
             slices_corrected.append(z)
 

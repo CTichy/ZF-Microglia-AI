@@ -2244,7 +2244,7 @@ class ZFMicrogliaAIWidget(QWidget):
         split_lbl_row = QHBoxLayout()
         split_lbl_row.addWidget(QLabel("Target label:"))
         self._split_label_spin = QSpinBox()
-        self._split_label_spin.setMinimum(1)
+        self._split_label_spin.setMinimum(-1)  # -1 = skin (Protect Skin as Label); never 0
         self._split_label_spin.setMaximum(99999)
         self._split_label_spin.setValue(1)
         split_lbl_row.addWidget(self._split_label_spin)
@@ -2343,7 +2343,7 @@ class ZFMicrogliaAIWidget(QWidget):
         join_a_row = QHBoxLayout()
         join_a_row.addWidget(QLabel("Label A (keep):"))
         self._join_a_spin = QSpinBox()
-        self._join_a_spin.setMinimum(1)
+        self._join_a_spin.setMinimum(-1)  # -1 = skin (Protect Skin as Label); never 0
         self._join_a_spin.setMaximum(99999)
         self._join_a_spin.setValue(1)
         join_a_row.addWidget(self._join_a_spin)
@@ -2355,7 +2355,7 @@ class ZFMicrogliaAIWidget(QWidget):
         join_b_row = QHBoxLayout()
         join_b_row.addWidget(QLabel("Label B (merge into A):"))
         self._join_b_spin = QSpinBox()
-        self._join_b_spin.setMinimum(1)
+        self._join_b_spin.setMinimum(-1)  # -1 = skin (Protect Skin as Label); never 0
         self._join_b_spin.setMaximum(99999)
         self._join_b_spin.setValue(2)
         join_b_row.addWidget(self._join_b_spin)
@@ -2428,7 +2428,7 @@ class ZFMicrogliaAIWidget(QWidget):
         correct_label_row = QHBoxLayout()
         correct_label_row.addWidget(QLabel("Label to correct:"))
         self._correct_label_spin = QSpinBox()
-        self._correct_label_spin.setMinimum(1)
+        self._correct_label_spin.setMinimum(-1)  # -1 = skin (Protect Skin as Label); never 0
         self._correct_label_spin.setMaximum(99999)
         self._correct_label_spin.setValue(1)
         correct_label_row.addWidget(self._correct_label_spin)
@@ -2542,7 +2542,7 @@ class ZFMicrogliaAIWidget(QWidget):
         copyslice_label_row = QHBoxLayout()
         copyslice_label_row.addWidget(QLabel("Label to copy:"))
         self._copyslice_label_spin = QSpinBox()
-        self._copyslice_label_spin.setMinimum(1)
+        self._copyslice_label_spin.setMinimum(-1)  # -1 = skin (Protect Skin as Label); never 0
         self._copyslice_label_spin.setMaximum(99999)
         self._copyslice_label_spin.setValue(1)
         copyslice_label_row.addWidget(self._copyslice_label_spin)
@@ -2598,7 +2598,7 @@ class ZFMicrogliaAIWidget(QWidget):
         adjcorr_a_row = QHBoxLayout()
         adjcorr_a_row.addWidget(QLabel("Label A:"))
         self._adjcorr_a_spin = QSpinBox()
-        self._adjcorr_a_spin.setMinimum(1)
+        self._adjcorr_a_spin.setMinimum(-1)  # -1 = skin (Protect Skin as Label); never 0
         self._adjcorr_a_spin.setMaximum(99999)
         self._adjcorr_a_spin.setValue(1)
         adjcorr_a_row.addWidget(self._adjcorr_a_spin)
@@ -2610,7 +2610,7 @@ class ZFMicrogliaAIWidget(QWidget):
         adjcorr_b_row = QHBoxLayout()
         adjcorr_b_row.addWidget(QLabel("Label B:"))
         self._adjcorr_b_spin = QSpinBox()
-        self._adjcorr_b_spin.setMinimum(1)
+        self._adjcorr_b_spin.setMinimum(-1)  # -1 = skin (Protect Skin as Label); never 0
         self._adjcorr_b_spin.setMaximum(99999)
         self._adjcorr_b_spin.setValue(2)
         adjcorr_b_row.addWidget(self._adjcorr_b_spin)
@@ -2656,6 +2656,31 @@ class ZFMicrogliaAIWidget(QWidget):
         self._adjcorr_maxiter_spin.setValue(5)
         adjcorr_maxiter_row.addWidget(self._adjcorr_maxiter_spin)
         dlt.addLayout(adjcorr_maxiter_row)
+
+        self._adjcorr_stable_cb = QCheckBox("Keep re-running until the boundary stabilizes")
+        dlt.addWidget(self._adjcorr_stable_cb)
+        adjcorr_stable_note = QLabel(
+            "  Independent of auto-grow above. The joint watershed split doesn't "
+            "just shape label A -- it also redraws label B's (and any folded-in "
+            "neighbor's) boundary at the same time, seeded from each label's "
+            "CURRENT shape. Feeding one pass's result back in as the next pass's "
+            "starting point lets the shared boundary settle a little closer each "
+            "time, instead of stopping after just the first (possibly still-"
+            "settling) placement. Re-runs until every label in the group has a "
+            "shape IDENTICAL to the previous pass, or the pass cap below is hit."
+        )
+        adjcorr_stable_note.setWordWrap(True)
+        adjcorr_stable_note.setStyleSheet("color: #888; font-size: 10px;")
+        dlt.addWidget(adjcorr_stable_note)
+
+        adjcorr_maxstable_row = QHBoxLayout()
+        adjcorr_maxstable_row.addWidget(QLabel("Max stability passes:"))
+        self._adjcorr_maxstable_spin = QSpinBox()
+        self._adjcorr_maxstable_spin.setMinimum(2)
+        self._adjcorr_maxstable_spin.setMaximum(100)
+        self._adjcorr_maxstable_spin.setValue(10)
+        adjcorr_maxstable_row.addWidget(self._adjcorr_maxstable_spin)
+        dlt.addLayout(adjcorr_maxstable_row)
 
         self._adjcorr_btn = QPushButton("Correct Adjacent Labels")
         self._adjcorr_btn.setStyleSheet("QPushButton { padding: 5px; }")
@@ -7188,6 +7213,8 @@ class ZFMicrogliaAIWidget(QWidget):
         grow_on = self._adjcorr_grow_cb.isChecked()
         growth_step = self._adjcorr_growstep_spin.value()
         max_iterations = self._adjcorr_maxiter_spin.value()
+        until_stable = self._adjcorr_stable_cb.isChecked()
+        max_stability_passes = self._adjcorr_maxstable_spin.value()
 
         self._adjcorr_btn.setEnabled(False)
         self._adjcorr_status_lbl.setText(
@@ -7199,10 +7226,16 @@ class ZFMicrogliaAIWidget(QWidget):
 
         def _worker():
             try:
-                if grow_on:
+                # Auto-grow and "until stable" are independent switches --
+                # route through the orchestrator whenever EITHER is on, so
+                # a user can ask for boundary-stability passes without also
+                # turning on padding growth (or vice versa) -- same pattern
+                # Correct Label's own 3D mode uses.
+                if grow_on or until_stable:
                     new_labels, grow_report = grow_correct_label_2d(
                         labels, image, [label_a, label_b], z, lo,
                         initial_pad=pad, growth_step=growth_step, max_iterations=max_iterations,
+                        until_stable=until_stable, max_stability_passes=max_stability_passes,
                     )
                     result["grow_report"] = grow_report
                     group_ids = grow_report["group"]
@@ -7249,10 +7282,17 @@ class ZFMicrogliaAIWidget(QWidget):
                 gr = result["grow_report"]
                 converged_note = "" if gr["converged"] else " -- NOT converged, still touches the border"
                 group_note = f", group grew to {gr['group']}" if gr["group_grew"] else ""
+                stable_note = ""
+                if until_stable:
+                    sp = gr.get("stability_passes", 1)
+                    stable_note = f", boundary settled in {sp} pass(es)" if sp > 1 else ", boundary settled in 1 pass"
+                    if not gr.get("stable", True):
+                        stable_note += " (still changing)"
+                what = "auto-grow corrected" if grow_on else "corrected"
                 self._adjcorr_status_lbl.setText(
-                    f"Done — slice {z}: auto-grow corrected labels {label_a}/{label_b}, "
+                    f"Done — slice {z}: {what} labels {label_a}/{label_b}, "
                     f"{gr['n_iterations']} attempt(s), final pad={gr['pad_used']}px{group_note}"
-                    f"{converged_note}.{sand_note}"
+                    f"{stable_note}{converged_note}.{sand_note}"
                 )
             else:
                 info = result["info"]

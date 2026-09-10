@@ -58,6 +58,8 @@ def grow_correct_label_2d(
     max_iterations: int = 5,
     sigma: float = 1.0,
     progress_cb=None,
+    until_stable: bool = False,
+    max_stability_passes: int = 10,
 ) -> "tuple[np.ndarray, dict]":
     """
     Auto-grows Correct Label's 2D (single-slice) correction until the
@@ -89,15 +91,50 @@ def grow_correct_label_2d(
     sigma           : passed through to correct_label_group_2d()'s
                       watershed smoothing (irrelevant for a 1-label group)
     progress_cb      : optional callable(str)
+    until_stable    : False (default) -- mirrors
+                      correct_label_from_intensity_3d()'s own per-slice
+                      stability loop (see its own until_stable
+                      docstring), applied here to this single slice's
+                      whole group at once instead of one label at a
+                      time. A joint watershed split doesn't just shape
+                      the target label(s) -- it also redraws whatever
+                      neighbor got folded into the group, seeded from
+                      each label's CURRENT shape. Once the growth+
+                      neighbor-discovery cycle above converges (no more
+                      border touch, no new neighbor pulled in), that
+                      whole cycle is re-run again on this same slice,
+                      seeded from the group's own just-produced shapes
+                      -- letting the shared boundary settle toward a
+                      mutually-consistent position each time, exactly
+                      like the 3D per-slice engine does for one label
+                      against its neighbor. Stops once every label in
+                      the (possibly still-growing) group has a mask
+                      byte-for-byte identical to the immediately
+                      preceding pass's, or max_stability_passes is
+                      reached, whichever comes first. False runs
+                      exactly one growth cycle, unchanged prior
+                      behavior.
+    max_stability_passes : hard cap on until_stable's re-runs (default
+                      10). Ignored when until_stable is False.
 
     Returns (new_labels, report). report:
         group            -- sorted list of label ids corrected together
         pad_used          -- the padding of the last attempt actually made
-        n_iterations       -- how many attempts were made
+        n_iterations       -- total attempts made, summed across every
+                              stability pass (not just the last one)
         converged          -- True if the last attempt didn't touch the border
-        group_grew         -- True if growth ever pulled in a neighbor
+        group_grew         -- True if growth ever pulled in a neighbor,
+                              on any stability pass
         info               -- the underlying correct_label_group_2d()'s own
-                              info dict from the last attempt
+                              info dict from the very last attempt
+        stability_passes    -- how many full growth cycles were run (>=1;
+                              always 1 when until_stable is False)
+        stable             -- True unless until_stable is on and
+                              max_stability_passes was exhausted without
+                              two consecutive passes agreeing. Always
+                              True when until_stable is False (a single
+                              pass has nothing to compare against, so
+                              it's trivially "stable").
 
     Raises ValueError only if even the first attempt (initial_pad,
     single label) fails outright -- same errors correct_label_group_2d()
@@ -113,8 +150,7 @@ def grow_correct_label_2d(
         ids_list = sorted(int(i) for i in label_ids)  # a set has no defined order -- deterministic fallback
     else:
         ids_list = [int(label_ids)]
-    group = set(ids_list)
-    original_group = frozenset(group)  # convergence/discovery judged on these, never a folded-in neighbor
+    original_group = frozenset(ids_list)  # convergence/discovery judged on these, never a folded-in neighbor
     # The working RECTANGLE, though, is scoped to just the FIRST id as
     # given -- "label A" in Correct Adjacent Labels' own terms (its
     # widget call always passes [label_a, label_b] in that order; for
@@ -124,76 +160,123 @@ def grow_correct_label_2d(
     # joint watershed -- only the RECTANGLE stays anchored on A, exactly
     # as correct_adjacent_labels_2d() itself now does standalone.
     rect_focus = frozenset({ids_list[0]})
-    pad = int(initial_pad)
-    group_grew = False
-    last_new_labels = labels
-    last_info = None
-    converged = False
-    used_pad = pad
-    iteration = 0
 
-    for iteration in range(1, max_iterations + 1):
+    def _grow_pass(work: np.ndarray, group: set, pad: int):
+        """One full growth+neighbor-discovery cycle (the original
+        single-pass body of this function), seeded from `work` --
+        either the caller's original volume (first stability pass) or
+        the previous pass's own result (subsequent passes, so the
+        watershed re-seeds from this slice's just-updated shapes)."""
+        group = set(group)
+        group_grew = False
+        last_new_labels = work
+        last_info = None
+        converged = False
         used_pad = pad
-        _report(f"Attempt {iteration}: pad={used_pad}px, group={sorted(group)}")
-        new_labels, info = correct_label_group_2d(
-            labels, image, sorted(group), z, lo, pad=used_pad, sigma=sigma,
-            # Rectangle scoped to label A alone (rect_focus), never label
-            # B or a folded-in neighbor -- same principle as 3D Pass 1
-            # (see the module docstring above): a large/far-flung label
-            # must never balloon the working area (or the watershed's own
-            # cost) beyond what's actually needed near A's own neighborhood.
-            focus_ids=sorted(rect_focus),
-        )
-        last_new_labels, last_info = new_labels, info
+        iteration = 0
 
-        # Discovery is driven ONLY by the originally-requested label(s)'
-        # own GENUINE TOUCHING adjacency (per_label_foreign_touching),
-        # never by "any label merely present somewhere in the padded
-        # box" (too permissive once the box grows large -- would keep
-        # finding *something* nearby indefinitely) and never by an
-        # already-folded-in neighbor's own touches (which could cascade
-        # the group into everything THAT label happens to touch,
-        # regardless of relevance to what was actually asked to be
-        # corrected).
-        new_neighbors: "set[int]" = set()
-        for lid in original_group:
-            new_neighbors.update(info["per_label_foreign_touching"].get(lid, []))
-        new_neighbors -= group
-        if new_neighbors:
-            group |= new_neighbors
-            group_grew = True
-            _report(f"Growing group to include neighbor(s) {sorted(new_neighbors)} -> {sorted(group)}, redoing this attempt")
-            continue  # redo with the bigger group, same pad
+        for iteration in range(1, max_iterations + 1):
+            used_pad = pad
+            _report(f"Attempt {iteration}: pad={used_pad}px, group={sorted(group)}")
+            new_labels, info = correct_label_group_2d(
+                work, image, sorted(group), z, lo, pad=used_pad, sigma=sigma,
+                # Rectangle scoped to label A alone (rect_focus), never label
+                # B or a folded-in neighbor -- same principle as 3D Pass 1
+                # (see the module docstring above): a large/far-flung label
+                # must never balloon the working area (or the watershed's own
+                # cost) beyond what's actually needed near A's own neighborhood.
+                focus_ids=sorted(rect_focus),
+            )
+            last_new_labels, last_info = new_labels, info
 
-        # Convergence is judged ONLY on label A (rect_focus) -- NOT on
-        # label B or any folded-in neighbor, even though both are members
-        # of original_group. The working rectangle is sized from A's own
-        # extent alone (see correct_label_group_2d's focus_ids), so B
-        # -- being the adjacent, usually larger/further-reaching label --
-        # will almost always end up touching the edge of A's own small
-        # rectangle; that's expected and not a sign the correction needs
-        # a bigger box, since B was never meant to be grown to its own
-        # true extent here in the first place. Judging convergence on B
-        # too would mean auto-grow essentially never converges whenever
-        # B is bigger than A, which defeats the point of scoping the
-        # rectangle to A at all.
-        relevant_touched = any(
-            info["per_label_touched_border"][lid] for lid in rect_focus
-        )
-        if not relevant_touched:
-            converged = True
+            # Discovery is driven ONLY by the originally-requested label(s)'
+            # own GENUINE TOUCHING adjacency (per_label_foreign_touching),
+            # never by "any label merely present somewhere in the padded
+            # box" (too permissive once the box grows large -- would keep
+            # finding *something* nearby indefinitely) and never by an
+            # already-folded-in neighbor's own touches (which could cascade
+            # the group into everything THAT label happens to touch,
+            # regardless of relevance to what was actually asked to be
+            # corrected).
+            new_neighbors: "set[int]" = set()
+            for lid in original_group:
+                new_neighbors.update(info["per_label_foreign_touching"].get(lid, []))
+            new_neighbors -= group
+            if new_neighbors:
+                group |= new_neighbors
+                group_grew = True
+                _report(f"Growing group to include neighbor(s) {sorted(new_neighbors)} -> {sorted(group)}, redoing this attempt")
+                continue  # redo with the bigger group, same pad
+
+            # Convergence is judged ONLY on label A (rect_focus) -- NOT on
+            # label B or any folded-in neighbor, even though both are members
+            # of original_group. The working rectangle is sized from A's own
+            # extent alone (see correct_label_group_2d's focus_ids), so B
+            # -- being the adjacent, usually larger/further-reaching label --
+            # will almost always end up touching the edge of A's own small
+            # rectangle; that's expected and not a sign the correction needs
+            # a bigger box, since B was never meant to be grown to its own
+            # true extent here in the first place. Judging convergence on B
+            # too would mean auto-grow essentially never converges whenever
+            # B is bigger than A, which defeats the point of scoping the
+            # rectangle to A at all.
+            relevant_touched = any(
+                info["per_label_touched_border"][lid] for lid in rect_focus
+            )
+            if not relevant_touched:
+                converged = True
+                break
+            pad += growth_step
+
+        return last_new_labels, last_info, group, used_pad, iteration, converged, group_grew
+
+    group = set(ids_list)
+    pad = int(initial_pad)
+    work = labels
+    prev_masks = None
+    total_iterations = 0
+    total_group_grew = False
+    stability_passes = 0
+    stable = not until_stable  # a single pass has nothing to compare against -- trivially "stable"
+    new_labels = labels
+    info = None
+    converged = False
+
+    max_passes = max_stability_passes if until_stable else 1
+    for sp in range(1, max_passes + 1):
+        new_labels, info, group, pad, n_it, converged, grew = _grow_pass(work, group, pad)
+        total_iterations += n_it
+        if grew:
+            total_group_grew = True
+        stability_passes = sp
+        if not until_stable:
             break
-        pad += growth_step
+
+        cur_masks = {lid: (new_labels[z] == lid) for lid in sorted(group)}
+        if prev_masks is not None and set(cur_masks) == set(prev_masks) and all(
+            np.array_equal(cur_masks[k], prev_masks[k]) for k in cur_masks
+        ):
+            stable = True
+            break
+        prev_masks = cur_masks
+        work = new_labels
+        # loop continues without `stable` ever being set True here -- if
+        # this was the last allowed pass, it stays False (exhausted
+        # max_stability_passes still changing), matching the 3D engine's
+        # own reporting of an unsettled slice rather than silently
+        # keeping whatever the last attempt happened to produce.
 
     report = {
         "group": sorted(group),
-        "pad_used": used_pad,
-        "n_iterations": iteration,
+        "pad_used": pad,
+        "n_iterations": total_iterations,
         "converged": converged,
-        "group_grew": group_grew,
-        "info": last_info,
+        "group_grew": total_group_grew,
+        "info": info,
+        "stability_passes": stability_passes,
+        "stable": stable,
     }
-    return last_new_labels, report
+    return new_labels, report
 
 
 def grow_correct_label_3d(
