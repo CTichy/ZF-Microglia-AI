@@ -5558,8 +5558,21 @@ class ZFMicrogliaAIWidget(QWidget):
             else:
                 scale = metadata["scale"]
                 warn = ""
-            self._viewer.add_labels(data, name=path.stem, scale=scale)
-            self._status(f"Loaded labels: {path.name}  {data.shape}  scale={scale}{warn}")
+            # Same naming convention Create Labels itself uses
+            # (`f"{target.name}_labels"`, e.g. "<stem>_ExtRm_labels" /
+            # "<stem>_NoBG_labels") -- named after the currently active
+            # Image layer (the same one the scale above came from), not
+            # the source TIFF's own filename, so a labels file loaded
+            # this way fits the same convention every OTHER Labels layer
+            # in this plugin already follows. Falls back to the file's
+            # own stem only if no Image layer is open at all to derive a
+            # name from.
+            target = self._active_layer()
+            lname = f"{target.name}_labels" if target is not None else path.stem
+            if lname in self._viewer.layers:
+                self._viewer.layers.remove(lname)
+            self._viewer.add_labels(data, name=lname, scale=scale)
+            self._status(f"Loaded labels: {path.name} -> layer '{lname}'  {data.shape}  scale={scale}{warn}")
             self._refresh_layer_info()
 
         timer.timeout.connect(_poll)
