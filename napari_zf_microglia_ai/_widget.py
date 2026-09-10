@@ -733,6 +733,17 @@ class ZFMicrogliaAIWidget(QWidget):
         self._open_btn = QPushButton("Open TIF / IMS file")
         t1.addWidget(self._open_btn)
 
+        self._load_labels_btn = QPushButton("Load Labels layer (.tif)")
+        t1.addWidget(self._load_labels_btn)
+        load_labels_note = QLabel(
+            "  Loads a saved labels .tif as a Labels layer, scaled to match "
+            "the currently open stack (Open TIF / IMS file above) -- open "
+            "the stack first so the physical (µm) scale is available."
+        )
+        load_labels_note.setWordWrap(True)
+        load_labels_note.setStyleSheet("color: #888; font-size: 10px;")
+        t1.addWidget(load_labels_note)
+
         t1.addWidget(_sep())
 
         t1.addWidget(QLabel("Model (.pth):"))
@@ -4181,6 +4192,7 @@ class ZFMicrogliaAIWidget(QWidget):
 
     def _connect_signals(self):
         self._open_btn.clicked.connect(self._on_open)
+        self._load_labels_btn.clicked.connect(self._on_load_labels)
         self._model_browse_btn.clicked.connect(self._on_browse_model)
         self._bg_group.buttonClicked.connect(self._on_bg_mode_changed)
         self._run_btn.clicked.connect(self._on_run)
@@ -5498,6 +5510,60 @@ class ZFMicrogliaAIWidget(QWidget):
 
         timer.timeout.connect(_poll)
         timer.start(500)
+
+    def _on_load_labels(self):
+        path_str, _ = QFileDialog.getOpenFileName(
+            self, "Load Labels layer", "", "TIFF (*.tif *.tiff);;All files (*)",
+        )
+        if not path_str:
+            return
+        path = Path(path_str)
+        self._status(f"Loading labels {path.name}...")
+        self._load_labels_btn.setEnabled(False)
+
+        result = {}
+
+        def _worker():
+            try:
+                result["data"] = tifffile.imread(str(path)).astype(np.int32)
+            except Exception as exc:
+                result["error"] = str(exc)
+                import traceback as _tb
+                _tb.print_exc()
+
+        thread = threading.Thread(target=_worker, daemon=True)
+        thread.start()
+
+        timer = QTimer(self)
+
+        def _poll():
+            if thread.is_alive():
+                return
+            timer.stop()
+            timer.deleteLater()
+            self._load_labels_btn.setEnabled(True)
+            if "error" in result:
+                self._status(f"ERROR loading labels: {result['error']}")
+                return
+            data = result["data"]
+            # Same scale the currently open stack's own Image layers were
+            # given (Open TIF / IMS file above, _add_channels()) -- so a
+            # labels file saved from elsewhere lines up in physical (µm)
+            # space with whatever stack is already in the viewer, instead
+            # of defaulting to napari's own (1,1,1) voxel-only scale.
+            metadata = self._state.get("metadata")
+            if metadata is None:
+                scale = (1.0, 1.0, 1.0)
+                warn = " -- WARNING: no stack open yet, scale left at (1, 1, 1); open the full stack first for the correct physical scale."
+            else:
+                scale = metadata["scale"]
+                warn = ""
+            self._viewer.add_labels(data, name=path.stem, scale=scale)
+            self._status(f"Loaded labels: {path.name}  {data.shape}  scale={scale}{warn}")
+            self._refresh_layer_info()
+
+        timer.timeout.connect(_poll)
+        timer.start(200)
 
     def _output_dir(self) -> Path:
         """

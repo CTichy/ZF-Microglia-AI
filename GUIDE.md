@@ -159,6 +159,15 @@ Click this button to open your confocal stack (`.tif`, `.tiff`, or `.ims` format
 
 ---
 
+### Load Labels layer (.tif)
+
+Loads a previously saved labels `.tif` (e.g. from [Save Labels](#save-labels) or a GT correction) directly as a Labels layer, without going through Create Labels again. Useful for reopening a labels file for further correction, or bringing in a hand-corrected ground-truth file to compare against.
+
+- Picks any `.tif`/`.tiff` file — the resulting layer is named after the file (its stem).
+- The new layer's **scale** is set to match the currently open stack's own physical (µm) voxel scale — the same one **Open TIF / IMS file** (above) applied to its own Image layers — so the loaded labels line up correctly in 3D space with whatever stack is already in the viewer. **Open the full stack first**, or the labels layer loads at napari's own default (1, 1, 1) scale instead, with a warning in the status line.
+
+---
+
 ### Model (.pth) — Browse button `[...]`
 
 Shows the path to the AI model file. If it says "— no model selected —":

@@ -132,7 +132,7 @@ Tab 4 launches three project-specific research scripts (`prepare_data.py`, `trai
 
 ### Workflow
 
-1. **Open a file** — click "Open TIF / IMS file". All channels load as separate layers.
+1. **Open a file** — click "Open TIF / IMS file". All channels load as separate layers. **Load Labels layer (.tif)**, right below it, loads a saved labels file directly as a Labels layer instead, scaled to match whatever stack is already open.
 2. **Select the channel** to process by clicking its layer in the Layers panel.
 3. **Browse to the model** `.pth` file if not auto-detected.
 4. **Adjust MONAI Threshold** (default 0.25).
