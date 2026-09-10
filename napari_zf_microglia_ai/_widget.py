@@ -33,7 +33,7 @@ from ._labeling import (
     correct_adjacent_labels_2d,
     copy_label_to_adjacent_slice,
     sand_label,
-    seed_skin_label, remove_label,
+    seed_skin_label, trim_skin_label, remove_label,
 )
 from ._statistics import compute_stats
 from ._contrast_sweep import (
@@ -7434,9 +7434,8 @@ class ZFMicrogliaAIWidget(QWidget):
         def _worker():
             try:
                 seeded, skin_id = seed_skin_label(labels, brain_mask)
-                new_labels, rep = correct_label_from_intensity_3d(
-                    seeded, image, skin_id, lo, pad=pad,
-                    min_volume=None, resolve_adjacent=False,
+                new_labels, rep = trim_skin_label(
+                    seeded, image, brain_mask, skin_id, lo, pad=pad,
                 )
                 result["labels"] = new_labels
                 result["skin_id"] = skin_id
@@ -7492,12 +7491,18 @@ class ZFMicrogliaAIWidget(QWidget):
                 self._skin_report_view.hide()
 
             touch_note = f" {len(touching_ids)} label(s) touching skin -- see report below." if touching_ids else ""
+            n_reclaimed = rep.get("n_reclaimed_px", 0)
+            reclaim_note = (
+                f" {n_reclaimed:,} px inside the brain mask (debris/possible "
+                f"cell signal) were kept out of skin and left as background."
+                if n_reclaimed else ""
+            )
             self._skin_status_lbl.setText(
                 f"Done — skin protected as label {skin_id}, {n_px:,} px "
                 f"(real signal only, outside the brain mask). Every other "
                 f"Correct Label / auto-correct call now treats it as "
                 f"ordinary protected territory. Use 'Remove Skin Label' "
-                f"below whenever you no longer need it.{touch_note}"
+                f"below whenever you no longer need it.{touch_note}{reclaim_note}"
             )
             self._skin_protect_btn.setEnabled(True)
 

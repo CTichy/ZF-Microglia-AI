@@ -2383,6 +2383,72 @@ def seed_skin_label(
     return new_labels.astype(np.int32), skin_label_id
 
 
+def trim_skin_label(
+    labels: np.ndarray,
+    image: np.ndarray,
+    brain_mask: np.ndarray,
+    skin_label_id: int,
+    lo: float,
+    pad: int = 15,
+) -> "tuple[np.ndarray, dict]":
+    """
+    Trims a bulk-seeded skin label (seed_skin_label()) down to its real,
+    signal-supported territory, the same way any other label gets
+    corrected -- correct_label_from_intensity_3d(resolve_adjacent=False)
+    -- but additionally enforces seed_skin_label()'s own stated
+    guarantee that skin "never touches anything inside the brain mask,
+    labeled or not," which the generic correction engine alone cannot
+    honor: skin's own local working area, after the bulk seed, already
+    touches the image's own edges on essentially every slice (it's
+    everything the brain mask didn't keep), so the engine's candidate
+    computation -- real signal, not already claimed by a DIFFERENT
+    label -- has no way to distinguish "real skin residue" from any
+    other unclaimed background signal sitting anywhere within that same
+    (near-frame-spanning) working area, brain interior included. A
+    small debris fragment or an as-yet-unsegmented real cell sitting
+    inside the brain, with signal above the threshold, is unclaimed
+    background exactly like real skin residue is -- the engine has no
+    reason to treat the two differently on its own.
+
+    This wraps that same correction call, then strips any resulting
+    skin-label voxel that ends up INSIDE the brain mask back to
+    background (0) -- restoring the documented guarantee exactly,
+    since this can only ever REMOVE a wrongly-claimed pixel, never add
+    one, so it can't change or hide anything about the real
+    outside-brain result.
+
+    labels, image, brain_mask : (Z, Y, X) arrays, same shape.
+                                brain_mask is boolean-like (nonzero =
+                                brain, kept -- same convention as
+                                seed_skin_label()).
+    skin_label_id              : the label to trim (seed_skin_label()'s
+                                own return value).
+    lo, pad                    : same meaning as
+                                correct_label_from_intensity_3d()'s own
+                                lo/pad.
+
+    Returns (new_labels, report) -- report is
+    correct_label_from_intensity_3d()'s own report dict, plus
+    "n_reclaimed_px": how many voxels were stripped back to background
+    for having ended up inside the brain mask (0 if none).
+    """
+    if labels.shape != brain_mask.shape:
+        raise ValueError(f"labels shape {labels.shape} != brain_mask shape {brain_mask.shape}")
+
+    new_labels, report = correct_label_from_intensity_3d(
+        labels, image, skin_label_id, lo, pad=pad,
+        min_volume=None, resolve_adjacent=False,
+    )
+
+    wrongly_inside = brain_mask.astype(bool) & (new_labels == skin_label_id)
+    n_reclaimed = int(wrongly_inside.sum())
+    if n_reclaimed:
+        new_labels[wrongly_inside] = 0
+    report["n_reclaimed_px"] = n_reclaimed
+
+    return new_labels, report
+
+
 def remove_label(labels: np.ndarray, label_id: int) -> "tuple[np.ndarray, int]":
     """
     Clears every voxel currently equal to label_id back to background
