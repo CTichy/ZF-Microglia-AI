@@ -2164,6 +2164,25 @@ class ZFMicrogliaAIWidget(QWidget):
         gtp_raw_row.addWidget(self._gtp_raw_browse_btn)
         gtpl.addLayout(gtp_raw_row)
 
+        gtp_mask_row = QHBoxLayout()
+        gtp_mask_row.addWidget(QLabel("Brain mask (optional):"))
+        self._gtp_mask_edit = QLineEdit("")
+        gtp_mask_row.addWidget(self._gtp_mask_edit)
+        self._gtp_mask_browse_btn = QPushButton("...")
+        self._gtp_mask_browse_btn.setFixedWidth(32)
+        gtp_mask_row.addWidget(self._gtp_mask_browse_btn)
+        gtpl.addLayout(gtp_mask_row)
+        gtp_mask_note = QLabel(
+            "  The raw (un-eroded) brain_mask.tif this fish's own Tab 1 run "
+            "saved -- without it, whoever corrects this package can't use "
+            "Protect Skin as Label at all (it needs a brain mask layer). "
+            "Auto-filled from this fish's own folder when \"Source image\" "
+            "is browsed above, same as Raw Cellpose masks."
+        )
+        gtp_mask_note.setStyleSheet("color: #aaa; font-size: 10px;")
+        gtp_mask_note.setWordWrap(True)
+        gtpl.addWidget(gtp_mask_note)
+
         gtp_guide_row = QHBoxLayout()
         gtp_guide_row.addWidget(QLabel("Creation guide (optional override):"))
         self._gtp_guide_edit = QLineEdit("")
@@ -4227,6 +4246,7 @@ class ZFMicrogliaAIWidget(QWidget):
         self._gtp_img_browse_btn.clicked.connect(self._on_gtp_browse_img)
         self._gtp_masks_browse_btn.clicked.connect(self._on_gtp_browse_masks)
         self._gtp_raw_browse_btn.clicked.connect(self._on_gtp_browse_raw)
+        self._gtp_mask_browse_btn.clicked.connect(self._on_gtp_browse_mask)
         self._gtp_guide_browse_btn.clicked.connect(self._on_gtp_browse_guide)
         self._gtp_out_browse_btn.clicked.connect(self._on_gtp_browse_out)
         self._gtp_run_btn.clicked.connect(self._on_gtp_run)
@@ -5947,6 +5967,8 @@ class ZFMicrogliaAIWidget(QWidget):
             self._gtp_masks_edit.setText(str(best_masks))
         if found["cp"] is not None:
             self._gtp_raw_edit.setText(str(found["cp"]))
+        if brain_mask is not None:
+            self._gtp_mask_edit.setText(str(brain_mask))
         self._gtp_out_edit.setText(str(folder))
 
     def _on_gtk_run(self):
@@ -9307,6 +9329,8 @@ class ZFMicrogliaAIWidget(QWidget):
             self._gtp_masks_edit.setText(str(best_masks))
         if found["cp"] is not None:
             self._gtp_raw_edit.setText(str(found["cp"]))
+        if found["brain_mask"] is not None:
+            self._gtp_mask_edit.setText(str(found["brain_mask"]))
         self._gtp_out_edit.setText(str(folder))
 
     def _on_gtp_browse_masks(self):
@@ -9318,6 +9342,11 @@ class ZFMicrogliaAIWidget(QWidget):
         path_str, _ = QFileDialog.getOpenFileName(self, "Select raw pre-merge Cellpose masks (optional)", "", "TIFF files (*.tif *.tiff)")
         if path_str:
             self._gtp_raw_edit.setText(path_str)
+
+    def _on_gtp_browse_mask(self):
+        path_str, _ = QFileDialog.getOpenFileName(self, "Select brain_mask.tif (optional, raw/un-eroded)", "", "TIFF files (*.tif *.tiff)")
+        if path_str:
+            self._gtp_mask_edit.setText(path_str)
 
     def _on_gtp_browse_guide(self):
         path_str, _ = QFileDialog.getOpenFileName(self, "Select GROUND_TRUTH_CREATION_GUIDE.md", "", "Markdown files (*.md)")
@@ -9349,6 +9378,10 @@ class ZFMicrogliaAIWidget(QWidget):
         if raw_path and not Path(raw_path).exists():
             self._gtp_status_lbl.setText(f"ERROR: Raw Cellpose masks not found: {raw_path}")
             return
+        mask_path = self._gtp_mask_edit.text().strip() or None
+        if mask_path and not Path(mask_path).exists():
+            self._gtp_status_lbl.setText(f"ERROR: Brain mask not found: {mask_path}")
+            return
         guide_path = self._gtp_guide_edit.text().strip() or None
 
         scale = self._get_layer_scale()
@@ -9362,7 +9395,8 @@ class ZFMicrogliaAIWidget(QWidget):
             try:
                 package_dir, zip_path, n_cells = _gtp.build_gt_package(
                     stem, out_dir, img_path, masks_path,
-                    raw_cellpose_masks_path=raw_path, scale_zyx=scale, guide_path=guide_path,
+                    raw_cellpose_masks_path=raw_path, brain_mask_path=mask_path,
+                    scale_zyx=scale, guide_path=guide_path,
                     progress_cb=lambda msg: result.update(_progress=msg),
                 )
                 result["package_dir"] = package_dir

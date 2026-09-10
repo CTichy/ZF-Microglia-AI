@@ -20,6 +20,9 @@ D1F4 fish), always producing the exact same file layout:
     <stem>_cp_masks_3D.tif        (raw pre-merge Cellpose masks, reference only)
     <stem>_cell_statistics.csv    (label/volume/centroid/bbox per cell)
     <stem>_brain_only_ExtRm.tif   (source image)
+    <stem>_brain_mask.tif         (optional -- needed to use Protect Skin
+                                   as Label during correction, see
+                                   build_gt_package()'s own docstring)
 """
 
 import csv
@@ -85,7 +88,8 @@ def _cell_statistics_csv(labels, scale_zyx, out_csv):
 
 
 def build_gt_package(stem, out_dir, image_path, corrected_masks_path,
-                      raw_cellpose_masks_path=None, scale_zyx=(1.0, 0.174, 0.174),
+                      raw_cellpose_masks_path=None, brain_mask_path=None,
+                      scale_zyx=(1.0, 0.174, 0.174),
                       guide_path=None, progress_cb=None):
     """
     Assembles <out_dir>/<stem>_GT_package/ and zips it to
@@ -104,6 +108,13 @@ def build_gt_package(stem, out_dir, image_path, corrected_masks_path,
                                 starting point
     raw_cellpose_masks_path   : optional raw pre-merge Cellpose masks
                                 (copied in as cp_masks_3D.tif, reference only)
+    brain_mask_path            : optional raw (un-eroded) brain_mask.tif
+                                (copied in as brain_mask.tif) -- without
+                                it, whoever corrects this package can't
+                                use Protect Skin as Label at all (that
+                                tool needs a brain mask layer), so it's
+                                worth including whenever one exists for
+                                this fish.
     scale_zyx                 : (Z, Y, X) um/voxel, for the statistics CSV
     guide_path                 : path to GROUND_TRUTH_CREATION_GUIDE.md,
                                 defaults to DEFAULT_GT_GUIDE_PATH
@@ -134,6 +145,10 @@ def build_gt_package(stem, out_dir, image_path, corrected_masks_path,
     if raw_cellpose_masks_path:
         _report("copying raw pre-merge Cellpose masks (reference)...")
         shutil.copy2(raw_cellpose_masks_path, package_dir / f"{stem}_cp_masks_3D.tif")
+
+    if brain_mask_path:
+        _report("copying brain mask (for Protect Skin as Label)...")
+        shutil.copy2(brain_mask_path, package_dir / f"{stem}_brain_mask.tif")
 
     _report("copying ground-truth creation guide...")
     shutil.copy2(guide_path, package_dir / "GROUND_TRUTH_CREATION_GUIDE.md")

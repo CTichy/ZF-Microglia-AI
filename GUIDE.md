@@ -1156,8 +1156,9 @@ Packages a Cellpose-SAM correction result for external manual correction — the
 2. **Source image** — the `brain_only` image the segmentation ran on. **Browsing here also auto-fills every field below** from that fish's own folder (Fish stem, Corrected masks, Raw masks, Output folder) using the established `<parent>/<stem>/<stem>_<artifact>.tif` convention — override anything by hand afterward if it picked the wrong file.
 3. **Corrected masks** — the most-advanced Cellpose-SAM correction stage this fish actually has: **sanded > auto-corrected > Krendl-only**, whichever exists (auto-picked when Source image is browsed above; see [6c's Auto-correct/Sanding sections](#6c-cellpose-sam-segmentation) for what each stage means). Becomes `<stem>_cp_corrected.tif` — the file the reviewer edits first ("start here" per the guide).
 4. **Raw Cellpose masks** (optional) — the pre-merge `do_3D` output, if you have it, included as `<stem>_cp_masks_3D.tif` for reference only (not corrected).
-5. **Creation guide** (optional override) — defaults to this project's own `GROUND_TRUTH_CREATION_GUIDE.md`; only set this if it lives somewhere else on your machine.
-6. **Output folder** — where the package folder and `.zip` are created.
+5. **Brain mask** (optional) — this fish's own raw (un-eroded) `brain_mask.tif`, if you have it, included as `<stem>_brain_mask.tif` — auto-filled the same way as Raw Cellpose masks. **Without it, whoever corrects this package can't use [Protect Skin as Label](#protect-skin-as-label) at all** (that tool needs a brain mask layer), so it's worth including whenever one exists for this fish.
+6. **Creation guide** (optional override) — defaults to this project's own `GROUND_TRUTH_CREATION_GUIDE.md`; only set this if it lives somewhere else on your machine.
+7. **Output folder** — where the package folder and `.zip` are created.
 
 Click **Build GT-Correction Package**. Output:
 
@@ -1167,6 +1168,7 @@ Click **Build GT-Correction Package**. Output:
 │   ├── GROUND_TRUTH_CREATION_GUIDE.md
 │   ├── <stem>_cp_corrected.tif
 │   ├── <stem>_cp_masks_3D.tif        (only if provided)
+│   ├── <stem>_brain_mask.tif         (only if provided)
 │   ├── <stem>_cell_statistics.csv    (label/volume/centroid/bbox — quick reference, not the full Tab 3 output)
 │   └── <stem>_brain_only_ExtRm.tif
 └── <stem>_GT_package.zip             (the folder above, zipped)
@@ -2001,7 +2003,7 @@ Nine tools consolidated from Tabs 1-4, each individually collapsible — see [Se
 | Verify Best Epoch (GT Sweep) | 5 cells, ±2 checkpoints | (Tab 4, Cellpose-SAM) confirms the recommendation against real GT IoU/Dice, not just test_loss — doesn't survive closing napari — **if the sweep disagrees, rewrites the pointer to the confirmed epoch and loads it as Tab 2's active model**. Has an "Email me when done" checkbox (can run 30 min to a couple hours) |
 | Calibrate Correct-Label Contrast (from Cellpose-SAM) | 50 samples (5 cells x 10 slices) | (Tab 2/3, Correct Label) finds the lower-contrast value Correct Label should start from by reproducing what Cellpose-SAM already segmented (mean IoU), not independent GT — **auto-applies `[best lo, best lo + 20]` to the chosen signal layer's contrast limits** |
 | Score Against GT | any 2 Labels layers | Whole-fish Hungarian-matched TP/FP/FN/Score/MeanIoU/MeanDice between any two Labels layers — synchronous, no GPU needed |
-| Build GT-Correction Package | — | (Tab 2) Zips the most-advanced correction stage available (sanded > auto-corrected > Krendl-only) + stats CSV + creation guide for external manual correction — browsing Source image auto-fills the rest |
+| Build GT-Correction Package | — | (Tab 2) Zips the most-advanced correction stage available (sanded > auto-corrected > Krendl-only) + stats CSV + creation guide + optional brain_mask.tif (needed for Protect Skin as Label on the reviewer's end) for external manual correction — browsing Source image auto-fills the rest |
 | Email notification (optional) | *(blank = off)* | Shared SMTP credentials (address, server, port, username, password — password saved **encrypted** via the OS credential store) for every "Email me when done" checkbox in the plugin; configuring it here doesn't itself send anything — see Section 9h |
 | Send Test Email | — | Sends one email immediately (no GPU, no waiting) to confirm SMTP settings before relying on them for a long run |
 
