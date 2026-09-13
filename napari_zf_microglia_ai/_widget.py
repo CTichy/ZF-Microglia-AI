@@ -14,6 +14,7 @@ import numpy as np
 import tifffile
 import torch
 import napari
+from napari.utils.colormaps.colormap import DirectLabelColormap
 
 from qtpy.QtWidgets import (
     QPushButton, QLabel, QWidget, QVBoxLayout, QHBoxLayout,
@@ -510,6 +511,11 @@ class ZFMicrogliaAIWidget(QWidget):
             "metadata":           None,
             "config":             cfg,
         }
+        # None when no layer currently has its skin label hidden;
+        # otherwise {"layer": <Labels layer>, "orig_colormap": <its real
+        # auto-generated colormap, saved so toggling back off restores
+        # it exactly>} -- see _on_toggle_skin_visibility().
+        self._skin_hidden_state = None
         self._build_ui()
         self._connect_signals()
         self._refresh_layer_info()
@@ -2467,6 +2473,18 @@ class ZFMicrogliaAIWidget(QWidget):
         correct_label_row.addWidget(self._correct_use_sel_btn)
         dlt.addLayout(correct_label_row)
 
+        self._correct_skin3d_note = QLabel(
+            "  3D correction is disabled for the skin label (-1) -- it "
+            "walks the WHOLE outside-brain territory slice by slice, "
+            "wasting significant computation for no real benefit over "
+            "Protect Skin as Label's own dedicated (and far cheaper) "
+            "trim. Use 2D mode instead, or re-run Protect Skin as Label."
+        )
+        self._correct_skin3d_note.setWordWrap(True)
+        self._correct_skin3d_note.setStyleSheet("color: #c88; font-size: 10px;")
+        self._correct_skin3d_note.hide()
+        dlt.addWidget(self._correct_skin3d_note)
+
         correct_pad_row = QHBoxLayout()
         correct_pad_row.addWidget(QLabel("Bbox padding (px):"))
         self._correct_pad_spin = QSpinBox()
@@ -2786,6 +2804,21 @@ class ZFMicrogliaAIWidget(QWidget):
 
         self._skin_remove_btn = QPushButton("Remove Skin Label")
         dlt.addWidget(self._skin_remove_btn)
+
+        self._skin_hide_cb = QCheckBox("Hide skin label in the viewer")
+        dlt.addWidget(self._skin_hide_cb)
+        skin_hide_note = QLabel(
+            "  Purely visual -- makes the label ID above fully transparent "
+            "in the active Labels layer's own display, without touching "
+            "any data (unlike Remove Skin Label, which actually deletes "
+            "it). Toggle off to restore its normal color. A brand-new "
+            "label created or painted while hidden may briefly show a "
+            "generic gray instead of its usual color until you toggle "
+            "this off and back on."
+        )
+        skin_hide_note.setWordWrap(True)
+        skin_hide_note.setStyleSheet("color: #888; font-size: 10px;")
+        dlt.addWidget(skin_hide_note)
 
         dlt.addWidget(_sep())
 
@@ -4260,6 +4293,8 @@ class ZFMicrogliaAIWidget(QWidget):
         self._join_btn.clicked.connect(self._on_join_labels)
         self._correct_use_sel_btn.clicked.connect(self._on_use_selected_label_correct)
         self._correct_btn.clicked.connect(self._on_correct_label)
+        self._correct_label_spin.valueChanged.connect(self._on_correct_label_id_changed)
+        self._on_correct_label_id_changed(self._correct_label_spin.value())
         self._copyslice_use_sel_btn.clicked.connect(self._on_use_selected_label_copyslice)
         self._copyslice_btn.clicked.connect(self._on_copy_label_to_adjacent_slice)
         self._adjcorr_a_use_sel_btn.clicked.connect(self._on_use_selected_label_adjcorr_a)
@@ -4267,6 +4302,7 @@ class ZFMicrogliaAIWidget(QWidget):
         self._adjcorr_btn.clicked.connect(self._on_correct_adjacent_labels)
         self._skin_protect_btn.clicked.connect(self._on_protect_skin)
         self._skin_remove_btn.clicked.connect(self._on_remove_skin_label)
+        self._skin_hide_cb.toggled.connect(self._on_toggle_skin_visibility)
         self._save_labels_btn.clicked.connect(self._on_save_labels)
         self._stats_backend_combo.currentIndexChanged.connect(self._on_stats_backend_changed)
         self._stats_btn.clicked.connect(self._on_generate_stats)
@@ -6925,6 +6961,24 @@ class ZFMicrogliaAIWidget(QWidget):
         self._correct_label_spin.setValue(sel)
         self._correct_status_lbl.setText(f"Label to correct set to {sel}.")
 
+    def _on_correct_label_id_changed(self, value):
+        """Skin (-1) can be corrected in 2D but never 3D -- 3D walks the
+        WHOLE outside-brain territory slice by slice, real computation
+        cost for no benefit over Protect Skin as Label's own dedicated,
+        far cheaper trim. Disables (doesn't just hide) the 3D combo
+        item so it can't even be selected, auto-switching back to 2D if
+        it was already selected -- structurally prevents the wasted run
+        rather than only erroring after the fact (that guard still
+        exists in _on_correct_label() too, as a defensive backstop)."""
+        is_skin = (value == -1)
+        model = self._correct_mode_combo.model()
+        item_3d = model.item(1)  # index 1 == "3D (whole cell)", see _build_ui()
+        if item_3d is not None:
+            item_3d.setEnabled(not is_skin)
+        if is_skin and self._correct_mode_combo.currentData() == "3d":
+            self._correct_mode_combo.setCurrentIndex(0)  # back to 2D
+        self._correct_skin3d_note.setVisible(is_skin)
+
     def _on_correct_label(self):
         lyr = self._active_labels_layer()
         if lyr is None:
@@ -6950,6 +7004,16 @@ class ZFMicrogliaAIWidget(QWidget):
         label_id = self._correct_label_spin.value()
         pad = self._correct_pad_spin.value()
         mode = self._correct_mode_combo.currentData()
+        if mode == "3d" and label_id == -1:
+            self._correct_status_lbl.setText(
+                "ERROR: 3D correction of the skin label (-1) is not "
+                "supported -- it walks the WHOLE outside-brain territory "
+                "slice by slice, wasting significant computation for no "
+                "real benefit over Protect Skin as Label's own dedicated "
+                "(and far cheaper) trim. Use 2D mode for a single-slice "
+                "fix, or re-run Protect Skin as Label instead."
+            )
+            return
         # Read the current on-screen contrast lower limit directly --
         # the whole point is that whatever value the user has dialed
         # in by eye becomes the correction threshold. Only lo is used
@@ -7545,6 +7609,58 @@ class ZFMicrogliaAIWidget(QWidget):
         lyr.data[:] = new_labels
         lyr.refresh()
         self._skin_status_lbl.setText(f"Done — removed label {label_id} ({n_removed:,} px).")
+
+    def _on_toggle_skin_visibility(self, checked):
+        """Purely a display change -- swaps the active Labels layer's
+        colormap so the skin label ID (the same field Remove Skin Label
+        uses) renders fully transparent, or restores its real
+        auto-generated colormap. Never touches lyr.data, so this can
+        never affect any correction tool's own foreign-label protection
+        or any other logic in this plugin that reads label values."""
+        lyr = self._active_labels_layer()
+
+        # If a DIFFERENT layer is currently hidden (e.g. the active
+        # layer changed since it was toggled on), restore that one
+        # first so it's never left permanently altered by a change made
+        # through this same checkbox.
+        prev = self._skin_hidden_state
+        if prev is not None and prev["layer"] is not lyr:
+            try:
+                prev["layer"].colormap = prev["orig_colormap"]
+            except Exception:
+                pass
+            self._skin_hidden_state = None
+
+        if lyr is None:
+            self._skin_status_lbl.setText("No Labels layer selected.")
+            self._skin_hide_cb.blockSignals(True)
+            self._skin_hide_cb.setChecked(False)
+            self._skin_hide_cb.blockSignals(False)
+            return
+
+        skin_id = self._skin_id_spin.value()
+
+        if checked:
+            present = sorted(int(v) for v in np.unique(np.asarray(lyr.data)) if v != 0)
+            color_dict = {}
+            for lid in present:
+                col = np.asarray(lyr.get_color(lid), dtype=np.float32)
+                color_dict[lid] = np.zeros(4, dtype=np.float32) if lid == skin_id else col
+            # Fallback for any label created/painted later while hidden
+            # -- a visible neutral gray rather than silently invisible,
+            # so a freshly created label is never mistaken for having
+            # disappeared (DirectLabelColormap otherwise renders any
+            # key missing from color_dict as fully transparent).
+            color_dict[None] = np.array([0.6, 0.6, 0.6, 1.0], dtype=np.float32)
+            self._skin_hidden_state = {"layer": lyr, "orig_colormap": lyr.colormap}
+            lyr.colormap = DirectLabelColormap(color_dict=color_dict, background_value=0)
+            self._skin_status_lbl.setText(f"Skin label {skin_id} hidden in the viewer (data untouched).")
+        else:
+            state = self._skin_hidden_state
+            if state is not None and state["layer"] is lyr:
+                lyr.colormap = state["orig_colormap"]
+                self._skin_hidden_state = None
+            self._skin_status_lbl.setText(f"Skin label {skin_id} visible again.")
 
     def _on_save_labels(self):
         lyr = self._active_labels_layer()
