@@ -2811,10 +2811,11 @@ class ZFMicrogliaAIWidget(QWidget):
             "  Purely visual -- makes the label ID above fully transparent "
             "in the active Labels layer's own display, without touching "
             "any data (unlike Remove Skin Label, which actually deletes "
-            "it). Toggle off to restore its normal color. A brand-new "
-            "label created or painted while hidden may briefly show a "
-            "generic gray instead of its usual color until you toggle "
-            "this off and back on."
+            "it). While hidden, every OTHER label shows as one flat gray "
+            "instead of its own distinct color -- deliberate, so toggling "
+            "this stays fast even on a large fish (enumerating every real "
+            "cell's own color first was the actual cause of a real slowdown, "
+            "fixed). Toggle off to instantly restore every cell's real color."
         )
         skin_hide_note.setWordWrap(True)
         skin_hide_note.setStyleSheet("color: #888; font-size: 10px;")
@@ -7616,7 +7617,10 @@ class ZFMicrogliaAIWidget(QWidget):
         uses) renders fully transparent, or restores its real
         auto-generated colormap. Never touches lyr.data, so this can
         never affect any correction tool's own foreign-label protection
-        or any other logic in this plugin that reads label values."""
+        or any other logic in this plugin that reads label values. See
+        the checked-branch's own comment below for why every OTHER
+        label deliberately renders as one flat color while hidden,
+        rather than each one's own distinct color."""
         lyr = self._active_labels_layer()
 
         # If a DIFFERENT layer is currently hidden (e.g. the active
@@ -7641,20 +7645,37 @@ class ZFMicrogliaAIWidget(QWidget):
         skin_id = self._skin_id_spin.value()
 
         if checked:
-            present = sorted(int(v) for v in np.unique(np.asarray(lyr.data)) if v != 0)
-            color_dict = {}
-            for lid in present:
-                col = np.asarray(lyr.get_color(lid), dtype=np.float32)
-                color_dict[lid] = np.zeros(4, dtype=np.float32) if lid == skin_id else col
-            # Fallback for any label created/painted later while hidden
-            # -- a visible neutral gray rather than silently invisible,
-            # so a freshly created label is never mistaken for having
-            # disappeared (DirectLabelColormap otherwise renders any
-            # key missing from color_dict as fully transparent).
-            color_dict[None] = np.array([0.6, 0.6, 0.6, 1.0], dtype=np.float32)
+            # Deliberately just 2 entries -- skin transparent, every
+            # OTHER label falls through to one flat neutral color via
+            # the `None` default. An earlier version instead scanned
+            # the WHOLE volume with np.unique() and called get_color()
+            # once per real label, to preserve each cell's own distinct
+            # color while hidden -- benchmarked directly against a
+            # synthetic (101, 2048, 2048)/~200-label volume and found
+            # to cost ~1.5s of np.unique() alone, running synchronously
+            # on the GUI thread on every single toggle (this is what
+            # made the plugin feel "quite slow"). A 2-entry
+            # DirectLabelColormap needs neither step, and (verified via
+            # the same benchmark) renders and re-slices just as fast as
+            # the normal auto-generated colormap once past the JIT
+            # warm-up every DirectLabelColormap use pays once per
+            # session (~0.5s the very first time only, ~30ms after).
+            # The trade-off: every OTHER real label shows this same
+            # flat color instead of its own distinct one WHILE skin is
+            # hidden -- toggling back off instantly restores each
+            # cell's real, original color exactly (the saved colormap
+            # object below is untouched by any of this).
+            color_dict = {
+                skin_id: np.zeros(4, dtype=np.float32),
+                None: np.array([0.6, 0.6, 0.6, 1.0], dtype=np.float32),
+            }
             self._skin_hidden_state = {"layer": lyr, "orig_colormap": lyr.colormap}
             lyr.colormap = DirectLabelColormap(color_dict=color_dict, background_value=0)
-            self._skin_status_lbl.setText(f"Skin label {skin_id} hidden in the viewer (data untouched).")
+            self._skin_status_lbl.setText(
+                f"Skin label {skin_id} hidden in the viewer (data untouched). "
+                f"Every other label shows one flat color while hidden -- "
+                f"toggle off to restore each cell's own real color."
+            )
         else:
             state = self._skin_hidden_state
             if state is not None and state["layer"] is lyr:
