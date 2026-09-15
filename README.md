@@ -205,6 +205,8 @@ Requires a **Cellpose-SAM checkpoint** — this is a project-specific fine-tuned
 | Safe-merge min contact (vox) | 10 |
 | Large-contact merge (vox) | 20 |
 
+**Auto-correct labels via contrast sweep after segmentation** (checkbox, on by default) — after a run finishes: calibrates the contrast threshold that best reproduces the fresh labels from the raw signal, protects skin as its own label at that threshold+1 (Protect Skin as Label, using the **Brain mask layer** field below the checkbox — auto-filled from `<stem>_brain_mask`, since Tab 1 already creates and loads it alongside every `_ExtRm`/`_NoBG`/`_RndFill` layer), resorts every cell by Centroid Z, then corrects every cell one at a time in that order with the same auto-grow + until-stable 3D engine as Correct Label (fixed for this pipeline: pad 15px, growth 5px up to 10 attempts/slice, until-stable up to 100 passes/slice), and finally runs Remove Debris once. Produces one consolidated report covering every cell (not one report per cell). Required brain mask field means the run refuses to start if it's missing, checked before the segmentation itself begins.
+
 **Verify Cellprob / Large-contact (GT Sweep)** and **Build GT-Correction Package** — both moved to **Tab 5 — Sweeps & Utilities**.
 
 **Re-run This Cell Only** — fixes one label without redoing the whole fish: crops to that label's own padded bounding box, re-runs `do_3D` + the same GMM/Krendl/large-contact/final-min-size cleanup on just the crop, then splices the result back in place of the old label. Only crop pieces that overlap the original label survive the splice.
