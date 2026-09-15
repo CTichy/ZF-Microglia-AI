@@ -1862,14 +1862,35 @@ class ZFMicrogliaAIWidget(QWidget):
             "  After segmentation: calibrates the contrast threshold that best "
             "reproduces these labels from the raw signal (self-referential, no "
             "GT needed -- same engine as Tab 5's Calibrate Correct-Label "
-            "Contrast sweep), then corrects every cell (whole-volume, "
-            "cell-by-cell) and re-derives the boundary jointly wherever cells "
-            "end up touching (slice-by-slice), then runs Remove Debris once "
-            "over the result."
+            "Contrast sweep), protects skin as its own label at that threshold "
+            "+1 (Protect Skin as Label, using the brain mask layer below), "
+            "resorts every cell by Centroid Z, then corrects every cell one "
+            "at a time in that order with the same auto-grow + until-stable "
+            "3D engine as Tab 3's own Correct Label (fixed for this pipeline: "
+            "pad 15px, growth step 5px up to 10 attempts/slice, until-stable "
+            "up to 100 passes/slice), and finally runs Remove Debris once "
+            "over the result. Produces one consolidated report covering "
+            "every cell, not one report per cell."
         )
         cp_autocorrect_note.setWordWrap(True)
         cp_autocorrect_note.setStyleSheet("color: #888; font-size: 10px;")
         cpg.addWidget(cp_autocorrect_note)
+
+        cp_brainmask_row = QHBoxLayout()
+        cp_brainmask_row.addWidget(QLabel("Brain mask layer (skin protection):"))
+        self._cp_brainmask_combo = QComboBox()
+        cp_brainmask_row.addWidget(self._cp_brainmask_combo)
+        cpg.addLayout(cp_brainmask_row)
+        cp_brainmask_note = QLabel(
+            "  Required when auto-correct above is checked. Auto-selected "
+            "from '<stem>_brain_mask' whenever it matches the active "
+            "brain_only layer -- Tab 1's Open/Run already creates and loads "
+            "that layer alongside every _ExtRm layer, so this is normally "
+            "already filled in."
+        )
+        cp_brainmask_note.setWordWrap(True)
+        cp_brainmask_note.setStyleSheet("color: #888; font-size: 10px;")
+        cpg.addWidget(cp_brainmask_note)
 
         cp_sanding_note = QLabel(
             "  After auto-correct above (if enabled): labels get their "
@@ -5392,7 +5413,10 @@ class ZFMicrogliaAIWidget(QWidget):
         self._stats_shapes_combo.blockSignals(False)
 
         # Labels layers (Score Against GT)
-        for combo in (self._gtscore_pred_combo, self._gtscore_gt_combo, self._ccal_labels_combo, self._skin_mask_combo):
+        for combo in (
+            self._gtscore_pred_combo, self._gtscore_gt_combo, self._ccal_labels_combo,
+            self._skin_mask_combo, self._cp_brainmask_combo,
+        ):
             cur = combo.currentData()
             combo.blockSignals(True)
             combo.clear()
@@ -5403,6 +5427,22 @@ class ZFMicrogliaAIWidget(QWidget):
                     if lyr.name == cur:
                         combo.setCurrentIndex(combo.count() - 1)
             combo.blockSignals(False)
+
+        # Auto-select the matching brain_mask layer for Cellpose-SAM's
+        # skin-protection combo, if nothing is picked yet -- Tab 1's own
+        # Open/Run already creates and loads "<stem>_brain_mask" alongside
+        # "<stem>_brain_only_ExtRm" every time, so this is almost always
+        # already sitting in the viewer, not something to go find by hand.
+        if self._cp_brainmask_combo.currentData() is None:
+            active = self._active_layer()
+            if active is not None:
+                for suffix in ("_brain_only_ExtRm", "_brain_only_NoBG", "_brain_only_RndFill", "_brain_only"):
+                    if active.name.endswith(suffix):
+                        guess = active.name[: -len(suffix)] + "_brain_mask"
+                        idx = self._cp_brainmask_combo.findData(guess)
+                        if idx >= 0:
+                            self._cp_brainmask_combo.setCurrentIndex(idx)
+                        break
 
     def _refresh_layer_info(self, *_):
         lyr = self._active_layer()
@@ -8543,6 +8583,26 @@ class ZFMicrogliaAIWidget(QWidget):
             )
             return
 
+        # Auto-correct's skin protection is mandatory, not optional -- fail
+        # fast here rather than after a multi-hour segmentation run finishes.
+        brain_mask = None
+        if self._cp_autocorrect_cb.isChecked():
+            mask_name = self._cp_brainmask_combo.currentData()
+            if not mask_name or mask_name not in self._viewer.layers:
+                self._cp_status_lbl.setText(
+                    "ERROR: auto-correct is on, which requires a brain mask "
+                    "layer for skin protection -- pick one, or uncheck "
+                    "auto-correct."
+                )
+                return
+            brain_mask = np.asarray(self._viewer.layers[mask_name].data).astype(bool)
+            if brain_mask.shape != volume.shape:
+                self._cp_status_lbl.setText(
+                    f"ERROR: brain mask shape {brain_mask.shape} != volume shape "
+                    f"{volume.shape} -- pick the matching brain mask layer."
+                )
+                return
+
         cellprob      = self._cp_cellprob_slider.value()
         flow          = _FLOW_THRESHOLD_FIXED
         max_gap       = self._cp_maxgap_slider.value()
@@ -8725,21 +8785,27 @@ class ZFMicrogliaAIWidget(QWidget):
             self._cp_status_lbl.setText(base_status + " Auto-correcting labels via contrast sweep...")
             self._run_auto_correction_stage(
                 stem=stem, lname=lname, volume=volume, labels=labels, scale=scale,
-                out_dir=out_dir, base_status=base_status, base_email=base_email,
+                brain_mask=brain_mask, out_dir=out_dir, base_status=base_status, base_email=base_email,
             )
 
         timer2.timeout.connect(_poll2)
         timer2.start(500)
 
-    def _run_auto_correction_stage(self, stem, lname, volume, labels, scale, out_dir, base_status, base_email):
+    def _run_auto_correction_stage(self, stem, lname, volume, labels, scale, brain_mask, out_dir, base_status, base_email):
         """
         Second stage chained onto a Cellpose-SAM Segmentation run, gated
         by self._cp_autocorrect_cb: self-referential contrast calibration
-        + full-stack correction (see auto_contrast_correct_stack()'s own
-        docstring for the 4-step pipeline). Same background-thread +
-        QTimer-poll pattern as the segmentation run itself, chained after
-        it rather than run in parallel, since it corrects THIS run's own
-        fresh labels.
+        + skin protection + Centroid-Z resort + full-stack per-cell 3D
+        correction (see auto_contrast_correct_stack()'s own docstring for
+        the 5-step pipeline). Same background-thread + QTimer-poll pattern
+        as the segmentation run itself, chained after it rather than run
+        in parallel, since it corrects THIS run's own fresh labels.
+
+        growth_step/max_iterations/until_stable/max_stability_passes are
+        fixed for this pipeline (not read from Tab 3's own Correct Label
+        controls) -- explicit values given for this specific chained,
+        unattended use: growth step 5px up to 10 attempts/slice, until
+        stable up to 100 passes/slice.
         """
         min_volume = self._current_min_volume()
         final_min_fraction = self._finalfrac_spin.value()
@@ -8751,8 +8817,10 @@ class ZFMicrogliaAIWidget(QWidget):
                 def _progress3(msg):
                     result3["_progress"] = msg
                 new_labels, report = auto_contrast_correct_stack(
-                    labels, volume, scale,
+                    labels, volume, scale, brain_mask,
                     min_volume=min_volume, final_min_fraction=final_min_fraction,
+                    growth_step=5, max_iterations=10,
+                    until_stable=True, max_stability_passes=100,
                     progress_cb=_progress3,
                 )
                 result3["labels"] = new_labels
@@ -8809,10 +8877,10 @@ class ZFMicrogliaAIWidget(QWidget):
             report_text = format_auto_correction_report(report)
             autocorrect_status = (
                 f"{base_status} Auto-correct done — lo={report['best_lo']:.4g}, "
-                f"{report['n_cells_corrected']}/{report['n_cells_total']} cells corrected, "
-                f"{report['n_groups_corrected']}/{report['n_group_slices']} touching-group(s) "
-                f"corrected, {report['n_debris_fragments_removed']} debris fragment(s) removed. "
-                f"Saved {autocorrected_path.name}."
+                f"skin protected as label {report['skin_label_id']}, "
+                f"{report['n_cells_corrected']}/{report['n_cells_total']} cells corrected "
+                f"(Centroid-Z order), {report['n_debris_fragments_removed']} debris "
+                f"fragment(s) removed. Saved {autocorrected_path.name}."
             )
             self._cp_status_lbl.setText(autocorrect_status)
             self._cp_log_view.append("\n" + report_text)

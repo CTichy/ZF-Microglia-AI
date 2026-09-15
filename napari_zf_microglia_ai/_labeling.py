@@ -1898,9 +1898,9 @@ def correct_label_group_2d(
     (markers = each label's own existing footprint, never an
     auto-detected peak) -- see correct_adjacent_labels_2d()'s own
     docstring for why that anchoring matters. Built for
-    auto_contrast_correct_stack()'s slice-by-slice pass, where more
-    than two cells can end up mutually touching on a given slice after
-    an independent cell-by-cell 3D correction pass, not just pairs.
+    grow_correct_label_2d()'s (Correct Adjacent Labels) joint group
+    correction, where more than two cells can end up mutually touching
+    on a given slice, not just pairs.
 
     label_ids : 2 or more distinct label IDs, all present on slice z.
                 A single-ID call degenerates to plain single-label
@@ -1917,10 +1917,9 @@ def correct_label_group_2d(
                 happens to fall inside that smaller rectangle; territory
                 elsewhere is never read or touched. None (default) uses
                 the UNION of the whole group instead, matching
-                auto_contrast_correct_stack()'s own Pass 2 use, where
-                every group member is a genuine peer already independently
-                corrected in Pass 1 -- there's no single "label we're
-                concerned about" to scope around there.
+                grow_correct_label_2d()'s own use, where every group
+                member is a genuine peer -- there's no single "label
+                we're concerned about" to scope around there.
 
     Returns (new_labels, info). info is a dict:
         n_lost   -- pixels that were one of label_ids before, but ended
@@ -2211,13 +2210,14 @@ def touching_groups_for_stack(labels: np.ndarray) -> "dict[int, list[list[int]]]
     no neighbor there) are omitted entirely, since they need no joint
     correction. Each group is a sorted list of label IDs.
 
-    Used by auto_contrast_correct_stack()'s second pass: an independent
-    cell-by-cell correction can leave two (or more) cells directly
-    touching wherever their newly-recalibrated shapes meet, and which
-    cell "wins" a contested boundary pixel there is an arbitrary
-    accident of processing order -- this is how that pass finds exactly
-    which (slice, cell-group) combinations need to be re-derived
-    jointly instead of left as that greedy artifact.
+    General-purpose utility, not currently called from this plugin's own
+    pipeline (auto_contrast_correct_stack() moved to a per-cell engine,
+    grow_correct_label_3d(), that already resolves adjacency on its own
+    per slice -- see that function's own docstring): finds exactly which
+    (slice, cell-group) combinations ended up directly touching after an
+    independent cell-by-cell correction, e.g. for a caller that still
+    wants those re-derived jointly rather than left to whichever label
+    happened to be corrected first.
     """
     result: "dict[int, list[list[int]]]" = {}
     for z in range(labels.shape[0]):
