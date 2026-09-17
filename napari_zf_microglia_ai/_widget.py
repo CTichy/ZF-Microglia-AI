@@ -2830,7 +2830,7 @@ class ZFMicrogliaAIWidget(QWidget):
         self._skin_pad_spin = QSpinBox()
         self._skin_pad_spin.setMinimum(0)
         self._skin_pad_spin.setMaximum(500)
-        self._skin_pad_spin.setValue(15)
+        self._skin_pad_spin.setValue(25)
         skin_pad_row.addWidget(self._skin_pad_spin)
         dlt.addLayout(skin_pad_row)
 
@@ -3324,6 +3324,7 @@ class ZFMicrogliaAIWidget(QWidget):
         self._t5_category_groups.setdefault("general", []).append(dfg)
 
         self._drift_timer = None
+        self._drift_rotation = None
 
         t3.addStretch()
         tab3.setLayout(t3)
@@ -5962,27 +5963,61 @@ class ZFMicrogliaAIWidget(QWidget):
         by) any correction tool. Each axis advances at a slightly
         different rate (not a common multiple) so the motion reads as an
         organic drift/tumble rather than a mechanical single-axis spin
-        that visibly repeats on a short cycle."""
+        that visibly repeats on a short cycle.
+
+        Composes a real 3D rotation each tick (scipy's own Rotation,
+        the exact class napari's own Camera.angles is itself built on --
+        see napari/components/camera.py's direction/up properties and
+        set_view_direction(), both round-tripping through
+        Rotation.from_euler('xyz', ...)/.as_euler('xyz', ...)) rather
+        than incrementing the three raw Euler-angle NUMBERS
+        independently, mod 360, each tick -- confirmed by a real bug
+        report and root-caused directly in napari's own source, not
+        guessed: an 'xyz'-order Euler decomposition mathematically
+        restricts its OWN middle axis (angles[1]) to [-90, 90] -- the
+        other two axes get a full 360 range, but the middle one doesn't,
+        it can only represent orientations beyond that range by
+        flipping the OTHER two axes 180 instead. A naive per-axis
+        (angle + speed) % 360 accumulator has no way to know this and
+        just keeps incrementing angles[1] past 90 as if it were free --
+        napari's own model then silently reinterprets that as whatever
+        angles[1]'s own valid range actually allows, which reads as
+        exactly one axis (whichever maps to the middle Euler angle)
+        visibly stalling while the other two keep tumbling, precisely
+        the reported symptom. Composing a full Rotation object instead
+        (multiplying a small delta rotation into the running total each
+        tick, only ever converting to Euler angles at the very end just
+        to hand napari the one tuple its own API accepts) has no such
+        restriction -- the actual 3D orientation advances continuously
+        and without limit on every axis; only the NUMBERS napari
+        displays it as might occasionally jump (e.g. rx/rz flipping by
+        180 as ry crosses its own 90 boundary), which is invisible on
+        screen since it's the same physical orientation either way, not
+        a stall.
+        """
         if self._drift_timer is not None:
             self._drift_timer.stop()
             self._drift_timer.deleteLater()
             self._drift_timer = None
+            self._drift_rotation = None
             self._drift_btn.setText("Start Drift")
             return
 
         self._viewer.dims.ndisplay = 3
         self._drift_btn.setText("Stop Drift")
 
+        from scipy.spatial.transform import Rotation as _Rotation
+        self._drift_rotation = _Rotation.from_euler("xyz", self._viewer.camera.angles, degrees=True)
+
         timer = QTimer(self)
 
         def _tick():
             speed = self._drift_speed_slider.value()
-            rx, ry, rz = self._viewer.camera.angles
-            self._viewer.camera.angles = (
-                (rx + speed * 0.031) % 360,
-                (ry + speed * 0.023) % 360,
-                (rz + speed * 0.017) % 360,
+            delta = _Rotation.from_euler(
+                "xyz", [speed * 0.031, speed * 0.023, speed * 0.017], degrees=True,
             )
+            self._drift_rotation = self._drift_rotation * delta
+            self._viewer.camera.angles = tuple(self._drift_rotation.as_euler("xyz", degrees=True))
 
         timer.timeout.connect(_tick)
         timer.start(33)  # ~30fps
@@ -8916,17 +8951,21 @@ class ZFMicrogliaAIWidget(QWidget):
         """
         Second stage chained onto a Cellpose-SAM Segmentation run, gated
         by self._cp_autocorrect_cb: self-referential contrast calibration
-        + skin protection + Centroid-Z resort + full-stack per-cell 3D
-        correction (see auto_contrast_correct_stack()'s own docstring for
-        the 5-step pipeline). Same background-thread + QTimer-poll pattern
-        as the segmentation run itself, chained after it rather than run
-        in parallel, since it corrects THIS run's own fresh labels.
+        + skin protection + debris cleanup + Centroid-Z resort +
+        per-cell correction (2D against skin for a touching cell, 3D
+        otherwise) + final debris cleanup (see auto_contrast_correct_
+        stack()'s own docstring for the full 6-step pipeline). Same
+        background-thread + QTimer-poll pattern as the segmentation run
+        itself, chained after it rather than run in parallel, since it
+        corrects THIS run's own fresh labels.
 
-        growth_step/max_iterations/until_stable/max_stability_passes are
-        fixed for this pipeline (not read from Tab 3's own Correct Label
-        controls) -- explicit values given for this specific chained,
-        unattended use: growth step 5px up to 10 attempts/slice, until
-        stable up to 100 passes/slice.
+        growth_step/max_iterations/until_stable/max_stability_passes/
+        pad/skin_pad are fixed for this pipeline (not read from Tab 3's
+        own Correct Label controls) -- explicit values given for this
+        specific chained, unattended use: growth step 5px up to 10
+        attempts/slice, until stable up to 100 passes/slice (pad and
+        skin_pad use auto_contrast_correct_stack()'s own defaults, 15
+        and 25 respectively).
 
         signal_layer : the actual napari Image layer (not just its raw
                        array, already captured as `volume` above) -- on

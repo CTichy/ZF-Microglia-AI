@@ -13,52 +13,71 @@ cell:
 
   2. Protect Skin as Label, BEFORE any real cell is touched -- seeded
      (seed_skin_label()) and trimmed (trim_skin_label()) at the SAME
-     calibrated `lo` real cells get in step 4 below (no longer offset
+     calibrated `lo` real cells get in step 5 below (no longer offset
      by +1 -- that margin existed to keep skin from greedily grabbing
      marginal real-cell-adjacent signal back when skin's own trim only
      ever excluded a touching cell; now that it jointly resolves the
      boundary against one instead, see below, the margin is no longer
-     needed). Skin becomes a real, ordinary label (-1) at this point.
-     Its own trim uses the same per-slice auto-grow + until-stable
-     machinery real cells get in step 4 (see trim_skin_label()'s own
+     needed), at its OWN dedicated padding (skin_pad, wider than a real
+     cell's own pad by default -- skin's own bounding box already spans
+     nearly the whole frame on most slices, so a slightly bigger
+     starting window costs little and leaves less for auto-grow to have
+     to do). Skin becomes a real, ordinary label (-1) at this point. Its
+     own trim uses the same per-slice auto-grow + until-stable
+     machinery real cells get below (see trim_skin_label()'s own
      docstring), and jointly resolves its boundary against any real
      cell it finds along the way -- but only ever writes back skin's
      OWN resulting territory, never the cell's, since at this point in
      the pipeline that cell hasn't been through its own correction yet.
-     Step 4's per-cell corrections, once it's each cell's own turn, are
-     free to adjust both themselves AND whatever they touch (skin
-     included) -- exactly why this has to happen before, not after,
-     the per-cell loop: skin adapts to whatever a cell currently looks
-     like, then the cell gets the final say once it's actually
-     corrected.
+     No brain-mask clamp any more (see trim_skin_label()'s own
+     docstring) -- step 3 below sweeps up whatever small stray blob it
+     absorbed instead.
 
-  3. Resort every real cell by Centroid Z (resort_labels()) -- gives
-     step 4's wave partitioning below a stable, deterministic starting
-     order to break ties from, not whatever arbitrary order Cellpose-
-     SAM happened to assign label IDs in.
+  3. Remove Debris right after skin protection, before any real cell is
+     touched -- catches whatever small stray blob skin's own unclamped
+     trim absorbed, by size alone (same golden-ratio floor as every
+     other debris pass in this plugin).
 
-  4. 3D correction, batched into parallel-safe WAVES instead of one
-     cell strictly at a time -- grow_correct_label_3d(), the same
-     auto-grow + until-stable engine Tab 3's own "Correct Label" (3D
-     mode) button uses. Its own per-slice walk already resolves a
-     genuinely adjacent label (skin or another cell) entirely on its
-     own -- see grow_correct_label_3d()'s own docstring -- so no
-     separate touching-groups joint pass is needed after this loop.
-     Two cells whose own maximum-possible working areas (bounding box
-     + auto-grow's own worst-case reach) can never overlap are
-     provably unable to interact, so they're grouped into the same
-     wave and corrected concurrently on a ThreadPoolExecutor (capped
-     at 75% of CPU cores); cells that CAN conflict are pushed into
-     later waves, which still see every earlier wave's own already-
-     corrected state -- preserving the same "resolve against an
-     already-corrected neighbor" behavior the old strictly-sequential
-     loop had, just at wave granularity instead of one cell at a time.
-     See _compute_correction_waves()'s own docstring for the exact
-     partitioning scheme. Every cell's own report is kept and merged
-     into one consolidated report, not one report per cell.
+  4. Figure out which real cells skin's own trim (step 2) actually
+     jointly resolved against -- read from trim_skin_label()'s own
+     foreign_nearby report, NOT a fresh pixel-adjacency scan of skin's
+     final territory (see _labels_touching_skin()'s own docstring: the
+     shared _clear_split_interface() convention deliberately clears a
+     1-voxel gap at any freshly split boundary, so a fresh scan would
+     almost never find a real touching neighbor even right after one
+     was genuinely resolved). THEN partition every real cell into
+     parallel-safe WAVES (_compute_correction_waves() -- two cells
+     whose own maximum-possible working areas can never overlap are
+     grouped into the same wave and corrected concurrently on a
+     ThreadPoolExecutor capped at 75% of CPU cores; cells that CAN
+     conflict are pushed into later waves, which still see every
+     earlier wave's own already-corrected state). This one wave
+     partition covers every real cell, touching skin or not -- both
+     correction modes below share the identical worst-case reach
+     formula, so one shared conflict graph is exact for both.
 
-  5. A final whole-layer Remove Debris pass (same golden-ratio floor as
-     every other final-safety-net stage in this plugin) -- step 4's
+  5. Each cell's own correction, mode chosen by whether it touches skin:
+       - Touching skin: corrected in 2D, slice by slice, jointly
+         against skin -- correct_label_2d_stack() (label_id=the cell),
+         the SAME per-slice mechanism trim_skin_label() itself uses,
+         just now writing back the CELL's own side instead of skin's.
+         This is deliberate, not incidental: skin can only ever be
+         corrected in 2D (see trim_skin_label()'s own docstring), so a
+         cell meeting it has to do so on skin's own per-slice terms --
+         running the cell's usual 3D cross-slice walk here would let
+         the cell's own boundary drift across slices in ways skin's
+         fixed-per-slice shape structurally can't reciprocate.
+       - Not touching skin: corrected in 3D as before --
+         grow_correct_label_3d(), the same auto-grow + until-stable
+         engine Tab 3's own "Correct Label" (3D mode) button uses. Its
+         own per-slice walk already resolves a genuinely adjacent
+         label (another cell) entirely on its own, so no separate
+         touching-groups joint pass is needed here either.
+     Every cell's own report is kept and merged into one consolidated
+     report, not one report per cell.
+
+  6. A final whole-layer Remove Debris pass (same golden-ratio floor as
+     every other final-safety-net stage in this plugin) -- step 5's
      per-cell corrections can each leave a small disconnected sliver
      behind on top of their own already-applied per-label debris
      cleanup.
@@ -75,6 +94,7 @@ from scipy.ndimage import find_objects
 from ._labeling import (
     seed_skin_label,
     trim_skin_label,
+    correct_label_2d_stack,
     resort_labels,
     remove_debris,
 )
@@ -84,6 +104,30 @@ from ._contrast_sweep import (
     default_lo_candidates,
     sweep_contrast_lower_value,
 )
+
+
+def _labels_touching_skin(skin_report: dict) -> "set[int]":
+    """
+    Every real label skin's own trim (step 2) actually jointly resolved
+    against, anywhere in the volume -- read from trim_skin_label()'s own
+    foreign_nearby report, NOT a fresh post-hoc pixel-adjacency scan.
+
+    This distinction matters, confirmed directly: a fresh adjacency scan
+    of skin's FINAL territory almost never finds a real touching
+    neighbor, even right after skin was genuinely jointly corrected
+    against it -- _clear_split_interface() (shared by every joint
+    watershed split in this plugin) deliberately clears a 1-voxel gap at
+    the freshly computed boundary between the two labels, precisely so
+    they don't end up literally adjacent again. foreign_nearby, by
+    contrast, is populated from grow_correct_label_2d()'s own group
+    discovery -- which requires GENUINE touching adjacency BEFORE that
+    gap is cleared -- so it reliably captures "this cell was found
+    touching and corrected jointly with skin," which is exactly the
+    "Corrected as Adjacent Labels with the skin" condition step 5 needs
+    to decide 2D-vs-skin vs. plain 3D correction, regardless of the
+    small gap the correction itself leaves behind afterward.
+    """
+    return {i for ids in skin_report.get("foreign_nearby", {}).values() for i in ids}
 
 
 def _compute_correction_waves(
@@ -198,6 +242,7 @@ def auto_contrast_correct_stack(
     min_volume: "int | None" = None,
     final_min_fraction: float = 0.618,
     pad: int = 15,
+    skin_pad: int = 25,
     sigma: float = 1.0,
     n_cells_calib: int = 5,
     slices_per_cell_calib: int = 10,
@@ -212,7 +257,7 @@ def auto_contrast_correct_stack(
 ) -> "tuple[np.ndarray, dict]":
     """
     Full automatic post-segmentation correction. See the module
-    docstring for the 5-step pipeline this runs.
+    docstring for the 6-step pipeline this runs.
 
     labels, image      : (Z, Y, X) volumes, same shape -- labels is the
                           just-produced Cellpose-SAM result, image is
@@ -224,23 +269,32 @@ def auto_contrast_correct_stack(
                           (nonzero = brain, kept). Required: skin
                           protection is not optional in this pipeline.
     min_volume          : Common Settings' Min volume (voxels) -- drives
-                          both step 4's per-cell debris cleanup and the
-                          final whole-layer pass. None skips debris
-                          cleanup entirely (report will show 0 removed)
+                          both the debris pass right after skin
+                          protection and the final whole-layer pass.
+                          None skips debris cleanup entirely (report
+                          will show 0 removed everywhere)
     final_min_fraction  : golden ratio (0.618) by default, matching
                           every other final-safety-net stage
     pad, sigma          : same meaning as every other Correct Label tool
-                          -- pad is also reused as-is for the skin trim's
-                          own bounding-box padding (step 2)
+                          -- pad is used for every real cell's own
+                          correction (step 5), both the 2D-vs-skin and
+                          3D modes
+    skin_pad             : the STARTING pad for skin's own trim (step
+                          2), separate from `pad` above -- skin's own
+                          bounding box already spans nearly the whole
+                          frame on most slices (see trim_skin_label()'s
+                          own docstring), so it gets its own, wider
+                          default rather than sharing a real cell's
+                          tighter one
     n_cells_calib, slices_per_cell_calib, n_lo_steps, edge_margin_um
                         : passed straight through to the contrast sweep
                           (select_calibration_samples / default_lo_candidates)
     growth_step, max_iterations, until_stable, max_stability_passes,
-    auto_grow            : forwarded straight through to
-                          grow_correct_label_3d() for every cell in step
-                          4 -- same meaning as Tab 3's own "Correct
-                          Label" (3D mode) auto-grow / until-stable
-                          controls.
+    auto_grow            : forwarded straight through to both skin's own
+                          trim (step 2) and every real cell's own
+                          correction (step 5, both modes) -- same
+                          meaning as Tab 3's own "Correct Label"
+                          auto-grow / until-stable controls.
     progress_cb          : optional callable(str), called with a
                           human-readable status line as each stage/step
                           advances
@@ -256,20 +310,26 @@ def auto_contrast_correct_stack(
         skin_report              -- trim_skin_label()'s own report dict
                                   for the skin correction
         n_skin_debris_removed_px -- px of stray skin debris swept up
-                                  right after protection (see the debris
-                                  pass right after step 2, below)
+                                  right after protection (step 3)
+        touching_skin_cell_ids -- sorted [label_id, ...] -- every real
+                                  cell corrected in 2D against skin
+                                  (step 5's first mode) rather than 3D
         n_cells_total           -- real cells present after skin
                                   protection + resorting
-        n_cells_corrected       -- how many per-cell 3D corrections
-                                  actually succeeded
+        n_cells_corrected       -- how many per-cell corrections
+                                  actually succeeded (either mode)
         skipped_cells           -- {label_id: reason} for every per-cell
                                   correction that raised (left as it was
                                   going into this pipeline, never crashes
                                   the whole run)
-        cell_reports             -- {label_id: grow_correct_label_3d()'s
-                                  own report dict}, one entry per
-                                  successfully corrected cell, in
-                                  Centroid-Z order
+        cell_reports             -- {label_id: report dict}, one entry
+                                  per successfully corrected cell, in
+                                  Centroid-Z order -- correct_label_2d_
+                                  stack()'s own report shape for a
+                                  touching-skin cell (also tagged with
+                                  "_mode": "2d_vs_skin"), or
+                                  grow_correct_label_3d()'s own report
+                                  shape otherwise (tagged "_mode": "3d")
         n_debris_fragments_removed -- fragments cleared by the final pass
 
     Raises ValueError only for conditions that make the WHOLE run
@@ -322,24 +382,24 @@ def auto_contrast_correct_stack(
     )
 
     # ── Step 2: protect skin BEFORE any real cell is touched, at the
-    #    same calibrated lo real cells get in step 4 (no longer +1 --
+    #    same calibrated lo real cells get in step 5 (no longer +1 --
     #    skin's own trim jointly resolves against a touching cell now,
     #    instead of just excluding it, so that safety margin is no
-    #    longer needed) ───────────────────────────────────────────────
+    #    longer needed), at its own dedicated skin_pad ──────────────────
     _report(f"Auto-correct: protecting skin (lo={best_lo:.4g})...")
     seeded, skin_id = seed_skin_label(labels, brain_mask)
     labels_with_skin, skin_report = trim_skin_label(
-        seeded, image, skin_id, best_lo, pad=pad, sigma=sigma,
+        seeded, image, skin_id, best_lo, pad=skin_pad, sigma=sigma,
         auto_grow=auto_grow, growth_step=growth_step, max_iterations=max_iterations,
         until_stable=until_stable, max_stability_passes=max_stability_passes,
     )
 
-    # trim_skin_label() no longer clamps against the brain mask (that
-    # clamp used to block legitimate inner-boundary correction manual
-    # Correct Label never had to fight -- see its own docstring) -- a
-    # debris pass right here, before any real cell's own turn, sweeps
-    # up whatever small stray blob skin absorbed instead, by size alone
-    # rather than a hard "never inside the brain" rule.
+    # ── Step 3: remove debris skin just absorbed, right here, before
+    #    any real cell's own turn -- trim_skin_label() no longer clamps
+    #    against the brain mask (that clamp used to block legitimate
+    #    inner-boundary correction manual Correct Label never had to
+    #    fight -- see its own docstring), so this is what actually
+    #    catches a small stray blob it picked up along the way ─────────
     n_skin_debris_removed = 0
     if min_volume is not None:
         threshold = int(round(final_min_fraction * min_volume))
@@ -348,13 +408,22 @@ def auto_contrast_correct_stack(
             labels_with_skin, threshold, skin_label_id=skin_id,
         )
 
-    # ── Step 3: resort every real cell by Centroid Z ────────────────────
     _report("Auto-correct: resorting cells by Centroid Z...")
     new_labels = resort_labels(labels_with_skin, sort_by="centroid_z")
 
-    # ── Step 4: 3D correction, batched into parallel-safe waves ─────────
+    # ── Step 4: which cells skin's own trim actually jointly resolved
+    #    against (see _labels_touching_skin()'s own docstring for why
+    #    this reads skin_report's foreign_nearby rather than re-scanning
+    #    skin's final territory for direct pixel adjacency), THEN
+    #    partition every real cell into parallel-safe waves ────────────
     # See _compute_correction_waves()'s own docstring for the exact
-    # partitioning scheme and why it's safe.
+    # partitioning scheme and why it's safe -- one shared wave partition
+    # covers every real cell, touching skin or not, since both
+    # correction modes in step 5 share the identical worst-case reach
+    # formula (pad + growth_step*max_iterations).
+    touching_skin_ids = _labels_touching_skin(skin_report)
+    _report(f"Auto-correct: {len(touching_skin_ids)} cell(s) touch skin.")
+
     unique_ids2 = np.unique(new_labels)
     unique_ids2 = unique_ids2[unique_ids2 > 0]
     n_total = int(unique_ids2.size)
@@ -368,27 +437,41 @@ def auto_contrast_correct_stack(
     )
     n_workers = max(1, int((os.cpu_count() or 4) * 0.75))
     _report(
-        f"Auto-correct: {n_total} cell(s) split into {len(waves)} "
-        f"parallel-safe wave(s) (up to {n_workers} cell(s) at once)..."
+        f"Auto-correct: {n_total} cell(s) ({len(touching_skin_ids)} touching skin, "
+        f"corrected in 2D against it) split into {len(waves)} parallel-safe "
+        f"wave(s) (up to {n_workers} cell(s) at once)..."
     )
 
+    # ── Step 5: each cell's own correction -- 2D against skin for a
+    #    touching cell, 3D otherwise ─────────────────────────────────────
     for wave_idx, wave in enumerate(waves):
         wave_snapshot = new_labels  # read-only for this wave -- each
-        # worker's own grow_correct_label_3d() call copies it internally
-        # before mutating, so concurrent reads here are safe; nothing
-        # writes to new_labels itself until every worker in this wave
-        # has finished and its own single-cell result is merged back
-        # below, so no wave-mate ever sees a partially-updated array.
+        # worker's own correction call copies it internally before
+        # mutating, so concurrent reads here are safe; nothing writes to
+        # new_labels itself until every worker in this wave has
+        # finished and its own single-cell result is merged back below,
+        # so no wave-mate ever sees a partially-updated array.
 
         def _correct_one(lid, _snapshot=wave_snapshot):
             try:
-                result_labels, cell_report = grow_correct_label_3d(
-                    _snapshot, image, lid, best_lo,
-                    initial_pad=pad, growth_step=growth_step, max_iterations=max_iterations,
-                    sigma=sigma, min_volume=min_volume, final_min_fraction=final_min_fraction,
-                    until_stable=until_stable, max_stability_passes=max_stability_passes,
-                    auto_grow=auto_grow,
-                )
+                if lid in touching_skin_ids:
+                    result_labels, cell_report = correct_label_2d_stack(
+                        _snapshot, image, lid, best_lo,
+                        pad=pad, sigma=sigma, auto_grow=auto_grow,
+                        growth_step=growth_step, max_iterations=max_iterations,
+                        until_stable=until_stable, max_stability_passes=max_stability_passes,
+                    )
+                    cell_report = dict(cell_report)
+                    cell_report["_mode"] = "2d_vs_skin"
+                else:
+                    result_labels, cell_report = grow_correct_label_3d(
+                        _snapshot, image, lid, best_lo,
+                        initial_pad=pad, growth_step=growth_step, max_iterations=max_iterations,
+                        sigma=sigma, min_volume=min_volume, final_min_fraction=final_min_fraction,
+                        until_stable=until_stable, max_stability_passes=max_stability_passes,
+                        auto_grow=auto_grow,
+                    )
+                    cell_report["_mode"] = "3d"
                 return lid, result_labels, cell_report, None
             except ValueError as exc:
                 return lid, None, None, str(exc)
@@ -418,7 +501,7 @@ def auto_contrast_correct_stack(
             f"{n_corrected} corrected, {len(skipped_cells)} skipped so far"
         )
 
-    # ── Step 5: final whole-layer debris cleanup (skin included) ────────
+    # ── Step 6: final whole-layer debris cleanup (skin included) ────────
     n_debris_removed = 0
     if min_volume is not None:
         threshold = int(round(final_min_fraction * min_volume))
@@ -432,6 +515,7 @@ def auto_contrast_correct_stack(
         "skin_label_id": skin_id,
         "skin_report": skin_report,
         "n_skin_debris_removed_px": n_skin_debris_removed,
+        "touching_skin_cell_ids": sorted(touching_skin_ids),
         "n_cells_total": n_total,
         "n_cells_corrected": n_corrected,
         "skipped_cells": skipped_cells,
@@ -439,6 +523,48 @@ def auto_contrast_correct_stack(
         "n_debris_fragments_removed": n_debris_removed,
     }
     return new_labels.astype(np.int32), report
+
+
+def _format_2d_vs_skin_report(report: dict, skin_id: int) -> str:
+    """
+    Companion to format_grow_report()'s own "3D, per-slice" style, for
+    a cell corrected by correct_label_2d_stack() instead (touching
+    skin -- see auto_contrast_correct_stack()'s own module docstring,
+    step 5). Same per-slice-report shape, deliberately not run through
+    format_grow_report() itself: that function's "3D" text always says
+    "(3D, per-slice)", which would misdescribe what actually ran here.
+    """
+    lines = [
+        f"Auto-grow (2D per-slice, jointly resolved against skin label "
+        f"{skin_id}): group={report['group']}"
+    ]
+    slices_grown = report.get("slices_grown", {})
+    if slices_grown:
+        grown_txt = ", ".join(f"{z}: {p}px" for z, p in sorted(slices_grown.items()))
+        lines.append(f"  Slice(s) that needed a bigger pad: {grown_txt}")
+    else:
+        lines.append("  No slice needed more than the base pad.")
+    slices_stability = report.get("slices_stability_passes", {})
+    if slices_stability:
+        stab_txt = ", ".join(f"{z}: {p} pass(es)" for z, p in sorted(slices_stability.items()))
+        lines.append(f"  Slice(s) that took more than one pass to settle: {stab_txt}")
+    if not report.get("stable", True):
+        lines.append(
+            "  STILL CHANGING -- at least one slice hit the stability-pass "
+            "cap without settling; a larger cap may let it finish converging."
+        )
+    if report.get("converged", True):
+        lines.append("  Converged -- no part of the result touches the padded region's own edge.")
+    else:
+        still_touching = report.get("slices_not_converged", [])
+        lines.append(
+            "  NOT converged -- signal still reaches the padded region's edge on "
+            f"slice(s) {still_touching} even after auto-grow was exhausted there. "
+            "Real signal may extend further; consider a larger pad, or correct "
+            "this cell by hand."
+        )
+    lines.append(f"  Debris removed: {report.get('n_debris_removed_px', 0)} px")
+    return "\n".join(lines)
 
 
 def format_auto_correction_report(report: dict) -> str:
@@ -469,19 +595,24 @@ def format_auto_correction_report(report: dict) -> str:
         f"  Cells resorted by Centroid Z before correction "
         f"({report['n_cells_total']} cell(s))."
     )
+    touching_ids = report.get("touching_skin_cell_ids", [])
     lines.append("")
     lines.append(
-        f"Cell-by-cell 3D correction (Centroid-Z order): "
+        f"Cell-by-cell correction (Centroid-Z order): "
         f"{report['n_cells_corrected']}/{report['n_cells_total']} corrected"
+        + (f" ({len(touching_ids)} touching skin, corrected in 2D against it; "
+           f"the rest in 3D)" if touching_ids else " (all in 3D, none touch skin)")
         + (f", {len(report['skipped_cells'])} skipped" if report["skipped_cells"] else "")
     )
     for lid, reason in report["skipped_cells"].items():
         lines.append(f"  label {lid} skipped: {reason}")
     lines.append("")
 
-    # Per-cell detail, reusing the exact same formatter the interactive
-    # Correct Label (3D) button uses -- so a cell corrected here reads
-    # identically to one corrected by hand.
+    # Per-cell detail: a cell touching skin was corrected 2D-per-slice
+    # against it (_format_2d_vs_skin_report -- same per-slice report
+    # shape trim_skin_label() itself uses); every other cell reuses the
+    # exact same formatter the interactive Correct Label (3D) button
+    # uses, so it reads identically to one corrected by hand.
     n_converged = 0
     n_not_stable = 0
     total_debris = 0
@@ -490,7 +621,10 @@ def format_auto_correction_report(report: dict) -> str:
     for lid in sorted(report["cell_reports"]):
         cell_report = report["cell_reports"][lid]
         lines.append(f"--- Label {lid} ---")
-        lines.append(format_grow_report(cell_report, mode="3D"))
+        if cell_report.get("_mode") == "2d_vs_skin":
+            lines.append(_format_2d_vs_skin_report(cell_report, report["skin_label_id"]))
+        else:
+            lines.append(format_grow_report(cell_report, mode="3D"))
         lines.append("")
         if cell_report.get("converged"):
             n_converged += 1
