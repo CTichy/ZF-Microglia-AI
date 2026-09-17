@@ -2876,6 +2876,42 @@ class ZFMicrogliaAIWidget(QWidget):
 
         dlt.addWidget(_sep())
 
+        ac_note = QLabel(
+            "  Auto-correct Existing Labels — runs the exact same "
+            "pipeline the Cellpose-SAM Segmentation section's own "
+            "\"Auto-correct labels via contrast sweep\" checkbox chains "
+            "onto a fresh run, on the ACTIVE Labels layer as it "
+            "currently stands instead -- so a labels layer segmented "
+            "earlier (any route, any session, e.g. loaded via \"Load "
+            "Labels layer (.tif)\") can get the same treatment without "
+            "re-running Cellpose-SAM: self-calibrated contrast sweep, "
+            "skin protection + debris cleanup, then every cell "
+            "corrected (2D jointly against skin for a touching cell, "
+            "3D otherwise), then a final debris cleanup. Uses the same "
+            "Signal layer / Brain mask layer / Bbox padding fields as "
+            "Protect Skin as Label, above."
+        )
+        ac_note.setWordWrap(True)
+        ac_note.setStyleSheet("color: #888; font-size: 10px;")
+        dlt.addWidget(ac_note)
+
+        self._ac_labels_btn = QPushButton("Auto-correct Labels")
+        self._ac_labels_btn.setStyleSheet("QPushButton { padding: 5px; }")
+        dlt.addWidget(self._ac_labels_btn)
+
+        self._ac_status_lbl = QLabel("")
+        self._ac_status_lbl.setWordWrap(True)
+        dlt.addWidget(self._ac_status_lbl)
+
+        self._ac_log_view = QTextEdit()
+        self._ac_log_view.setReadOnly(True)
+        self._ac_log_view.setStyleSheet("font-family: monospace; font-size: 9px;")
+        self._ac_log_view.setFixedHeight(150)
+        self._ac_log_view.hide()
+        dlt.addWidget(self._ac_log_view)
+
+        dlt.addWidget(_sep())
+
         self._save_labels_btn = QPushButton("Save Labels")
         self._save_labels_btn.setStyleSheet("QPushButton { padding: 5px; }")
         dlt.addWidget(self._save_labels_btn)
@@ -4394,6 +4430,7 @@ class ZFMicrogliaAIWidget(QWidget):
         self._skin_protect_btn.clicked.connect(self._on_protect_skin)
         self._skin_remove_btn.clicked.connect(self._on_remove_skin_label)
         self._skin_hide_cb.toggled.connect(self._on_toggle_skin_visibility)
+        self._ac_labels_btn.clicked.connect(self._on_autocorrect_labels)
         self._save_labels_btn.clicked.connect(self._on_save_labels)
         self._stats_backend_combo.currentIndexChanged.connect(self._on_stats_backend_changed)
         self._stats_btn.clicked.connect(self._on_generate_stats)
@@ -5433,7 +5470,11 @@ class ZFMicrogliaAIWidget(QWidget):
             self._ccal_report_view.setPlainText(report)
 
             best_lo = sweep["best_lo"]
-            best_hi = best_lo + 20.0
+            # Low end moves to the calibrated threshold; high end is left
+            # exactly as it already was (whatever the signal layer's own
+            # contrast came in as, e.g. from the IMS load) rather than
+            # computed from an arbitrary offset off best_lo.
+            best_hi = float(signal_lyr.contrast_limits[1])
             signal_lyr.contrast_limits = (best_lo, best_hi)
             self._ccal_status_lbl.setText(
                 f"Done — {sweep['n_samples']} sample(s) from "
@@ -7882,6 +7923,145 @@ class ZFMicrogliaAIWidget(QWidget):
                 self._skin_hidden_state = None
             self._skin_status_lbl.setText(f"Skin label {skin_id} visible again.")
 
+    def _on_autocorrect_labels(self):
+        """
+        Runs auto_contrast_correct_stack() -- the exact same 6-step
+        pipeline Cellpose-SAM Segmentation's own "Auto-correct labels
+        via contrast sweep" checkbox chains onto a fresh run -- against
+        the ACTIVE Labels layer as it currently stands, instead of a
+        just-produced one. Lets a labels layer segmented earlier (any
+        route, any prior session -- e.g. loaded via "Load Labels layer
+        (.tif)", or one that predates this pipeline entirely) get the
+        same treatment without re-running Cellpose-SAM from scratch.
+
+        Reuses Protect Skin as Label's own Signal layer / Brain mask
+        layer / Bbox padding fields (this pipeline's own skin-protection
+        step needs exactly the same two layers that button does, and
+        the padding field means the same thing there too) rather than
+        duplicating a second, identical set of combos right below it.
+        """
+        lyr = self._active_labels_layer()
+        if lyr is None:
+            self._ac_status_lbl.setText("No Labels layer selected.")
+            return
+
+        signal_name = self._skin_signal_combo.currentData()
+        if not signal_name or signal_name not in self._viewer.layers:
+            self._ac_status_lbl.setText("ERROR: pick a signal layer first (Protect Skin as Label, above).")
+            return
+        signal_lyr = self._viewer.layers[signal_name]
+
+        mask_name = self._skin_mask_combo.currentData()
+        if not mask_name or mask_name not in self._viewer.layers:
+            self._ac_status_lbl.setText("ERROR: pick a brain mask layer first (Protect Skin as Label, above).")
+            return
+        mask_lyr = self._viewer.layers[mask_name]
+
+        labels = np.asarray(lyr.data)
+        image = np.asarray(signal_lyr.data)
+        brain_mask = np.asarray(mask_lyr.data).astype(bool)
+        if labels.shape != image.shape:
+            self._ac_status_lbl.setText(
+                f"ERROR: labels shape {labels.shape} != signal shape "
+                f"{image.shape} -- pick the matching signal layer."
+            )
+            return
+        if labels.shape != brain_mask.shape:
+            self._ac_status_lbl.setText(
+                f"ERROR: labels shape {labels.shape} != brain mask shape "
+                f"{brain_mask.shape} -- pick the matching brain mask layer."
+            )
+            return
+
+        scale = tuple(float(s) for s in lyr.scale)
+        skin_pad = self._skin_pad_spin.value()
+        min_volume = self._current_min_volume()
+        final_min_fraction = self._finalfrac_spin.value()
+
+        self._ac_labels_btn.setEnabled(False)
+        self._ac_log_view.hide()
+        self._ac_status_lbl.setText("Auto-correcting existing labels...")
+
+        result = {}
+
+        def _worker():
+            try:
+                def _progress(msg):
+                    result["_progress"] = msg
+                new_labels, report = auto_contrast_correct_stack(
+                    labels, image, scale, brain_mask,
+                    min_volume=min_volume, final_min_fraction=final_min_fraction,
+                    skin_pad=skin_pad, growth_step=5, max_iterations=10,
+                    until_stable=True, max_stability_passes=100,
+                    progress_cb=_progress,
+                )
+                result["labels"] = new_labels
+                result["report"] = report
+            except Exception as exc:
+                traceback.print_exc()
+                result["error"] = str(exc)
+
+        thread = threading.Thread(target=_worker, daemon=True)
+        thread.start()
+
+        timer = QTimer(self)
+
+        def _poll():
+            if thread.is_alive():
+                if "_progress" in result:
+                    self._ac_status_lbl.setText(result["_progress"])
+                return
+            timer.stop()
+            timer.deleteLater()
+            if "error" in result:
+                self._ac_status_lbl.setText(f"ERROR: {result['error']}")
+                self._ac_labels_btn.setEnabled(True)
+                return
+
+            new_labels = result["labels"]
+            report = result["report"]
+            lyr.data[:] = new_labels  # in-place -- see Resort Labels above for why
+            lyr.refresh()
+
+            # Same visible feedback the chained Cellpose-SAM pipeline
+            # gives: signal contrast reflects the calibrated threshold,
+            # Protect Skin as Label's own section is populated as if
+            # that button had been clicked directly.
+            best_lo = report["best_lo"]
+            # Low end moves to the calibrated threshold; high end stays
+            # exactly as it already was on the signal layer (e.g. from
+            # the IMS load), not an arbitrary offset off best_lo.
+            signal_lyr.contrast_limits = (best_lo, float(signal_lyr.contrast_limits[1]))
+            skin_rep = report["skin_report"]
+            self._skin_id_spin.setValue(report["skin_label_id"])
+            touching_ids = sorted({i for ids in skin_rep.get("foreign_touching", {}).values() for i in ids})
+            nearby_ids = sorted({i for ids in skin_rep.get("foreign_nearby", {}).values() for i in ids})
+            skin_report_lines = []
+            if touching_ids:
+                skin_report_lines.append(f"Labels directly touching skin: {touching_ids}")
+            if nearby_ids:
+                skin_report_lines.append(f"Labels nearby skin (within its own working area): {nearby_ids}")
+            if skin_report_lines:
+                self._skin_report_view.setPlainText("\n".join(skin_report_lines))
+                self._skin_report_view.show()
+            else:
+                self._skin_report_view.hide()
+
+            report_text = format_auto_correction_report(report)
+            self._ac_log_view.setPlainText(report_text)
+            self._ac_log_view.show()
+            self._ac_status_lbl.setText(
+                f"Done — lo={best_lo:.4g}, skin protected as label {report['skin_label_id']}, "
+                f"{report['n_cells_corrected']}/{report['n_cells_total']} cells corrected "
+                f"({len(report.get('touching_skin_cell_ids', []))} touching skin, in 2D; "
+                f"the rest in 3D), {report['n_debris_fragments_removed']} debris fragment(s) "
+                f"removed. Full report below."
+            )
+            self._ac_labels_btn.setEnabled(True)
+
+        timer.timeout.connect(_poll)
+        timer.start(200)
+
     def _on_save_labels(self):
         lyr = self._active_labels_layer()
         if lyr is None:
@@ -9055,7 +9235,10 @@ class ZFMicrogliaAIWidget(QWidget):
             # this pipeline calls seed_skin_label()/trim_skin_label()
             # directly, so neither would otherwise ever update on its own.
             best_lo = report["best_lo"]
-            signal_layer.contrast_limits = (best_lo, best_lo + 20.0)
+            # Low end moves to the calibrated threshold; high end stays
+            # exactly as it already was on the signal layer (e.g. from
+            # the IMS load), not an arbitrary offset off best_lo.
+            signal_layer.contrast_limits = (best_lo, float(signal_layer.contrast_limits[1]))
 
             skin_rep = report["skin_report"]
             self._skin_id_spin.setValue(report["skin_label_id"])
