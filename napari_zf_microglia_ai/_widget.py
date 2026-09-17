@@ -7663,17 +7663,28 @@ class ZFMicrogliaAIWidget(QWidget):
 
         result = {}
 
+        min_volume = self._current_min_volume()
+        fraction = self._finalfrac_spin.value()
+        debris_threshold = max(1, round(fraction * min_volume))
+
         def _worker():
             try:
                 seeded, skin_id = seed_skin_label(labels, brain_mask)
                 new_labels, rep = trim_skin_label(
-                    seeded, image, brain_mask, skin_id, lo, pad=pad,
+                    seeded, image, skin_id, lo, pad=pad,
                     growth_step=5, max_iterations=10,
                     until_stable=True, max_stability_passes=100,
+                )
+                # No brain-mask clamp any more (see trim_skin_label()'s own
+                # docstring) -- sweep up whatever small stray blob skin
+                # absorbed by size alone instead.
+                new_labels, n_debris = remove_debris(
+                    new_labels, debris_threshold, skin_label_id=skin_id,
                 )
                 result["labels"] = new_labels
                 result["skin_id"] = skin_id
                 result["report"] = rep
+                result["n_debris"] = n_debris
             except Exception as exc:
                 traceback.print_exc()
                 result["error"] = str(exc)
@@ -7725,18 +7736,17 @@ class ZFMicrogliaAIWidget(QWidget):
                 self._skin_report_view.hide()
 
             touch_note = f" {len(touching_ids)} label(s) touching skin -- see report below." if touching_ids else ""
-            n_reclaimed = rep.get("n_reclaimed_px", 0)
-            reclaim_note = (
-                f" {n_reclaimed:,} px inside the brain mask (debris/possible "
-                f"cell signal) were kept out of skin and left as background."
-                if n_reclaimed else ""
+            n_debris = result.get("n_debris", 0)
+            debris_note = (
+                f" {n_debris:,} px of stray skin debris removed."
+                if n_debris else ""
             )
             self._skin_status_lbl.setText(
                 f"Done — skin protected as label {skin_id}, {n_px:,} px "
                 f"(real signal only, outside the brain mask). Every other "
                 f"Correct Label / auto-correct call now treats it as "
                 f"ordinary protected territory. Use 'Remove Skin Label' "
-                f"below whenever you no longer need it.{touch_note}{reclaim_note}"
+                f"below whenever you no longer need it.{touch_note}{debris_note}"
             )
             self._skin_protect_btn.setEnabled(True)
 
@@ -9028,17 +9038,16 @@ class ZFMicrogliaAIWidget(QWidget):
                 self._skin_report_view.show()
             else:
                 self._skin_report_view.hide()
-            n_reclaimed = skin_rep.get("n_reclaimed_px", 0)
-            reclaim_note = (
-                f" {n_reclaimed:,} px inside the brain mask (debris/possible "
-                f"cell signal) were kept out of skin and left as background."
-                if n_reclaimed else ""
+            n_skin_debris = report.get("n_skin_debris_removed_px", 0)
+            debris_note = (
+                f" {n_skin_debris:,} px of stray skin debris removed."
+                if n_skin_debris else ""
             )
             self._skin_status_lbl.setText(
                 f"Done (via auto-correct) — skin protected as label "
                 f"{report['skin_label_id']}, real signal only, outside the "
                 f"brain mask. Use 'Remove Skin Label' below whenever you no "
-                f"longer need it.{reclaim_note}"
+                f"longer need it.{debris_note}"
             )
 
             report_text = format_auto_correction_report(report)

@@ -2410,7 +2410,6 @@ def seed_skin_label(
 def trim_skin_label(
     labels: np.ndarray,
     image: np.ndarray,
-    brain_mask: np.ndarray,
     skin_label_id: int,
     lo: float,
     pad: int = 15,
@@ -2489,29 +2488,22 @@ def trim_skin_label(
     "trim to real signal only": no signal found means no real skin
     there, not "leave it as an unexamined blob."
 
-    Also enforces seed_skin_label()'s own stated guarantee that skin
-    "never touches anything inside the brain mask, labeled or not,"
-    which the per-slice engine alone cannot honor on its own: skin's
-    own local working area, after the bulk seed, already touches the
-    image's own edges on essentially every slice (it's everything the
-    brain mask didn't keep), so its candidate computation -- real
-    signal, not already claimed by a DIFFERENT label -- has no way to
-    distinguish "real skin residue" from any other unclaimed background
-    signal sitting anywhere within that same (near-frame-spanning)
-    working area, brain interior included. A small debris fragment or
-    an as-yet-unsegmented real cell sitting inside the brain, with
-    signal above the threshold, is unclaimed background exactly like
-    real skin residue is -- the engine has no reason to treat the two
-    differently on its own. This strips any resulting skin-label voxel
-    that ends up INSIDE the brain mask back to background (0) --
-    restoring the documented guarantee exactly, since this can only
-    ever REMOVE a wrongly-claimed pixel, never add one, so it can't
-    change or hide anything about the real outside-brain result.
+    Deliberately does NOT clamp its result against the brain mask.
+    An earlier version did (voxels landing inside the brain mask were
+    stripped back to background), added to stop skin from absorbing
+    small debris/possible-cell blobs sitting inside the brain -- but
+    that clamp also blocked legitimate correction along skin's real
+    inner boundary, which manual Correct Label (no clamp at all) never
+    had to fight. Per explicit instruction, the clamp is removed and
+    the debris problem it used to catch is handled downstream instead:
+    the caller is expected to run remove_debris(..., skin_label_id=...)
+    right after this, which sweeps away any small stray blob skin
+    absorbed (inside the brain or anywhere else) by size alone, the
+    same way debris in any other label is caught -- without silently
+    forbidding a large, legitimate inward correction the way a hard
+    clamp would.
 
-    labels, image, brain_mask : (Z, Y, X) arrays, same shape.
-                                brain_mask is boolean-like (nonzero =
-                                brain, kept -- same convention as
-                                seed_skin_label()).
+    labels, image               : (Z, Y, X) arrays, same shape.
     skin_label_id              : the label to trim (seed_skin_label()'s
                                 own return value).
     lo, pad                    : same meaning as _intensity_correct_2d()'s
@@ -2561,13 +2553,10 @@ def trim_skin_label(
                               True when until_stable is False)
         n_debris_removed_px -- always 0 (no cross-slice debris pass for
                               skin; kept for report-shape parity with
-                              every other label's own report)
-        n_reclaimed_px       -- how many voxels were stripped back to
-                              background for having ended up inside the
-                              brain mask (0 if none)
+                              every other label's own report -- run
+                              remove_debris(..., skin_label_id=...)
+                              separately to actually sweep skin debris)
     """
-    if labels.shape != brain_mask.shape:
-        raise ValueError(f"labels shape {labels.shape} != brain_mask shape {brain_mask.shape}")
     if not np.any(labels == skin_label_id):
         raise ValueError(f"label {skin_label_id} not found anywhere in the volume")
 
@@ -2654,11 +2643,6 @@ def trim_skin_label(
     with ThreadPoolExecutor(max_workers=n_workers) as pool:
         list(pool.map(_process_slice, range(Z_dim)))
 
-    wrongly_inside = brain_mask.astype(bool) & (new_labels == skin_label_id)
-    n_reclaimed = int(wrongly_inside.sum())
-    if n_reclaimed:
-        new_labels[wrongly_inside] = 0
-
     report = {
         "foreign_touching": foreign_touching,
         "foreign_nearby": foreign_nearby,
@@ -2666,7 +2650,6 @@ def trim_skin_label(
         "slices_stability_passes": slices_stability_passes,
         "stable": not slices_unstable,
         "n_debris_removed_px": 0,
-        "n_reclaimed_px": n_reclaimed,
     }
     return new_labels.astype(np.int32), report
 

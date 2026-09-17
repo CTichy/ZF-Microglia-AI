@@ -255,6 +255,9 @@ def auto_contrast_correct_stack(
         skin_label_id           -- the ID skin was seeded as (-1)
         skin_report              -- trim_skin_label()'s own report dict
                                   for the skin correction
+        n_skin_debris_removed_px -- px of stray skin debris swept up
+                                  right after protection (see the debris
+                                  pass right after step 2, below)
         n_cells_total           -- real cells present after skin
                                   protection + resorting
         n_cells_corrected       -- how many per-cell 3D corrections
@@ -326,10 +329,24 @@ def auto_contrast_correct_stack(
     _report(f"Auto-correct: protecting skin (lo={best_lo:.4g})...")
     seeded, skin_id = seed_skin_label(labels, brain_mask)
     labels_with_skin, skin_report = trim_skin_label(
-        seeded, image, brain_mask, skin_id, best_lo, pad=pad, sigma=sigma,
+        seeded, image, skin_id, best_lo, pad=pad, sigma=sigma,
         auto_grow=auto_grow, growth_step=growth_step, max_iterations=max_iterations,
         until_stable=until_stable, max_stability_passes=max_stability_passes,
     )
+
+    # trim_skin_label() no longer clamps against the brain mask (that
+    # clamp used to block legitimate inner-boundary correction manual
+    # Correct Label never had to fight -- see its own docstring) -- a
+    # debris pass right here, before any real cell's own turn, sweeps
+    # up whatever small stray blob skin absorbed instead, by size alone
+    # rather than a hard "never inside the brain" rule.
+    n_skin_debris_removed = 0
+    if min_volume is not None:
+        threshold = int(round(final_min_fraction * min_volume))
+        _report(f"Auto-correct: removing debris skin absorbed (below {threshold} vox)...")
+        labels_with_skin, n_skin_debris_removed = remove_debris(
+            labels_with_skin, threshold, skin_label_id=skin_id,
+        )
 
     # ── Step 3: resort every real cell by Centroid Z ────────────────────
     _report("Auto-correct: resorting cells by Centroid Z...")
@@ -414,6 +431,7 @@ def auto_contrast_correct_stack(
         "n_calibration_samples": sweep["n_samples"],
         "skin_label_id": skin_id,
         "skin_report": skin_report,
+        "n_skin_debris_removed_px": n_skin_debris_removed,
         "n_cells_total": n_total,
         "n_cells_corrected": n_corrected,
         "skipped_cells": skipped_cells,
@@ -434,8 +452,7 @@ def format_auto_correction_report(report: dict) -> str:
     lines.append(
         f"  Skin protected as label {report['skin_label_id']} "
         f"(lo={report['best_lo']:.4g}) -- "
-        f"{skin_report.get('n_debris_removed_px', 0)} px trimmed as debris, "
-        f"{skin_report.get('n_reclaimed_px', 0)} px reclaimed from inside the brain mask."
+        f"{report.get('n_skin_debris_removed_px', 0)} px of stray skin debris removed."
     )
     skin_slices_grown = skin_report.get("slices_grown", {})
     skin_slices_stability = skin_report.get("slices_stability_passes", {})
