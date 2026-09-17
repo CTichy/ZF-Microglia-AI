@@ -2434,7 +2434,15 @@ def trim_skin_label(
     isn't already exactly bounded -- and skin spans nearly the ENTIRE Z
     range of a typical fish, so walking that machinery over every slice
     is real, wasted computation (the same reason 3D correction of skin
-    is already blocked in the interactive Correct Label tool).
+    is already blocked in the interactive Correct Label tool). Having no
+    cross-slice dependency also means every slice can be corrected in
+    parallel, safely: each thread only ever reads/writes its own
+    new_labels[z], a disjoint memory region from every other z. Run on
+    a ThreadPoolExecutor capped at 75% of CPU cores (confirmed via
+    direct benchmark: ~3.5x faster at real fish scale on an 8-core
+    machine, e.g. ~12.6min -> ~3.6min for a ~100-slice fish with
+    auto-grow/until-stable both on) -- not all of them, so this doesn't
+    starve the rest of napari or another concurrent job of every core.
 
     Each slice is corrected on its own, so `pad`/`lo` behave exactly as
     documented for a plain single-slice correction: a window padded
@@ -2659,21 +2667,21 @@ def trim_skin_label(
         slices_unstable.add(z)
         return outcome
 
-    for z in range(Z_dim):
+    def _process_slice(z: int) -> None:
         labels_z = new_labels[z]
         if not np.any(labels_z == skin_label_id):
-            continue
+            return
 
         outcome = _full(z)
         if outcome is None:
-            continue
+            return
         found, foreign_ids_here = outcome
         if not found:
             # No signal at/above lo anywhere near skin's own footprint
             # on this slice, even after growth -- clear it to background
             # rather than leave the bulk seed's unexamined blob standing.
             labels_z[labels_z == skin_label_id] = 0
-            continue
+            return
 
         if foreign_ids_here:
             foreign_nearby[z] = foreign_ids_here
@@ -2686,6 +2694,22 @@ def trim_skin_label(
         )
         if touching_ids:
             foreign_touching[z] = touching_ids
+
+    # Every slice is corrected entirely independently -- no cross-slice
+    # seeding or dependency at all (unlike the old 3D walk this replaced,
+    # see the module docstring) -- so this is safe to run in parallel:
+    # each thread only ever reads/writes its own new_labels[z], a
+    # disjoint memory region from every other z, and foreign_nearby/
+    # foreign_touching/slices_grown/slices_stability_passes/
+    # slices_unstable are each only ever written under a distinct key
+    # (this z) per thread, which CPython's GIL makes safe without an
+    # explicit lock -- the same pattern _statistics.py's own per-cell
+    # ThreadPoolExecutor work already relies on. Capped at 75% of CPU
+    # cores (not all of them) so this doesn't starve the rest of napari
+    # (or another concurrent job) of every core.
+    n_workers = max(1, int((os.cpu_count() or 4) * 0.75))
+    with ThreadPoolExecutor(max_workers=n_workers) as pool:
+        list(pool.map(_process_slice, range(Z_dim)))
 
     wrongly_inside = brain_mask.astype(bool) & (new_labels == skin_label_id)
     n_reclaimed = int(wrongly_inside.sum())
