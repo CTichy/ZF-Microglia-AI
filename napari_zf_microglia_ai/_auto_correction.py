@@ -201,7 +201,7 @@ def auto_contrast_correct_stack(
     _report(f"Auto-correct: protecting skin (lo={skin_lo:.4g})...")
     seeded, skin_id = seed_skin_label(labels, brain_mask)
     labels_with_skin, skin_report = trim_skin_label(
-        seeded, image, brain_mask, skin_id, skin_lo, pad=pad,
+        seeded, image, brain_mask, skin_id, skin_lo, pad=pad, sigma=sigma,
     )
 
     # ── Step 3: resort every real cell by Centroid Z ────────────────────

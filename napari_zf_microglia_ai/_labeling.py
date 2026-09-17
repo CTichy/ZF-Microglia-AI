@@ -2414,6 +2414,7 @@ def trim_skin_label(
     skin_label_id: int,
     lo: float,
     pad: int = 15,
+    sigma: float = 1.0,
 ) -> "tuple[np.ndarray, dict]":
     """
     Trims a bulk-seeded skin label (seed_skin_label()) down to its real,
@@ -2428,18 +2429,41 @@ def trim_skin_label(
     isn't already exactly bounded -- and skin spans nearly the ENTIRE Z
     range of a typical fish, so walking that machinery over every slice
     is real, wasted computation (the same reason 3D correction of skin
-    is already blocked in the interactive Correct Label tool). Each
-    slice is corrected on its own via _intensity_correct_2d() -- the
-    same single-slice engine Correct Label's own 2D mode already uses --
-    so `pad`/`lo` behave exactly as documented there, per slice: a
-    window padded around skin's own CURRENT footprint on THAT ONE
-    slice, thresholded at `lo`, foreign-protected.
+    is already blocked in the interactive Correct Label tool).
+
+    Each slice is corrected on its own, so `pad`/`lo` behave exactly as
+    documented for a plain single-slice correction: a window padded
+    around skin's own CURRENT footprint on THAT ONE slice, thresholded
+    at `lo`. Two sub-cases, per slice:
+
+    - No real (positive) label present in that padded window ->
+      _intensity_correct_2d() -- the same single-slice engine Correct
+      Label's own 2D mode uses -- plain threshold, foreign-protected.
+    - One or more real labels present -> the boundary is jointly
+      RESOLVED against them via _correct_label_group_2d_core() (the
+      same marker-seeded watershed "Correct Adjacent Labels" uses), NOT
+      just excluded -- this is what lets skin correctly grow into signal
+      a real cell's own earlier correction over-claimed, instead of
+      being permanently walled off at wherever that cell's boundary
+      currently happens to sit. Only skin's OWN resulting territory is
+      ever painted back, though: every other group member's own crop is
+      read (to resolve a fair shared boundary against) but never
+      written to. A real cell's own existing pixels are always used as
+      ITS OWN watershed marker/seed, and a marker pixel structurally can
+      never be reassigned to a different basin by watershed -- so this
+      isn't a policy this function has to separately enforce, it's
+      guaranteed by the same algorithm computing the split (confirmed
+      directly, not just assumed). If the joint resolution can't
+      complete for some reason (e.g. the cell's own portion of the
+      locally-thresholded candidate region comes back empty), this
+      falls back to the plain exclusion-only path above for that slice
+      rather than giving up on skin there entirely.
 
     A slice with no signal at/above `lo` anywhere near skin's own
-    footprint there (_intensity_correct_2d() raises ValueError) has its
-    entire skin footprint on that slice cleared to background instead
-    of being left as whatever the bulk seed put there -- consistent
-    with "trim to real signal only": no signal found means no real skin
+    footprint there (both paths above raise ValueError) has its entire
+    skin footprint on that slice cleared to background instead of
+    being left as whatever the bulk seed put there -- consistent with
+    "trim to real signal only": no signal found means no real skin
     there, not "leave it as an unexamined blob."
 
     Also enforces seed_skin_label()'s own stated guarantee that skin
@@ -2470,6 +2494,11 @@ def trim_skin_label(
     lo, pad                    : same meaning as _intensity_correct_2d()'s
                                 own lo/pad -- applied fresh, independently,
                                 on every slice.
+    sigma                      : Gaussian smoothing before the joint
+                                watershed split, only used on a slice
+                                where a real label is actually nearby --
+                                same meaning/default as Correct Adjacent
+                                Labels' own sigma.
 
     Returns (new_labels, report). report is a dict:
         foreign_touching    -- {z: sorted [foreign label ids]} -- real
@@ -2493,33 +2522,55 @@ def trim_skin_label(
     struct2d = np.ones((3, 3), dtype=bool)
 
     new_labels = labels.copy()
-    Z_dim = new_labels.shape[0]
+    Z_dim, Y_dim, X_dim = new_labels.shape
     foreign_touching: "dict[int, list[int]]" = {}
     foreign_nearby: "dict[int, list[int]]" = {}
 
     for z in range(Z_dim):
         labels_z = new_labels[z]
-        if not np.any(labels_z == skin_label_id):
-            continue
-        try:
-            corrected, crop_existing, (y0, y1, x0, x1) = _intensity_correct_2d(
-                labels_z, image[z], skin_label_id, lo, pad
-            )
-        except ValueError:
-            # No signal at/above lo anywhere near skin's own footprint
-            # on this slice -- clear it to background rather than leave
-            # the bulk seed's unexamined blob standing.
-            labels_z[labels_z == skin_label_id] = 0
+        own = labels_z == skin_label_id
+        if not np.any(own):
             continue
 
-        crop = labels_z[y0:y1, x0:x1]
-        crop[crop_existing] = 0
-        crop[corrected] = skin_label_id
-
+        ys, xs = np.nonzero(own)
+        by0 = max(int(ys.min()) - pad, 0)
+        by1 = min(int(ys.max()) + pad + 1, Y_dim)
+        bx0 = max(int(xs.min()) - pad, 0)
+        bx1 = min(int(xs.max()) + pad + 1, X_dim)
         foreign_ids_here = sorted(
-            int(i) for i in np.unique(labels_z[y0:y1, x0:x1])
+            int(i) for i in np.unique(labels_z[by0:by1, bx0:bx1])
             if i not in (0, skin_label_id)
         )
+
+        applied = False
+        if foreign_ids_here:
+            try:
+                group_ids = [skin_label_id] + foreign_ids_here
+                (y0, y1, x0, x1, crop_existing, finals, _info) = _correct_label_group_2d_core(
+                    new_labels, image, group_ids, z, lo, pad, sigma, focus_ids=[skin_label_id],
+                )
+                crop = labels_z[y0:y1, x0:x1]
+                crop[crop_existing[skin_label_id]] = 0
+                crop[finals[skin_label_id]] = skin_label_id
+                applied = True
+            except ValueError:
+                pass  # fall through to the plain exclusion-only path below
+
+        if not applied:
+            try:
+                corrected, crop_existing_mask, (y0, y1, x0, x1) = _intensity_correct_2d(
+                    labels_z, image[z], skin_label_id, lo, pad
+                )
+            except ValueError:
+                # No signal at/above lo anywhere near skin's own footprint
+                # on this slice -- clear it to background rather than
+                # leave the bulk seed's unexamined blob standing.
+                labels_z[own] = 0
+                continue
+            crop = labels_z[y0:y1, x0:x1]
+            crop[crop_existing_mask] = 0
+            crop[corrected] = skin_label_id
+
         if foreign_ids_here:
             foreign_nearby[z] = foreign_ids_here
 
