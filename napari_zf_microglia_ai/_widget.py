@@ -15,6 +15,7 @@ import tifffile
 import torch
 import napari
 from napari.utils.colormaps.colormap import DirectLabelColormap
+from napari.utils.colormaps import _accelerated_cmap as _napari_accel_cmap
 
 from qtpy.QtWidgets import (
     QPushButton, QLabel, QWidget, QVBoxLayout, QHBoxLayout,
@@ -74,6 +75,40 @@ _CONFIG_PATH = Path.home() / ".config" / "napari-zf-microglia-ai" / "config.json
 # control anywhere in the UI; kept only because do_3D's own call signature
 # still accepts a flow_threshold argument.
 _FLOW_THRESHOLD_FIXED = 0.4
+
+
+class _FastDirectLabelColormap(DirectLabelColormap):
+    """DirectLabelColormap that always uses napari's own numpy
+    array-index implementation for its per-voxel raw-to-texture cast
+    (_labels_raw_to_texture_direct_numpy), instead of whichever backend
+    napari's own module-level colormap-backend selection currently
+    points at. In an environment with numba installed but not the
+    faster PartSegCore_compiled_backend (this plugin's own env), that
+    selection routes DirectLabelColormap through a numba-JIT'd typed-
+    dict hashmap lookup, once per voxel -- confirmed via direct
+    benchmark to be ~2.5x slower than the plain array-index approach at
+    real fish scale ((101, 2048, 2048)/~200 labels: 3.06s vs 1.20s,
+    byte-identical output) -- and this specifically bites in 3D display
+    mode, where the WHOLE volume (not just one 2D slice) gets re-cast
+    on every refresh, not the toggle click itself (already fast, see
+    "Hide skin label in the viewer" below).
+
+    Only overrides the array-input path -- the scalar/small-dtype
+    (itemsize<=2) cases already take napari's own cheap pass-through
+    fast path regardless of backend, so they're left exactly as-is.
+    """
+
+    def _data_to_texture(self, values):
+        if isinstance(values, np.integer) or (
+            hasattr(values, "itemsize") and values.itemsize <= 2
+        ):
+            return super()._data_to_texture(values)
+        original_shape = np.shape(values)
+        array_data = np.atleast_1d(values)
+        return np.reshape(
+            _napari_accel_cmap._labels_raw_to_texture_direct_numpy(array_data, self),
+            original_shape,
+        )
 
 # Suffix added to brain_only filename for each background mode
 _BG_SUFFIX = {
@@ -7715,7 +7750,7 @@ class ZFMicrogliaAIWidget(QWidget):
             # rather than silently vanishing.
             color_dict[None] = np.array([0.6, 0.6, 0.6, 1.0], dtype=np.float32)
             self._skin_hidden_state = {"layer": lyr, "orig_colormap": lyr.colormap}
-            lyr.colormap = DirectLabelColormap(color_dict=color_dict, background_value=0)
+            lyr.colormap = _FastDirectLabelColormap(color_dict=color_dict, background_value=0)
             self._skin_status_lbl.setText(
                 f"Skin label {skin_id} hidden in the viewer (data untouched, "
                 f"every other label keeps its own real color)."
