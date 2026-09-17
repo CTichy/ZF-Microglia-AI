@@ -32,6 +32,7 @@
    - [9g. Verify Smooth σ XY / σ Z (GT Sweep)](#9g-verify-smooth-sigma-xy-sigma-z-gt-sweep)
    - [9h. Email notification (optional)](#9h-email-notification-optional)
    - [9i. Calibrate Correct-Label Contrast (from Cellpose-SAM)](#9i-calibrate-correct-label-contrast-from-cellpose-sam)
+   - [9j. Drift View in 3D](#9j-drift-view-in-3d)
 10. [Output files and folder structure](#10-output-files-and-folder-structure)
 11. [Statistics CSV — all columns explained](#11-statistics-csv--all-columns-explained) — for the algorithm/formula behind each column instead, see the separate [STATISTICS_GUIDE.md](STATISTICS_GUIDE.md)
 12. [Setting up description backends](#12-setting-up-description-backends)
@@ -1251,6 +1252,14 @@ Click **Run Contrast Calibration Sweep**. On success, the report below shows eve
 
 ---
 
+### 9j. Drift View in 3D {#9j-drift-view-in-3d}
+
+A General-category utility with nothing to do with any GT sweep or pipeline — a small quality-of-life extra for looking at a 3D result hands-free. Click **Start Drift** and the camera slowly, continuously tumbles around whatever's currently in the viewer, like drifting past it in space; switches the viewer to 3D display automatically if it wasn't already. **Speed** (1–100, default 20) scales how fast it turns — adjust it at any time, even while already drifting, no need to stop first. Click the same button (now labeled **Stop Drift**) to freeze the camera exactly where it is.
+
+Purely a camera effect — it only ever changes `viewer.camera.angles`, never touches any layer's own data, so it can't interact with, be interrupted by, or leave any trace on a correction tool's own result. Each of the three rotation axes advances at a slightly different rate rather than a shared one, so the motion reads as an organic drift rather than a mechanical single-axis spin that visibly repeats on a short cycle.
+
+---
+
 ## 10. Output files and folder structure
 
 All files saved by the plugin go into a dedicated folder named after your original input file:
@@ -2016,6 +2025,7 @@ Nine tools consolidated from Tabs 1-4, each individually collapsible — see [Se
 | Verify Best Epoch (GT Sweep) | 5 cells, ±2 checkpoints | (Tab 4, Cellpose-SAM) confirms the recommendation against real GT IoU/Dice, not just test_loss — doesn't survive closing napari — **if the sweep disagrees, rewrites the pointer to the confirmed epoch and loads it as Tab 2's active model**. Has an "Email me when done" checkbox (can run 30 min to a couple hours) |
 | Calibrate Correct-Label Contrast (from Cellpose-SAM) | 50 samples (5 cells x 10 slices) | (Tab 2/3, Correct Label) finds the lower-contrast value Correct Label should start from by reproducing what Cellpose-SAM already segmented (mean IoU), not independent GT — **auto-applies `[best lo, best lo + 20]` to the chosen signal layer's contrast limits** |
 | Score Against GT | any 2 Labels layers | Whole-fish Hungarian-matched TP/FP/FN/Score/MeanIoU/MeanDice between any two Labels layers — synchronous, no GPU needed |
+| Drift View in 3D | — | (Tab 5, General) Start/Stop button + Speed slider — slowly, continuously tumbles the 3D camera around whatever's in view, switching to 3D display automatically; camera-only, never touches layer data |
 | Build GT-Correction Package | — | (Tab 2) Zips the most-advanced correction stage available (sanded > auto-corrected > Krendl-only) + stats CSV + creation guide + optional brain_mask.tif (needed for Protect Skin as Label on the reviewer's end) for external manual correction — browsing Source image auto-fills the rest |
 | Email notification (optional) | *(blank = off)* | Shared SMTP credentials (address, server, port, username, password — password saved **encrypted** via the OS credential store) for every "Email me when done" checkbox in the plugin; configuring it here doesn't itself send anything — see Section 9h |
 | Send Test Email | — | Sends one email immediately (no GPU, no waiting) to confirm SMTP settings before relying on them for a long run |
