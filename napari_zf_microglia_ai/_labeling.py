@@ -2423,59 +2423,69 @@ def trim_skin_label(
 ) -> "tuple[np.ndarray, dict]":
     """
     Trims a bulk-seeded skin label (seed_skin_label()) down to its real,
-    signal-supported territory, slice by slice, independently -- NOT via
-    correct_label_from_intensity_3d()'s cross-slice walk (growth/OR-
-    seeding/stability passes across the label's own Z range), which is
-    built to keep ONE coherent 3D object consistent as it's re-derived
-    slice by slice. Skin has no such problem to solve: its candidate
-    territory on any given slice is already fully known in advance
-    (everything the brain mask didn't keep, per seed_skin_label()), so
-    there is nothing for a cross-slice walk to seed or grow into that
-    isn't already exactly bounded -- and skin spans nearly the ENTIRE Z
-    range of a typical fish, so walking that machinery over every slice
-    is real, wasted computation (the same reason 3D correction of skin
-    is already blocked in the interactive Correct Label tool). Having no
-    cross-slice dependency also means every slice can be corrected in
-    parallel, safely: each thread only ever reads/writes its own
-    new_labels[z], a disjoint memory region from every other z. Run on
-    a ThreadPoolExecutor capped at 75% of CPU cores (confirmed via
-    direct benchmark: ~3.5x faster at real fish scale on an 8-core
-    machine, e.g. ~12.6min -> ~3.6min for a ~100-slice fish with
-    auto-grow/until-stable both on) -- not all of them, so this doesn't
-    starve the rest of napari or another concurrent job of every core.
+    signal-supported territory, slice by slice, independently, by
+    calling grow_correct_label_2d() -- the EXACT SAME function the
+    interactive "Correct Label" (2D mode) button calls when a user
+    selects the skin label and clicks Correct Label by hand -- once per
+    slice, rather than a separate, hand-rolled approximation of it.
+    This is deliberate, not just convenient: an earlier version of this
+    function reimplemented its own auto-grow/until-stable loop instead
+    of reusing grow_correct_label_2d(), and direct user comparison found
+    it didn't "really grow" a slice's own signal the way manually
+    clicking Correct Label on that same slice did -- specifically,
+    grow_correct_label_2d()'s own growth loop dynamically discovers a
+    NEWLY-touched neighbor mid-growth and immediately redoes the current
+    attempt with that neighbor folded into the joint correction (same
+    pad, no need to wait for the next growth step first); the earlier
+    hand-rolled version only picked up a newly-touched neighbor on its
+    NEXT growth attempt, one step later. Calling the real function
+    directly removes that whole class of subtle behavioral drift by
+    construction, rather than needing to keep tracking down and
+    re-matching every detail of what it does.
 
-    Each slice is corrected on its own, so `pad`/`lo` behave exactly as
-    documented for a plain single-slice correction: a window padded
-    around skin's own CURRENT footprint on THAT ONE slice, thresholded
-    at `lo`. Two sub-cases, per slice:
+    NOT via correct_label_from_intensity_3d()'s cross-slice walk
+    (growth/OR-seeding/stability passes across the label's own Z range),
+    which is built to keep ONE coherent 3D object consistent as it's
+    re-derived slice by slice -- skin has no such problem to solve: its
+    candidate territory on any given slice is already fully known in
+    advance (everything the brain mask didn't keep, per
+    seed_skin_label()), so there is nothing for a cross-slice walk to
+    seed or grow into that isn't already exactly bounded, and skin spans
+    nearly the ENTIRE Z range of a typical fish, so walking that
+    machinery over every slice would be real, wasted computation (the
+    same reason 3D correction of skin is already blocked in the
+    interactive Correct Label tool). Having no cross-slice dependency
+    also means every slice can be corrected in parallel, safely: each
+    thread only ever reads/writes its own new_labels[z], a disjoint
+    memory region from every other z (grow_correct_label_2d() itself,
+    and everything it calls, only ever READS its `labels` input and
+    returns a fresh copy -- confirmed directly, not assumed -- so
+    concurrent calls against the same shared array are safe). Run on a
+    ThreadPoolExecutor capped at 75% of CPU cores, not all of them, so
+    this doesn't starve the rest of napari or another concurrent job of
+    every core.
 
-    - No real (positive) label present in that padded window ->
-      _intensity_correct_2d() -- the same single-slice engine Correct
-      Label's own 2D mode uses -- plain threshold, foreign-protected.
-    - One or more real labels present -> the boundary is jointly
-      RESOLVED against them via _correct_label_group_2d_core() (the
-      same marker-seeded watershed "Correct Adjacent Labels" uses), NOT
-      just excluded -- this is what lets skin correctly grow into signal
-      a real cell's own earlier correction over-claimed, instead of
-      being permanently walled off at wherever that cell's boundary
-      currently happens to sit. Only skin's OWN resulting territory is
-      ever painted back, though: every other group member's own crop is
-      read (to resolve a fair shared boundary against) but never
-      written to. A real cell's own existing pixels are always used as
-      ITS OWN watershed marker/seed, and a marker pixel structurally can
-      never be reassigned to a different basin by watershed -- so this
-      isn't a policy this function has to separately enforce, it's
-      guaranteed by the same algorithm computing the split (confirmed
-      directly, not just assumed). If the joint resolution can't
-      complete for some reason (e.g. the cell's own portion of the
-      locally-thresholded candidate region comes back empty), this
-      falls back to the plain exclusion-only path above for that slice
-      rather than giving up on skin there entirely.
+    grow_correct_label_2d() is called with label_ids=skin_label_id
+    alone -- it discovers and folds in any genuinely touching real
+    label on its own (the SAME "Correct Adjacent Labels" joint
+    marker-seeded watershed, not a plain exclusion), growing/re-
+    resolving until the result stops touching its own working window's
+    edge and (with until_stable on) stops changing between passes. Only
+    skin's OWN resulting mask from that call is ever painted back into
+    this function's own output, though -- whatever it did to a touching
+    real label's own territory is read (to resolve a fair shared
+    boundary against) but discarded, never written. A real cell's own
+    existing pixels are always used as ITS OWN watershed marker/seed,
+    and a marker pixel structurally can never be reassigned to a
+    different label's result by watershed -- so "only ever modify skin's
+    own side" isn't a policy this function has to separately enforce,
+    it's guaranteed by the same algorithm computing the split (confirmed
+    directly on real data, not just assumed).
 
     A slice with no signal at/above `lo` anywhere near skin's own
-    footprint there (both paths above raise ValueError) has its entire
-    skin footprint on that slice cleared to background instead of
-    being left as whatever the bulk seed put there -- consistent with
+    footprint there (grow_correct_label_2d() raises ValueError) has its
+    entire skin footprint on that slice cleared to background instead
+    of being left as whatever the bulk seed put there -- consistent with
     "trim to real signal only": no signal found means no real skin
     there, not "leave it as an unexamined blob."
 
@@ -2561,130 +2571,63 @@ def trim_skin_label(
     if not np.any(labels == skin_label_id):
         raise ValueError(f"label {skin_label_id} not found anywhere in the volume")
 
+    # Deferred import: _grow_correct.py imports FROM this module
+    # (correct_label_from_intensity_3d, correct_label_group_2d), so a
+    # top-level import here would be circular. By the time this function
+    # is actually called, both modules are already fully loaded.
+    from ._grow_correct import grow_correct_label_2d
     from scipy.ndimage import binary_dilation
     struct2d = np.ones((3, 3), dtype=bool)
 
     new_labels = labels.copy()
-    Z_dim, Y_dim, X_dim = new_labels.shape
+    Z_dim = new_labels.shape[0]
     foreign_touching: "dict[int, list[int]]" = {}
     foreign_nearby: "dict[int, list[int]]" = {}
     slices_grown: "dict[int, int]" = {}
     slices_stability_passes: "dict[int, int]" = {}
     slices_unstable: "set[int]" = set()
 
-    def _attempt(z: int, use_pad: int) -> "tuple[bool, bool, list[int]] | None":
-        """One correction attempt for skin on slice z at use_pad.
-        Returns (found_signal, touched_own_window_edge, foreign_ids_here),
-        or None if there's no skin left on this slice at all to correct
-        (already cleared by an earlier attempt)."""
-        labels_z = new_labels[z]
-        own = labels_z == skin_label_id
-        if not np.any(own):
-            return None
-
-        ys, xs = np.nonzero(own)
-        by0 = max(int(ys.min()) - use_pad, 0)
-        by1 = min(int(ys.max()) + use_pad + 1, Y_dim)
-        bx0 = max(int(xs.min()) - use_pad, 0)
-        bx1 = min(int(xs.max()) + use_pad + 1, X_dim)
-        foreign_ids_here = sorted(
-            int(i) for i in np.unique(labels_z[by0:by1, bx0:bx1])
-            if i not in (0, skin_label_id)
-        )
-
-        applied = False
-        own_result = None
-        y0 = y1 = x0 = x1 = None
-        if foreign_ids_here:
-            try:
-                group_ids = [skin_label_id] + foreign_ids_here
-                (y0, y1, x0, x1, crop_existing, finals, _info) = _correct_label_group_2d_core(
-                    new_labels, image, group_ids, z, lo, use_pad, sigma, focus_ids=[skin_label_id],
-                )
-                crop = labels_z[y0:y1, x0:x1]
-                crop[crop_existing[skin_label_id]] = 0
-                crop[finals[skin_label_id]] = skin_label_id
-                own_result = finals[skin_label_id]
-                applied = True
-            except ValueError:
-                pass  # fall through to the plain exclusion-only path below
-
-        if not applied:
-            try:
-                corrected, crop_existing_mask, (y0, y1, x0, x1) = _intensity_correct_2d(
-                    labels_z, image[z], skin_label_id, lo, use_pad
-                )
-            except ValueError:
-                return False, False, foreign_ids_here
-            crop = labels_z[y0:y1, x0:x1]
-            crop[crop_existing_mask] = 0
-            crop[corrected] = skin_label_id
-            own_result = corrected
-
-        touched = bool(
-            (y0 > 0 and own_result[0, :].any())
-            or (y1 < Y_dim and own_result[-1, :].any())
-            or (x0 > 0 and own_result[:, 0].any())
-            or (x1 < X_dim and own_result[:, -1].any())
-        )
-        return True, touched, foreign_ids_here
-
-    def _with_growth(z: int) -> "tuple[bool, list[int]] | None":
-        use_pad = pad
-        result = None
-        attempts = max_iterations if auto_grow else 1
-        for attempt in range(attempts):
-            result = _attempt(z, use_pad)
-            if result is None:
-                return None
-            found, touched, foreign_ids_here = result
-            if not found or not auto_grow or not touched:
-                break
-            use_pad += growth_step
-        if use_pad != pad and result is not None and result[0]:
-            slices_grown[z] = use_pad
-        if result is None:
-            return None
-        return result[0], result[2]
-
-    def _full(z: int) -> "tuple[bool, list[int]] | None":
-        if not until_stable:
-            return _with_growth(z)
-        prev_mask = None
-        outcome = None
-        for sp in range(1, max_stability_passes + 1):
-            outcome = _with_growth(z)
-            if outcome is None or not outcome[0]:
-                return outcome
-            cur_mask = new_labels[z] == skin_label_id
-            if prev_mask is not None and np.array_equal(cur_mask, prev_mask):
-                if sp > 1:
-                    slices_stability_passes[z] = sp
-                slices_unstable.discard(z)
-                return outcome
-            prev_mask = cur_mask
-        slices_stability_passes[z] = max_stability_passes
-        slices_unstable.add(z)
-        return outcome
-
     def _process_slice(z: int) -> None:
         labels_z = new_labels[z]
         if not np.any(labels_z == skin_label_id):
             return
 
-        outcome = _full(z)
-        if outcome is None:
-            return
-        found, foreign_ids_here = outcome
-        if not found:
+        try:
+            # grow_correct_label_2d() has no separate auto_grow toggle --
+            # it always attempts growth up to max_iterations, so
+            # auto_grow=False is expressed as a 1-attempt cap instead.
+            result_labels, grow_report = grow_correct_label_2d(
+                new_labels, image, skin_label_id, z, lo,
+                initial_pad=pad, growth_step=growth_step,
+                max_iterations=(max_iterations if auto_grow else 1),
+                sigma=sigma, until_stable=until_stable, max_stability_passes=max_stability_passes,
+            )
+        except ValueError:
             # No signal at/above lo anywhere near skin's own footprint
             # on this slice, even after growth -- clear it to background
             # rather than leave the bulk seed's unexamined blob standing.
             labels_z[labels_z == skin_label_id] = 0
             return
 
+        # Only ever paint skin's OWN resulting mask back -- grow_correct_
+        # label_2d() may have jointly resolved against one or more real
+        # labels it discovered touching skin along the way (exactly the
+        # point of calling it), but this tool must never modify a real
+        # cell's own label: at this point in the pipeline that cell
+        # hasn't been through its own correction yet.
+        skin_result_mask = result_labels[z] == skin_label_id
+        labels_z[labels_z == skin_label_id] = 0
+        labels_z[skin_result_mask] = skin_label_id
+
+        foreign_ids_here = sorted(i for i in grow_report["group"] if i != skin_label_id)
         if foreign_ids_here:
             foreign_nearby[z] = foreign_ids_here
+        if grow_report["pad_used"] > pad:
+            slices_grown[z] = grow_report["pad_used"]
+        if grow_report["stability_passes"] > 1:
+            slices_stability_passes[z] = grow_report["stability_passes"]
+        if not grow_report["stable"]:
+            slices_unstable.add(z)
 
         own_now = labels_z == skin_label_id
         dilated = binary_dilation(own_now, structure=struct2d)
