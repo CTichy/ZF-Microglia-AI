@@ -2415,6 +2415,11 @@ def trim_skin_label(
     lo: float,
     pad: int = 15,
     sigma: float = 1.0,
+    auto_grow: bool = True,
+    growth_step: int = 5,
+    max_iterations: int = 10,
+    until_stable: bool = True,
+    max_stability_passes: int = 100,
 ) -> "tuple[np.ndarray, dict]":
     """
     Trims a bulk-seeded skin label (seed_skin_label()) down to its real,
@@ -2492,13 +2497,36 @@ def trim_skin_label(
     skin_label_id              : the label to trim (seed_skin_label()'s
                                 own return value).
     lo, pad                    : same meaning as _intensity_correct_2d()'s
-                                own lo/pad -- applied fresh, independently,
-                                on every slice.
+                                own lo/pad -- pad is the STARTING pad for
+                                each slice; see auto_grow below for how
+                                it can grow from there.
     sigma                      : Gaussian smoothing before the joint
                                 watershed split, only used on a slice
                                 where a real label is actually nearby --
                                 same meaning/default as Correct Adjacent
                                 Labels' own sigma.
+    auto_grow, growth_step,
+    max_iterations              : per-slice auto-grow, same mechanism
+                                Correct Label's own 3D mode uses (see
+                                grow_correct_label_3d()): if a slice's
+                                own result touches the edge of ITS OWN
+                                working window, that ONE slice retries
+                                at a bigger pad (+growth_step each time,
+                                up to max_iterations attempts) -- every
+                                other slice keeps its own smaller pad
+                                and already-correct result untouched.
+    until_stable,
+    max_stability_passes        : per-slice stability loop, same
+                                mechanism Correct Label's own 3D mode
+                                uses: once a slice's own auto-grow
+                                settles, keep re-running THAT SLICE,
+                                reseeded from its own previous result
+                                (including whatever the joint
+                                resolution against a touching real
+                                label just did there too), until its
+                                footprint stops changing between two
+                                consecutive attempts, or the pass cap
+                                is hit.
 
     Returns (new_labels, report). report is a dict:
         foreign_touching    -- {z: sorted [foreign label ids]} -- real
@@ -2506,6 +2534,13 @@ def trim_skin_label(
         foreign_nearby      -- {z: sorted [foreign label ids]} -- real
                               labels present in skin's own padded
                               working area on slice z (touching or not)
+        slices_grown          -- {z: final pad used}, only for slices
+                              that actually needed more than the base pad
+        slices_stability_passes -- {z: n passes it took to settle}, only
+                              present for slices that needed more than 1
+        stable                -- True unless at least one slice hit
+                              max_stability_passes still changing (always
+                              True when until_stable is False)
         n_debris_removed_px -- always 0 (no cross-slice debris pass for
                               skin; kept for report-shape parity with
                               every other label's own report)
@@ -2525,33 +2560,43 @@ def trim_skin_label(
     Z_dim, Y_dim, X_dim = new_labels.shape
     foreign_touching: "dict[int, list[int]]" = {}
     foreign_nearby: "dict[int, list[int]]" = {}
+    slices_grown: "dict[int, int]" = {}
+    slices_stability_passes: "dict[int, int]" = {}
+    slices_unstable: "set[int]" = set()
 
-    for z in range(Z_dim):
+    def _attempt(z: int, use_pad: int) -> "tuple[bool, bool, list[int]] | None":
+        """One correction attempt for skin on slice z at use_pad.
+        Returns (found_signal, touched_own_window_edge, foreign_ids_here),
+        or None if there's no skin left on this slice at all to correct
+        (already cleared by an earlier attempt)."""
         labels_z = new_labels[z]
         own = labels_z == skin_label_id
         if not np.any(own):
-            continue
+            return None
 
         ys, xs = np.nonzero(own)
-        by0 = max(int(ys.min()) - pad, 0)
-        by1 = min(int(ys.max()) + pad + 1, Y_dim)
-        bx0 = max(int(xs.min()) - pad, 0)
-        bx1 = min(int(xs.max()) + pad + 1, X_dim)
+        by0 = max(int(ys.min()) - use_pad, 0)
+        by1 = min(int(ys.max()) + use_pad + 1, Y_dim)
+        bx0 = max(int(xs.min()) - use_pad, 0)
+        bx1 = min(int(xs.max()) + use_pad + 1, X_dim)
         foreign_ids_here = sorted(
             int(i) for i in np.unique(labels_z[by0:by1, bx0:bx1])
             if i not in (0, skin_label_id)
         )
 
         applied = False
+        own_result = None
+        y0 = y1 = x0 = x1 = None
         if foreign_ids_here:
             try:
                 group_ids = [skin_label_id] + foreign_ids_here
                 (y0, y1, x0, x1, crop_existing, finals, _info) = _correct_label_group_2d_core(
-                    new_labels, image, group_ids, z, lo, pad, sigma, focus_ids=[skin_label_id],
+                    new_labels, image, group_ids, z, lo, use_pad, sigma, focus_ids=[skin_label_id],
                 )
                 crop = labels_z[y0:y1, x0:x1]
                 crop[crop_existing[skin_label_id]] = 0
                 crop[finals[skin_label_id]] = skin_label_id
+                own_result = finals[skin_label_id]
                 applied = True
             except ValueError:
                 pass  # fall through to the plain exclusion-only path below
@@ -2559,17 +2604,76 @@ def trim_skin_label(
         if not applied:
             try:
                 corrected, crop_existing_mask, (y0, y1, x0, x1) = _intensity_correct_2d(
-                    labels_z, image[z], skin_label_id, lo, pad
+                    labels_z, image[z], skin_label_id, lo, use_pad
                 )
             except ValueError:
-                # No signal at/above lo anywhere near skin's own footprint
-                # on this slice -- clear it to background rather than
-                # leave the bulk seed's unexamined blob standing.
-                labels_z[own] = 0
-                continue
+                return False, False, foreign_ids_here
             crop = labels_z[y0:y1, x0:x1]
             crop[crop_existing_mask] = 0
             crop[corrected] = skin_label_id
+            own_result = corrected
+
+        touched = bool(
+            (y0 > 0 and own_result[0, :].any())
+            or (y1 < Y_dim and own_result[-1, :].any())
+            or (x0 > 0 and own_result[:, 0].any())
+            or (x1 < X_dim and own_result[:, -1].any())
+        )
+        return True, touched, foreign_ids_here
+
+    def _with_growth(z: int) -> "tuple[bool, list[int]] | None":
+        use_pad = pad
+        result = None
+        attempts = max_iterations if auto_grow else 1
+        for attempt in range(attempts):
+            result = _attempt(z, use_pad)
+            if result is None:
+                return None
+            found, touched, foreign_ids_here = result
+            if not found or not auto_grow or not touched:
+                break
+            use_pad += growth_step
+        if use_pad != pad and result is not None and result[0]:
+            slices_grown[z] = use_pad
+        if result is None:
+            return None
+        return result[0], result[2]
+
+    def _full(z: int) -> "tuple[bool, list[int]] | None":
+        if not until_stable:
+            return _with_growth(z)
+        prev_mask = None
+        outcome = None
+        for sp in range(1, max_stability_passes + 1):
+            outcome = _with_growth(z)
+            if outcome is None or not outcome[0]:
+                return outcome
+            cur_mask = new_labels[z] == skin_label_id
+            if prev_mask is not None and np.array_equal(cur_mask, prev_mask):
+                if sp > 1:
+                    slices_stability_passes[z] = sp
+                slices_unstable.discard(z)
+                return outcome
+            prev_mask = cur_mask
+        slices_stability_passes[z] = max_stability_passes
+        slices_unstable.add(z)
+        return outcome
+
+    for z in range(Z_dim):
+        labels_z = new_labels[z]
+        if not np.any(labels_z == skin_label_id):
+            continue
+
+        outcome = _full(z)
+        if outcome is None:
+            continue
+        found, foreign_ids_here = outcome
+        if not found:
+            # No signal at/above lo anywhere near skin's own footprint
+            # on this slice, even after growth -- clear it to background
+            # rather than leave the bulk seed's unexamined blob standing.
+            labels_z[labels_z == skin_label_id] = 0
+            continue
 
         if foreign_ids_here:
             foreign_nearby[z] = foreign_ids_here
@@ -2591,6 +2695,9 @@ def trim_skin_label(
     report = {
         "foreign_touching": foreign_touching,
         "foreign_nearby": foreign_nearby,
+        "slices_grown": slices_grown,
+        "slices_stability_passes": slices_stability_passes,
+        "stable": not slices_unstable,
         "n_debris_removed_px": 0,
         "n_reclaimed_px": n_reclaimed,
     }

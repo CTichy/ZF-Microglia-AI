@@ -21,9 +21,18 @@ cell:
      two different `lo` arguments to the same underlying calls, since
      this runs headless on raw arrays rather than through a napari
      layer's live contrast slider. Skin becomes a real, ordinary label
-     (-1) at this point, so every per-cell correction in step 4 already
-     excludes it as foreign territory, by construction -- exactly why
-     this has to happen before, not after, the per-cell loop.
+     (-1) at this point. Its own trim now uses the same per-slice
+     auto-grow + until-stable machinery real cells get in step 4 (see
+     trim_skin_label()'s own docstring), and jointly resolves its
+     boundary against any real cell it finds along the way -- but only
+     ever writes back skin's OWN resulting territory, never the cell's,
+     since at this point in the pipeline that cell hasn't been through
+     its own correction yet. Step 4's per-cell corrections, once it's
+     each cell's own turn, are free to adjust both themselves AND
+     whatever they touch (skin included) -- exactly why this has to
+     happen before, not after, the per-cell loop: skin adapts to
+     whatever a cell currently looks like, then the cell gets the final
+     say once it's actually corrected.
 
   3. Resort every real cell by Centroid Z (resort_labels()) -- so the
      sequential per-cell loop below always walks the fish in the same
@@ -202,6 +211,8 @@ def auto_contrast_correct_stack(
     seeded, skin_id = seed_skin_label(labels, brain_mask)
     labels_with_skin, skin_report = trim_skin_label(
         seeded, image, brain_mask, skin_id, skin_lo, pad=pad, sigma=sigma,
+        auto_grow=auto_grow, growth_step=growth_step, max_iterations=max_iterations,
+        until_stable=until_stable, max_stability_passes=max_stability_passes,
     )
 
     # ── Step 3: resort every real cell by Centroid Z ────────────────────
@@ -272,6 +283,17 @@ def format_auto_correction_report(report: dict) -> str:
         f"{skin_report.get('n_debris_removed_px', 0)} px trimmed as debris, "
         f"{skin_report.get('n_reclaimed_px', 0)} px reclaimed from inside the brain mask."
     )
+    skin_slices_grown = skin_report.get("slices_grown", {})
+    skin_slices_stability = skin_report.get("slices_stability_passes", {})
+    if skin_slices_grown:
+        lines.append(f"  Skin: {len(skin_slices_grown)} slice(s) needed a bigger pad to grow.")
+    if skin_slices_stability:
+        lines.append(f"  Skin: {len(skin_slices_stability)} slice(s) took more than one pass to settle.")
+    if not skin_report.get("stable", True):
+        lines.append(
+            "  Skin: STILL CHANGING on at least one slice -- hit the stability-pass "
+            "cap without settling; a larger cap may let it finish converging."
+        )
     lines.append(
         f"  Cells resorted by Centroid Z before correction "
         f"({report['n_cells_total']} cell(s))."

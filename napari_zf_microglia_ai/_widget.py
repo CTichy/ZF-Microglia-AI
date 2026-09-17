@@ -7668,6 +7668,8 @@ class ZFMicrogliaAIWidget(QWidget):
                 seeded, skin_id = seed_skin_label(labels, brain_mask)
                 new_labels, rep = trim_skin_label(
                     seeded, image, brain_mask, skin_id, lo, pad=pad,
+                    growth_step=5, max_iterations=10,
+                    until_stable=True, max_stability_passes=100,
                 )
                 result["labels"] = new_labels
                 result["skin_id"] = skin_id
