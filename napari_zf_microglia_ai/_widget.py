@@ -6801,11 +6801,14 @@ class ZFMicrogliaAIWidget(QWidget):
         self._debris_status_lbl.setText(f"Removing debris (< {threshold} vox)...")
 
         labels = np.asarray(lyr.data)
+        skin_label_id = self._skin_id_spin.value()
         result = {}
 
         def _worker():
             try:
-                result["labels"], result["n_removed"] = remove_debris(labels, threshold)
+                result["labels"], result["n_removed"] = remove_debris(
+                    labels, threshold, skin_label_id=skin_label_id
+                )
             except Exception as exc:
                 traceback.print_exc()
                 result["error"] = str(exc)
@@ -8996,6 +8999,7 @@ class ZFMicrogliaAIWidget(QWidget):
             self._cp_status_lbl.setText(autocorrect_status + " Sanding label contours...")
             self._run_sanding_stage(
                 stem=stem, lname=lname, labels=new_labels, scale=scale,
+                skin_label_id=report["skin_label_id"],
                 out_dir=out_dir, base_status=autocorrect_status,
                 base_email=f"{base_email}\n\n{report_text}",
             )
@@ -9003,7 +9007,7 @@ class ZFMicrogliaAIWidget(QWidget):
         timer3.timeout.connect(_poll3)
         timer3.start(500)
 
-    def _run_sanding_stage(self, stem, lname, labels, scale, out_dir, base_status, base_email):
+    def _run_sanding_stage(self, stem, lname, labels, scale, skin_label_id, out_dir, base_status, base_email):
         """
         Third stage chained onto Cellpose-SAM Segmentation -> auto-correct,
         gated by self._sanding_cb: softens every label's contour
@@ -9012,6 +9016,11 @@ class ZFMicrogliaAIWidget(QWidget):
         background-thread + QTimer-poll pattern as the two stages before
         it, chained after since it sands THIS run's own auto-corrected
         labels.
+
+        skin_label_id : forwarded to sand_labels_stack()'s own final
+                       debris pass only (remove_debris() now sweeps skin
+                       too, when given its ID) -- sanding itself never
+                       touches skin's own contour.
         """
         sigma_xy = self._sanding_sigxy_slider.value()
         sigma_z = self._sanding_sigz_slider.value()
@@ -9027,6 +9036,7 @@ class ZFMicrogliaAIWidget(QWidget):
                 new_labels, report = sand_labels_stack(
                     labels, sigma_xy=sigma_xy, sigma_z=sigma_z,
                     min_volume=min_volume, final_min_fraction=final_min_fraction,
+                    skin_label_id=skin_label_id,
                     progress_cb=_progress4,
                 )
                 result4["labels"] = new_labels

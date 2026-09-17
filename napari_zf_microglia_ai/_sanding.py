@@ -37,6 +37,7 @@ def sand_labels_stack(
     pad: "int | None" = None,
     min_volume: "int | None" = None,
     final_min_fraction: float = 0.618,
+    skin_label_id: "int | None" = None,
     progress_cb=None,
 ) -> "tuple[np.ndarray, dict]":
     """
@@ -51,6 +52,11 @@ def sand_labels_stack(
                           room for the given sigmas (3*max(sigma)+3, floor 10)
     min_volume, final_min_fraction : same final debris safety net as every
                           other stage in this plugin -- None skips it
+    skin_label_id        : Protect Skin as Label's own sentinel, when
+                          present -- forwarded to the final debris pass
+                          only (remove_debris()'s own skin_label_id).
+                          Sanding itself only ever loops real (positive)
+                          labels; skin's own contour is never softened.
     progress_cb           : optional callable(str), called with a
                           human-readable status line as each cell advances
 
@@ -99,7 +105,7 @@ def sand_labels_stack(
     if min_volume is not None:
         threshold = int(round(final_min_fraction * min_volume))
         _report(f"Sanding: removing debris below {threshold} vox...")
-        new_labels, n_debris_removed = remove_debris(new_labels, threshold)
+        new_labels, n_debris_removed = remove_debris(new_labels, threshold, skin_label_id=skin_label_id)
 
     report = {
         "sigma_xy": sigma_xy,

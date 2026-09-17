@@ -236,12 +236,12 @@ def auto_contrast_correct_stack(
                 f"{len(skipped_cells)} skipped so far"
             )
 
-    # ── Step 5: final whole-layer debris cleanup ────────────────────────
+    # ── Step 5: final whole-layer debris cleanup (skin included) ────────
     n_debris_removed = 0
     if min_volume is not None:
         threshold = int(round(final_min_fraction * min_volume))
         _report(f"Auto-correct: removing debris below {threshold} vox...")
-        new_labels, n_debris_removed = remove_debris(new_labels, threshold)
+        new_labels, n_debris_removed = remove_debris(new_labels, threshold, skin_label_id=skin_id)
 
     report = {
         "best_lo": best_lo,

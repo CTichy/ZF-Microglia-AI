@@ -373,7 +373,9 @@ def resort_labels(
     return out.astype(np.int32)
 
 
-def remove_debris(labels: np.ndarray, threshold: int) -> "tuple[np.ndarray, int]":
+def remove_debris(
+    labels: np.ndarray, threshold: int, skin_label_id: "int | None" = None,
+) -> "tuple[np.ndarray, int]":
     """Zero out every spatially-connected fragment smaller than threshold
     voxels. A manual edit in napari -- deleting a whole label that turned
     out to be misclassified skin, splitting a label, painting part of
@@ -403,23 +405,45 @@ def remove_debris(labels: np.ndarray, threshold: int) -> "tuple[np.ndarray, int]
     Settings), the same golden-ratio-relaxed cutoff create_labels()'s
     own filter and Cellpose-SAM's final_min_size_cleanup() already use.
 
+    skin_label_id : Protect Skin as Label's own sentinel (-1 by default),
+    when given and actually present in `labels`. Real positive labels
+    are found via scipy's find_objects(), which only ever indexes
+    non-negative values -- a negative ID like skin's own would silently
+    never be swept for debris otherwise, even though skin's own
+    territory can end up with small disconnected fragments too (e.g.
+    after a manual Split Label on skin, or a small isolated bright-noise
+    speck outside the brain mask). None (default) skips skin entirely,
+    matching every caller from before this parameter existed.
+
     Returns (labels, n_removed) -- n_removed counts fragments, not label
     IDs (one ID can contribute more than one removed fragment)."""
     from scipy.ndimage import find_objects
 
     labels = np.asarray(labels)
     max_lbl = int(labels.max()) if labels.size else 0
-    if max_lbl == 0:
+    has_skin = skin_label_id is not None and np.any(labels == skin_label_id)
+    if max_lbl == 0 and not has_skin:
         return labels.copy(), 0
 
     out = labels.copy()
-    objs = find_objects(labels)
     n_removed = 0
-    for lbl in range(1, max_lbl + 1):
-        sl = objs[lbl - 1] if lbl - 1 < len(objs) else None
-        if sl is None:
-            continue
-        n_removed += _remove_debris_from_crop(out[sl], lbl, threshold)
+
+    if max_lbl > 0:
+        objs = find_objects(labels)
+        for lbl in range(1, max_lbl + 1):
+            sl = objs[lbl - 1] if lbl - 1 < len(objs) else None
+            if sl is None:
+                continue
+            n_removed += _remove_debris_from_crop(out[sl], lbl, threshold)
+
+    if has_skin:
+        zs, ys, xs = np.nonzero(out == skin_label_id)
+        sl = (
+            slice(int(zs.min()), int(zs.max()) + 1),
+            slice(int(ys.min()), int(ys.max()) + 1),
+            slice(int(xs.min()), int(xs.max()) + 1),
+        )
+        n_removed += _remove_debris_from_crop(out[sl], skin_label_id, threshold)
 
     return out.astype(np.int32), n_removed
 
@@ -2393,29 +2417,49 @@ def trim_skin_label(
 ) -> "tuple[np.ndarray, dict]":
     """
     Trims a bulk-seeded skin label (seed_skin_label()) down to its real,
-    signal-supported territory, the same way any other label gets
-    corrected -- correct_label_from_intensity_3d(resolve_adjacent=False)
-    -- but additionally enforces seed_skin_label()'s own stated
-    guarantee that skin "never touches anything inside the brain mask,
-    labeled or not," which the generic correction engine alone cannot
-    honor: skin's own local working area, after the bulk seed, already
-    touches the image's own edges on essentially every slice (it's
-    everything the brain mask didn't keep), so the engine's candidate
-    computation -- real signal, not already claimed by a DIFFERENT
-    label -- has no way to distinguish "real skin residue" from any
-    other unclaimed background signal sitting anywhere within that same
-    (near-frame-spanning) working area, brain interior included. A
-    small debris fragment or an as-yet-unsegmented real cell sitting
-    inside the brain, with signal above the threshold, is unclaimed
-    background exactly like real skin residue is -- the engine has no
-    reason to treat the two differently on its own.
+    signal-supported territory, slice by slice, independently -- NOT via
+    correct_label_from_intensity_3d()'s cross-slice walk (growth/OR-
+    seeding/stability passes across the label's own Z range), which is
+    built to keep ONE coherent 3D object consistent as it's re-derived
+    slice by slice. Skin has no such problem to solve: its candidate
+    territory on any given slice is already fully known in advance
+    (everything the brain mask didn't keep, per seed_skin_label()), so
+    there is nothing for a cross-slice walk to seed or grow into that
+    isn't already exactly bounded -- and skin spans nearly the ENTIRE Z
+    range of a typical fish, so walking that machinery over every slice
+    is real, wasted computation (the same reason 3D correction of skin
+    is already blocked in the interactive Correct Label tool). Each
+    slice is corrected on its own via _intensity_correct_2d() -- the
+    same single-slice engine Correct Label's own 2D mode already uses --
+    so `pad`/`lo` behave exactly as documented there, per slice: a
+    window padded around skin's own CURRENT footprint on THAT ONE
+    slice, thresholded at `lo`, foreign-protected.
 
-    This wraps that same correction call, then strips any resulting
-    skin-label voxel that ends up INSIDE the brain mask back to
-    background (0) -- restoring the documented guarantee exactly,
-    since this can only ever REMOVE a wrongly-claimed pixel, never add
-    one, so it can't change or hide anything about the real
-    outside-brain result.
+    A slice with no signal at/above `lo` anywhere near skin's own
+    footprint there (_intensity_correct_2d() raises ValueError) has its
+    entire skin footprint on that slice cleared to background instead
+    of being left as whatever the bulk seed put there -- consistent
+    with "trim to real signal only": no signal found means no real skin
+    there, not "leave it as an unexamined blob."
+
+    Also enforces seed_skin_label()'s own stated guarantee that skin
+    "never touches anything inside the brain mask, labeled or not,"
+    which the per-slice engine alone cannot honor on its own: skin's
+    own local working area, after the bulk seed, already touches the
+    image's own edges on essentially every slice (it's everything the
+    brain mask didn't keep), so its candidate computation -- real
+    signal, not already claimed by a DIFFERENT label -- has no way to
+    distinguish "real skin residue" from any other unclaimed background
+    signal sitting anywhere within that same (near-frame-spanning)
+    working area, brain interior included. A small debris fragment or
+    an as-yet-unsegmented real cell sitting inside the brain, with
+    signal above the threshold, is unclaimed background exactly like
+    real skin residue is -- the engine has no reason to treat the two
+    differently on its own. This strips any resulting skin-label voxel
+    that ends up INSIDE the brain mask back to background (0) --
+    restoring the documented guarantee exactly, since this can only
+    ever REMOVE a wrongly-claimed pixel, never add one, so it can't
+    change or hide anything about the real outside-brain result.
 
     labels, image, brain_mask : (Z, Y, X) arrays, same shape.
                                 brain_mask is boolean-like (nonzero =
@@ -2423,30 +2467,83 @@ def trim_skin_label(
                                 seed_skin_label()).
     skin_label_id              : the label to trim (seed_skin_label()'s
                                 own return value).
-    lo, pad                    : same meaning as
-                                correct_label_from_intensity_3d()'s own
-                                lo/pad.
+    lo, pad                    : same meaning as _intensity_correct_2d()'s
+                                own lo/pad -- applied fresh, independently,
+                                on every slice.
 
-    Returns (new_labels, report) -- report is
-    correct_label_from_intensity_3d()'s own report dict, plus
-    "n_reclaimed_px": how many voxels were stripped back to background
-    for having ended up inside the brain mask (0 if none).
+    Returns (new_labels, report). report is a dict:
+        foreign_touching    -- {z: sorted [foreign label ids]} -- real
+                              labels directly touching skin on slice z
+        foreign_nearby      -- {z: sorted [foreign label ids]} -- real
+                              labels present in skin's own padded
+                              working area on slice z (touching or not)
+        n_debris_removed_px -- always 0 (no cross-slice debris pass for
+                              skin; kept for report-shape parity with
+                              every other label's own report)
+        n_reclaimed_px       -- how many voxels were stripped back to
+                              background for having ended up inside the
+                              brain mask (0 if none)
     """
     if labels.shape != brain_mask.shape:
         raise ValueError(f"labels shape {labels.shape} != brain_mask shape {brain_mask.shape}")
+    if not np.any(labels == skin_label_id):
+        raise ValueError(f"label {skin_label_id} not found anywhere in the volume")
 
-    new_labels, report = correct_label_from_intensity_3d(
-        labels, image, skin_label_id, lo, pad=pad,
-        min_volume=None, resolve_adjacent=False,
-    )
+    from scipy.ndimage import binary_dilation
+    struct2d = np.ones((3, 3), dtype=bool)
+
+    new_labels = labels.copy()
+    Z_dim = new_labels.shape[0]
+    foreign_touching: "dict[int, list[int]]" = {}
+    foreign_nearby: "dict[int, list[int]]" = {}
+
+    for z in range(Z_dim):
+        labels_z = new_labels[z]
+        if not np.any(labels_z == skin_label_id):
+            continue
+        try:
+            corrected, crop_existing, (y0, y1, x0, x1) = _intensity_correct_2d(
+                labels_z, image[z], skin_label_id, lo, pad
+            )
+        except ValueError:
+            # No signal at/above lo anywhere near skin's own footprint
+            # on this slice -- clear it to background rather than leave
+            # the bulk seed's unexamined blob standing.
+            labels_z[labels_z == skin_label_id] = 0
+            continue
+
+        crop = labels_z[y0:y1, x0:x1]
+        crop[crop_existing] = 0
+        crop[corrected] = skin_label_id
+
+        foreign_ids_here = sorted(
+            int(i) for i in np.unique(labels_z[y0:y1, x0:x1])
+            if i not in (0, skin_label_id)
+        )
+        if foreign_ids_here:
+            foreign_nearby[z] = foreign_ids_here
+
+        own_now = labels_z == skin_label_id
+        dilated = binary_dilation(own_now, structure=struct2d)
+        touching_here = labels_z[dilated & ~own_now]
+        touching_ids = sorted(
+            int(i) for i in np.unique(touching_here) if i not in (0, skin_label_id)
+        )
+        if touching_ids:
+            foreign_touching[z] = touching_ids
 
     wrongly_inside = brain_mask.astype(bool) & (new_labels == skin_label_id)
     n_reclaimed = int(wrongly_inside.sum())
     if n_reclaimed:
         new_labels[wrongly_inside] = 0
-    report["n_reclaimed_px"] = n_reclaimed
 
-    return new_labels, report
+    report = {
+        "foreign_touching": foreign_touching,
+        "foreign_nearby": foreign_nearby,
+        "n_debris_removed_px": 0,
+        "n_reclaimed_px": n_reclaimed,
+    }
+    return new_labels.astype(np.int32), report
 
 
 def remove_label(labels: np.ndarray, label_id: int) -> "tuple[np.ndarray, int]":
