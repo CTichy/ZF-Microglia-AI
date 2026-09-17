@@ -3290,6 +3290,41 @@ class ZFMicrogliaAIWidget(QWidget):
         t5.addWidget(ng)
         self._t5_category_groups.setdefault("general", []).append(ng)
 
+        # ── Drift View in 3D ────────────────────────────────────────── #
+        dfg = QGroupBox("Drift View in 3D")
+        dfl = QVBoxLayout()
+        drift_note = QLabel(
+            "  Slowly, continuously tumbles the 3D camera around the "
+            "active volume -- purely a viewer effect (rotates the camera, "
+            "never the data itself, so it can't affect any label or any "
+            "correction tool). Switches to 3D display automatically when "
+            "started."
+        )
+        drift_note.setWordWrap(True)
+        drift_note.setStyleSheet("color: #888; font-size: 10px;")
+        dfl.addWidget(drift_note)
+
+        drift_speed_row = QHBoxLayout()
+        drift_speed_row.addWidget(QLabel("Speed:"))
+        self._drift_speed_slider = QLabeledSlider(Qt.Horizontal)
+        self._drift_speed_slider.setMinimum(1)
+        self._drift_speed_slider.setMaximum(100)
+        self._drift_speed_slider.setValue(20)
+        drift_speed_row.addWidget(self._drift_speed_slider)
+        _add_reliable_spinbox(drift_speed_row, self._drift_speed_slider, 1, 100, 1)
+        dfl.addLayout(drift_speed_row)
+
+        self._drift_btn = QPushButton("Start Drift")
+        self._drift_btn.setStyleSheet("QPushButton { padding: 5px; }")
+        dfl.addWidget(self._drift_btn)
+
+        dfg.setLayout(dfl)
+        dfg = _make_collapsible(dfg)
+        t5.addWidget(dfg)
+        self._t5_category_groups.setdefault("general", []).append(dfg)
+
+        self._drift_timer = None
+
         t3.addStretch()
         tab3.setLayout(t3)
         tabs.addTab(_wrap_scroll(tab3), "Statistics")
@@ -4338,6 +4373,7 @@ class ZFMicrogliaAIWidget(QWidget):
         self._gtp_out_browse_btn.clicked.connect(self._on_gtp_browse_out)
         self._gtp_run_btn.clicked.connect(self._on_gtp_run)
         self._notify_test_btn.clicked.connect(self._on_send_test_email)
+        self._drift_btn.clicked.connect(self._on_toggle_drift)
         self._resort_btn.clicked.connect(self._on_resort_labels)
         self._debris_btn.clicked.connect(self._on_remove_debris)
         self._split_use_sel_btn.clicked.connect(self._on_use_selected_label)
@@ -5917,6 +5953,40 @@ class ZFMicrogliaAIWidget(QWidget):
 
         timer.timeout.connect(_poll)
         timer.start(200)
+
+    def _on_toggle_drift(self):
+        """Start/stop a slow, continuous tumble of the 3D camera around
+        whatever's currently in view -- purely camera.angles ticked
+        forward on a lightweight GUI-thread QTimer, never touching any
+        layer's own data, so it can't interact with (or be interrupted
+        by) any correction tool. Each axis advances at a slightly
+        different rate (not a common multiple) so the motion reads as an
+        organic drift/tumble rather than a mechanical single-axis spin
+        that visibly repeats on a short cycle."""
+        if self._drift_timer is not None:
+            self._drift_timer.stop()
+            self._drift_timer.deleteLater()
+            self._drift_timer = None
+            self._drift_btn.setText("Start Drift")
+            return
+
+        self._viewer.dims.ndisplay = 3
+        self._drift_btn.setText("Stop Drift")
+
+        timer = QTimer(self)
+
+        def _tick():
+            speed = self._drift_speed_slider.value()
+            rx, ry, rz = self._viewer.camera.angles
+            self._viewer.camera.angles = (
+                (rx + speed * 0.031) % 360,
+                (ry + speed * 0.023) % 360,
+                (rz + speed * 0.017) % 360,
+            )
+
+        timer.timeout.connect(_tick)
+        timer.start(33)  # ~30fps
+        self._drift_timer = timer
 
     def _save_cfg(self, **kwargs) -> None:
         """Merge kwargs into the config and persist."""
