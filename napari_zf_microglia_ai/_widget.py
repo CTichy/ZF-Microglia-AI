@@ -8785,13 +8785,14 @@ class ZFMicrogliaAIWidget(QWidget):
             self._cp_status_lbl.setText(base_status + " Auto-correcting labels via contrast sweep...")
             self._run_auto_correction_stage(
                 stem=stem, lname=lname, volume=volume, labels=labels, scale=scale,
-                brain_mask=brain_mask, out_dir=out_dir, base_status=base_status, base_email=base_email,
+                brain_mask=brain_mask, signal_layer=target,
+                out_dir=out_dir, base_status=base_status, base_email=base_email,
             )
 
         timer2.timeout.connect(_poll2)
         timer2.start(500)
 
-    def _run_auto_correction_stage(self, stem, lname, volume, labels, scale, brain_mask, out_dir, base_status, base_email):
+    def _run_auto_correction_stage(self, stem, lname, volume, labels, scale, brain_mask, signal_layer, out_dir, base_status, base_email):
         """
         Second stage chained onto a Cellpose-SAM Segmentation run, gated
         by self._cp_autocorrect_cb: self-referential contrast calibration
@@ -8806,6 +8807,18 @@ class ZFMicrogliaAIWidget(QWidget):
         controls) -- explicit values given for this specific chained,
         unattended use: growth step 5px up to 10 attempts/slice, until
         stable up to 100 passes/slice.
+
+        signal_layer : the actual napari Image layer (not just its raw
+                       array, already captured as `volume` above) -- on
+                       completion its contrast_limits are set to the
+                       calibrated best_lo, the same visible feedback the
+                       standalone Calibrate Correct-Label Contrast sweep
+                       already gives, and the Protect Skin as Label
+                       section's own UI (skin-ID spinbox, its own report
+                       box) is populated too -- this pipeline calls
+                       seed_skin_label()/trim_skin_label() directly
+                       rather than through _on_protect_skin(), so without
+                       this neither would otherwise ever update.
         """
         min_volume = self._current_min_volume()
         final_min_fraction = self._finalfrac_spin.value()
@@ -8873,6 +8886,50 @@ class ZFMicrogliaAIWidget(QWidget):
 
             autocorrected_path = out_dir / f"{stem}_cp_krendl_ac.tif"
             tifffile.imwrite(str(autocorrected_path), new_labels.astype(np.int32))
+
+            # Visible feedback this pipeline previously never gave: the
+            # signal layer's own contrast now reflects the calibrated
+            # threshold real cells were actually corrected with (same
+            # feedback the standalone Calibrate Correct-Label Contrast
+            # sweep already gives), and Protect Skin as Label's own UI is
+            # populated as if that button had been clicked directly --
+            # this pipeline calls seed_skin_label()/trim_skin_label()
+            # directly, so neither would otherwise ever update on its own.
+            best_lo = report["best_lo"]
+            signal_layer.contrast_limits = (best_lo, best_lo + 20.0)
+
+            skin_rep = report["skin_report"]
+            self._skin_id_spin.setValue(report["skin_label_id"])
+            touching_ids = sorted({i for ids in skin_rep.get("foreign_touching", {}).values() for i in ids})
+            nearby_ids = sorted({i for ids in skin_rep.get("foreign_nearby", {}).values() for i in ids})
+            skin_report_lines = []
+            if touching_ids:
+                skin_report_lines.append(f"Labels directly touching skin: {touching_ids}")
+            if nearby_ids:
+                skin_report_lines.append(f"Labels nearby skin (within its own working area): {nearby_ids}")
+            if skin_report_lines:
+                skin_report_lines.append(
+                    "These sit closest to the brain edge -- worth a closer "
+                    "look with Correct Label to confirm they don't already "
+                    "have a real (pre-existing) bleed into skin from before "
+                    "this run."
+                )
+                self._skin_report_view.setPlainText("\n".join(skin_report_lines))
+                self._skin_report_view.show()
+            else:
+                self._skin_report_view.hide()
+            n_reclaimed = skin_rep.get("n_reclaimed_px", 0)
+            reclaim_note = (
+                f" {n_reclaimed:,} px inside the brain mask (debris/possible "
+                f"cell signal) were kept out of skin and left as background."
+                if n_reclaimed else ""
+            )
+            self._skin_status_lbl.setText(
+                f"Done (via auto-correct) — skin protected as label "
+                f"{report['skin_label_id']}, real signal only, outside the "
+                f"brain mask. Use 'Remove Skin Label' below whenever you no "
+                f"longer need it.{reclaim_note}"
+            )
 
             report_text = format_auto_correction_report(report)
             autocorrect_status = (
