@@ -12,45 +12,50 @@ cell:
      needed (this is exactly what that sweep was built for).
 
   2. Protect Skin as Label, BEFORE any real cell is touched -- seeded
-     (seed_skin_label()) and trimmed (trim_skin_label()) at `lo + 1`,
-     deliberately one step stricter than the calibrated `lo` used for
-     every real cell in step 4 below. This mirrors the interactive
-     workflow of dialing the signal layer's contrast lower limit up by
-     one before running Protect Skin as Label, then back down to the
-     calibrated value before correcting real cells -- here that's just
-     two different `lo` arguments to the same underlying calls, since
-     this runs headless on raw arrays rather than through a napari
-     layer's live contrast slider. Skin becomes a real, ordinary label
-     (-1) at this point. Its own trim now uses the same per-slice
-     auto-grow + until-stable machinery real cells get in step 4 (see
-     trim_skin_label()'s own docstring), and jointly resolves its
-     boundary against any real cell it finds along the way -- but only
-     ever writes back skin's OWN resulting territory, never the cell's,
-     since at this point in the pipeline that cell hasn't been through
-     its own correction yet. Step 4's per-cell corrections, once it's
-     each cell's own turn, are free to adjust both themselves AND
-     whatever they touch (skin included) -- exactly why this has to
-     happen before, not after, the per-cell loop: skin adapts to
-     whatever a cell currently looks like, then the cell gets the final
-     say once it's actually corrected.
+     (seed_skin_label()) and trimmed (trim_skin_label()) at the SAME
+     calibrated `lo` real cells get in step 4 below (no longer offset
+     by +1 -- that margin existed to keep skin from greedily grabbing
+     marginal real-cell-adjacent signal back when skin's own trim only
+     ever excluded a touching cell; now that it jointly resolves the
+     boundary against one instead, see below, the margin is no longer
+     needed). Skin becomes a real, ordinary label (-1) at this point.
+     Its own trim uses the same per-slice auto-grow + until-stable
+     machinery real cells get in step 4 (see trim_skin_label()'s own
+     docstring), and jointly resolves its boundary against any real
+     cell it finds along the way -- but only ever writes back skin's
+     OWN resulting territory, never the cell's, since at this point in
+     the pipeline that cell hasn't been through its own correction yet.
+     Step 4's per-cell corrections, once it's each cell's own turn, are
+     free to adjust both themselves AND whatever they touch (skin
+     included) -- exactly why this has to happen before, not after,
+     the per-cell loop: skin adapts to whatever a cell currently looks
+     like, then the cell gets the final say once it's actually
+     corrected.
 
-  3. Resort every real cell by Centroid Z (resort_labels()) -- so the
-     sequential per-cell loop below always walks the fish in the same
-     deep-to-shallow (or shallow-to-deep) order, not whatever arbitrary
-     order Cellpose-SAM happened to assign label IDs in.
+  3. Resort every real cell by Centroid Z (resort_labels()) -- gives
+     step 4's wave partitioning below a stable, deterministic starting
+     order to break ties from, not whatever arbitrary order Cellpose-
+     SAM happened to assign label IDs in.
 
-  4. Sequential 3D correction, one cell at a time, in that new
-     Centroid-Z order -- grow_correct_label_3d(), the same auto-grow +
-     until-stable engine Tab 3's own "Correct Label" (3D mode) button
-     uses, not a single plain pass. Its own per-slice walk already
-     resolves a genuinely adjacent label (skin or another cell)
-     entirely on its own -- see grow_correct_label_3d()'s own
-     docstring -- so no separate touching-groups joint pass is needed
-     after this loop (the earlier version of this pipeline had one,
-     because the plain correct_label_from_intensity_3d() it used here
-     instead couldn't do that on its own). Every cell's own report is
-     kept and merged into one consolidated report, not one report per
-     cell.
+  4. 3D correction, batched into parallel-safe WAVES instead of one
+     cell strictly at a time -- grow_correct_label_3d(), the same
+     auto-grow + until-stable engine Tab 3's own "Correct Label" (3D
+     mode) button uses. Its own per-slice walk already resolves a
+     genuinely adjacent label (skin or another cell) entirely on its
+     own -- see grow_correct_label_3d()'s own docstring -- so no
+     separate touching-groups joint pass is needed after this loop.
+     Two cells whose own maximum-possible working areas (bounding box
+     + auto-grow's own worst-case reach) can never overlap are
+     provably unable to interact, so they're grouped into the same
+     wave and corrected concurrently on a ThreadPoolExecutor (capped
+     at 75% of CPU cores); cells that CAN conflict are pushed into
+     later waves, which still see every earlier wave's own already-
+     corrected state -- preserving the same "resolve against an
+     already-corrected neighbor" behavior the old strictly-sequential
+     loop had, just at wave granularity instead of one cell at a time.
+     See _compute_correction_waves()'s own docstring for the exact
+     partitioning scheme. Every cell's own report is kept and merged
+     into one consolidated report, not one report per cell.
 
   5. A final whole-layer Remove Debris pass (same golden-ratio floor as
      every other final-safety-net stage in this plugin) -- step 4's
@@ -61,7 +66,11 @@ cell:
 
 from __future__ import annotations
 
+import os
+from concurrent.futures import ThreadPoolExecutor
+
 import numpy as np
+from scipy.ndimage import find_objects
 
 from ._labeling import (
     seed_skin_label,
@@ -75,6 +84,110 @@ from ._contrast_sweep import (
     default_lo_candidates,
     sweep_contrast_lower_value,
 )
+
+
+def _compute_correction_waves(
+    labels: np.ndarray,
+    cell_ids: "list[int]",
+    pad: int,
+    growth_step: int,
+    max_iterations: int,
+    auto_grow: bool,
+) -> "tuple[list[list[int]], dict[int, tuple[int, int, int, int, int, int]]]":
+    """
+    Partitions cell_ids into sequential WAVES -- groups where every cell
+    is guaranteed to never spatially interact with any other cell in
+    the same wave -- so every cell in one wave can be corrected in
+    parallel, safely, on a shared labels array. Two cells only need to
+    stay in different waves if their own maximum-POSSIBLE working areas
+    could ever overlap; confirmed on 2 real, densely-packed fish (78
+    and 88 cells, one with literally zero fully-isolated cells) that
+    this still yields real parallelism -- crowding increases the number
+    of waves needed, not whether batching helps at all.
+
+    "Maximum possible working area" = each cell's own bounding box,
+    expanded by `reach` on every side: pad + growth_step * max_iterations
+    when auto_grow is on (0 otherwise) -- a strict upper bound on how
+    far correct_label_from_intensity_3d()'s own per-slice auto-grow can
+    ever push a single slice's working window (see that function's own
+    auto_grow docstring: use_pad starts at `pad` and grows by
+    growth_step at most max_iterations-1 more times before the attempt
+    cap is hit). Z-extension beyond a cell's own original range is
+    capped by z_extent_pad (== pad by default, never multiplied by
+    growth), so using the same (larger) Y/X reach for Z too is
+    deliberately conservative, not exact -- erring toward fewer, safer
+    waves rather than a tighter but riskier bound.
+
+    Cells across DIFFERENT waves still see each other's already-
+    corrected state, in wave order -- preserving the same "resolve
+    against an already-corrected neighbor" behavior a fully-sequential,
+    one-cell-at-a-time loop would have, just at wave granularity
+    instead of strictly one cell at a time.
+
+    Greedy, not globally optimal: repeatedly extracts the largest
+    mutually-non-conflicting set from whichever cells remain unassigned,
+    processing candidates in ascending order of how many others they
+    conflict with (a lightly-conflicted cell is more likely to still
+    fit into whatever's already been added to the current wave).
+
+    Returns (waves, boxes) -- boxes is {cell_id: (z0,z1,y0,y1,x0,x1)},
+    each cell's own expanded working-area bounds, reused by the caller
+    to merge a worker thread's single-cell result back into the shared
+    array (safe precisely because wave members' own boxes never
+    overlap).
+    """
+    max_lbl = int(labels.max()) if labels.size else 0
+    objs = find_objects(labels, max_label=max_lbl)
+    reach = pad + (growth_step * max_iterations if auto_grow else 0)
+    Z, Y, X = labels.shape
+
+    boxes: "dict[int, tuple[int, int, int, int, int, int]]" = {}
+    for lid in cell_ids:
+        sl = objs[lid - 1] if 0 < lid <= len(objs) else None
+        if sl is None:
+            continue
+        z0, z1 = sl[0].start, sl[0].stop
+        y0, y1 = sl[1].start, sl[1].stop
+        x0, x1 = sl[2].start, sl[2].stop
+        boxes[lid] = (
+            max(z0 - reach, 0), min(z1 + reach, Z),
+            max(y0 - reach, 0), min(y1 + reach, Y),
+            max(x0 - reach, 0), min(x1 + reach, X),
+        )
+
+    def _overlaps(a, b) -> bool:
+        az0, az1, ay0, ay1, ax0, ax1 = a
+        bz0, bz1, by0, by1, bx0, bx1 = b
+        return not (
+            az1 <= bz0 or bz1 <= az0
+            or ay1 <= by0 or by1 <= ay0
+            or ax1 <= bx0 or bx1 <= ax0
+        )
+
+    ids = list(boxes.keys())
+    conflicts: "dict[int, set[int]]" = {lid: set() for lid in ids}
+    for i in range(len(ids)):
+        for j in range(i + 1, len(ids)):
+            if _overlaps(boxes[ids[i]], boxes[ids[j]]):
+                conflicts[ids[i]].add(ids[j])
+                conflicts[ids[j]].add(ids[i])
+
+    order = sorted(ids, key=lambda lid: len(conflicts[lid]))
+    remaining = set(ids)
+    waves: "list[list[int]]" = []
+    while remaining:
+        wave: "list[int]" = []
+        blocked: "set[int]" = set()
+        for lid in order:
+            if lid not in remaining or lid in blocked:
+                continue
+            wave.append(lid)
+            blocked.add(lid)
+            blocked |= conflicts[lid]
+        for lid in wave:
+            remaining.discard(lid)
+        waves.append(wave)
+    return waves, boxes
 
 
 def auto_contrast_correct_stack(
@@ -205,12 +318,15 @@ def auto_contrast_correct_stack(
         f"(mean IoU={sweep['best_mean_iou']:.3f} on {sweep['n_samples']} samples)"
     )
 
-    # ── Step 2: protect skin BEFORE any real cell is touched, at lo+1 ──
-    skin_lo = best_lo + 1.0
-    _report(f"Auto-correct: protecting skin (lo={skin_lo:.4g})...")
+    # ── Step 2: protect skin BEFORE any real cell is touched, at the
+    #    same calibrated lo real cells get in step 4 (no longer +1 --
+    #    skin's own trim jointly resolves against a touching cell now,
+    #    instead of just excluding it, so that safety margin is no
+    #    longer needed) ───────────────────────────────────────────────
+    _report(f"Auto-correct: protecting skin (lo={best_lo:.4g})...")
     seeded, skin_id = seed_skin_label(labels, brain_mask)
     labels_with_skin, skin_report = trim_skin_label(
-        seeded, image, brain_mask, skin_id, skin_lo, pad=pad, sigma=sigma,
+        seeded, image, brain_mask, skin_id, best_lo, pad=pad, sigma=sigma,
         auto_grow=auto_grow, growth_step=growth_step, max_iterations=max_iterations,
         until_stable=until_stable, max_stability_passes=max_stability_passes,
     )
@@ -219,33 +335,71 @@ def auto_contrast_correct_stack(
     _report("Auto-correct: resorting cells by Centroid Z...")
     new_labels = resort_labels(labels_with_skin, sort_by="centroid_z")
 
-    # ── Step 4: sequential 3D correction, one cell at a time, in that
-    #    new Centroid-Z order, back at the calibrated lo (not lo+1) ─────
+    # ── Step 4: 3D correction, batched into parallel-safe waves ─────────
+    # See _compute_correction_waves()'s own docstring for the exact
+    # partitioning scheme and why it's safe.
     unique_ids2 = np.unique(new_labels)
     unique_ids2 = unique_ids2[unique_ids2 > 0]
     n_total = int(unique_ids2.size)
     n_corrected = 0
+    n_done = 0
     skipped_cells: "dict[int, str]" = {}
     cell_reports: "dict[int, dict]" = {}
-    for idx, lid in enumerate(unique_ids2.tolist()):
-        try:
-            new_labels, cell_report = grow_correct_label_3d(
-                new_labels, image, lid, best_lo,
-                initial_pad=pad, growth_step=growth_step, max_iterations=max_iterations,
-                sigma=sigma, min_volume=min_volume, final_min_fraction=final_min_fraction,
-                until_stable=until_stable, max_stability_passes=max_stability_passes,
-                auto_grow=auto_grow,
-            )
+
+    waves, boxes = _compute_correction_waves(
+        new_labels, unique_ids2.tolist(), pad, growth_step, max_iterations, auto_grow,
+    )
+    n_workers = max(1, int((os.cpu_count() or 4) * 0.75))
+    _report(
+        f"Auto-correct: {n_total} cell(s) split into {len(waves)} "
+        f"parallel-safe wave(s) (up to {n_workers} cell(s) at once)..."
+    )
+
+    for wave_idx, wave in enumerate(waves):
+        wave_snapshot = new_labels  # read-only for this wave -- each
+        # worker's own grow_correct_label_3d() call copies it internally
+        # before mutating, so concurrent reads here are safe; nothing
+        # writes to new_labels itself until every worker in this wave
+        # has finished and its own single-cell result is merged back
+        # below, so no wave-mate ever sees a partially-updated array.
+
+        def _correct_one(lid, _snapshot=wave_snapshot):
+            try:
+                result_labels, cell_report = grow_correct_label_3d(
+                    _snapshot, image, lid, best_lo,
+                    initial_pad=pad, growth_step=growth_step, max_iterations=max_iterations,
+                    sigma=sigma, min_volume=min_volume, final_min_fraction=final_min_fraction,
+                    until_stable=until_stable, max_stability_passes=max_stability_passes,
+                    auto_grow=auto_grow,
+                )
+                return lid, result_labels, cell_report, None
+            except ValueError as exc:
+                return lid, None, None, str(exc)
+
+        with ThreadPoolExecutor(max_workers=n_workers) as pool:
+            wave_results = list(pool.map(_correct_one, wave))
+
+        for lid, result_labels, cell_report, err in wave_results:
+            n_done += 1
+            if err is not None:
+                skipped_cells[lid] = err
+                continue
+            # Wave members' own boxes never overlap (that's the whole
+            # point of the partition), so copying just this cell's own
+            # expanded working area back is safe and unambiguous --
+            # every other voxel in result_labels is identical to
+            # wave_snapshot anyway (this cell's own correction couldn't
+            # have reached beyond its own box).
+            z0, z1, y0, y1, x0, x1 = boxes[lid]
+            new_labels[z0:z1, y0:y1, x0:x1] = result_labels[z0:z1, y0:y1, x0:x1]
             cell_reports[lid] = cell_report
             n_corrected += 1
-        except ValueError as exc:
-            skipped_cells[lid] = str(exc)
-        if idx % 5 == 0 or idx == n_total - 1:
-            _report(
-                f"Auto-correct: cell-by-cell 3D pass {idx + 1}/{n_total} "
-                f"(label {lid}) -- {n_corrected} corrected, "
-                f"{len(skipped_cells)} skipped so far"
-            )
+
+        _report(
+            f"Auto-correct: wave {wave_idx + 1}/{len(waves)} done "
+            f"({len(wave)} cell(s), {n_done}/{n_total} total) -- "
+            f"{n_corrected} corrected, {len(skipped_cells)} skipped so far"
+        )
 
     # ── Step 5: final whole-layer debris cleanup (skin included) ────────
     n_debris_removed = 0
@@ -279,7 +433,7 @@ def format_auto_correction_report(report: dict) -> str:
     skin_report = report["skin_report"]
     lines.append(
         f"  Skin protected as label {report['skin_label_id']} "
-        f"(lo={report['best_lo'] + 1.0:.4g}) -- "
+        f"(lo={report['best_lo']:.4g}) -- "
         f"{skin_report.get('n_debris_removed_px', 0)} px trimmed as debris, "
         f"{skin_report.get('n_reclaimed_px', 0)} px reclaimed from inside the brain mask."
     )
