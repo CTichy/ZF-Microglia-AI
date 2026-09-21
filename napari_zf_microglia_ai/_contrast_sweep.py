@@ -26,7 +26,7 @@ import os
 import numpy as np
 from concurrent.futures import ThreadPoolExecutor
 
-from ._labeling import _intensity_correct_2d
+from ._labeling import _intensity_correct_2d, label_centroids_zyx
 
 
 def select_calibration_samples(
@@ -69,7 +69,7 @@ def select_calibration_samples(
     Returns up to n_cells * slices_per_cell (label_id, z) pairs (fewer
     if there aren't enough interior/complex-enough cells available).
     """
-    from scipy.ndimage import find_objects, center_of_mass as _com
+    from scipy.ndimage import find_objects
     from ._statistics import _skeleton_stats
 
     unique = np.unique(labels)
@@ -92,7 +92,7 @@ def select_calibration_samples(
     # a length-1 one -- the "single bare tuple" special case only applies
     # when index itself is a scalar (not our case, label_list always is a
     # list) -- no extra wrapping needed regardless of unique.size.
-    raw_centroids = _com(labels > 0, labels, label_list)
+    raw_centroids = label_centroids_zyx(labels, label_list)  # exact scipy equivalent, ~100x faster with a skin label present
 
     interior = []
     for lbl, c in zip(label_list, raw_centroids):
@@ -208,10 +208,22 @@ def sweep_contrast_lower_value(
     per_sample: "dict[tuple[int, int], list[float]]" = {s: [] for s in samples}
     mean_iou = []
 
+    # Calibration counts MICROGLIA ONLY. Any non-positive label (Protect Skin
+    # as Label's -1) is treated as plain background here: otherwise the
+    # correction under test would see skin as a foreign label and exclude
+    # its pixels around a cell, so the calibrated lo would depend on whether
+    # skin happened to be protected already. Done once per sample slice
+    # (a few MB), not as a whole-volume copy.
+    labels_by_z: "dict[int, np.ndarray]" = {}
+    for (_lbl, z) in samples:
+        if z not in labels_by_z:
+            lz = labels[z]
+            labels_by_z[z] = np.where(lz > 0, lz, lz.dtype.type(0)) if (lz < 0).any() else lz
+
     for idx, lo in enumerate(lo_candidates):
         ious = []
         for (label_id, z) in samples:
-            labels_z = labels[z]
+            labels_z = labels_by_z[z]
             image_z = image[z]
             existing = labels_z == label_id
             try:

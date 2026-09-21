@@ -270,9 +270,7 @@ def masks_from_flows(model, dP, cellprob, shape, cellprob_threshold, flow_thresh
     that threshold *before* this function runs, so marginal, unstable
     voxels flicker in and out slice-by-slice regardless of niter. A
     stricter (higher) cellprob_threshold on that one cell (e.g. -0.3
-    instead of a permissive -2.5) is the more effective lever -- see
-    compute_porosity() below for a way to detect the symptom after the
-    fact rather than guessing which cells need it.
+    instead of a permissive -2.5) is the more effective lever.
 
     min_hole_size : passed through to _make_capped_fill_holes() -- see
     that function's docstring. 0 (default) matches cellpose's own
@@ -570,43 +568,11 @@ def relabel_sequential(masks):
     return lut[masks], int(ids.size)
 
 
-def compute_porosity(masks, solidity_threshold=0.5):
-    """Flag any label whose 3D shape is abnormally porous -- solidity =
-    actual voxel volume / convex-hull volume, via skimage's regionprops
-    (each label's own bounding box, so cheap even though convex-hull
-    computation itself is not free).
-
-    A solid blob sits close to 1.0. A "pumice stone"/skeletonized label
-    -- voxels scattered inside a much larger convex envelope than they
-    actually fill -- sits well below it. Usually a faint cell's raw
-    cellprob map being noisy near cellprob_threshold, not a niter/
-    flow-convergence issue as first suspected -- see
-    masks_from_flows()'s niter docstring for both the original
-    hypothesis and the empirical correction (2026-08). Not something
-    this pipeline's own merge/cleanup stages can introduce or repair.
-
-    Returns {label_id: solidity, ...} for every label below
-    solidity_threshold -- a list of suspects to inspect/re-run (try a
-    stricter cellprob_threshold on that cell first, e.g. via Re-run
-    This Cell Only), not an automatic fix. There is no safe way to
-    "repair" a label like this in place."""
-    from skimage.measure import regionprops
-    flagged = {}
-    for p in regionprops(masks):
-        try:
-            sol = float(p.solidity)
-        except Exception:
-            continue
-        if sol < solidity_threshold:
-            flagged[int(p.label)] = sol
-    return flagged
-
-
 def run_full_pipeline(volume, model_path, cellprob=-2.5, flow=0.4, anisotropy=5.747,
                        max_gap=1.0, min_contact=10, large_contact=20, gt_min=GT_MIN,
                        gpu=True, progress_cb=None, precomputed_flows=None,
                        min_hole_size=0, min_size=15, final_min_fraction=0.618,
-                       niter=None, solidity_threshold=0.5, scale_zyx=(1.0, 0.174, 0.174),
+                       niter=None, scale_zyx=(1.0, 0.174, 0.174),
                        flow_cache_path=None):
     """
     Full do_3D + 3-GMM + Krendl safe merge + large-contact merge + final
@@ -644,13 +610,6 @@ def run_full_pipeline(volume, model_path, cellprob=-2.5, flow=0.4, anisotropy=5.
     niter : passed through to masks_from_flows()/run_do3d_inference() --
     see masks_from_flows()'s docstring. None (default) resolves to
     Cellpose's own default of 200.
-
-    solidity_threshold : passed to compute_porosity(), run as the very
-    last step against the final relabeled masks. 0.5 (default) is a
-    conservative catch-most-real-artifacts starting point, not a
-    calibrated GT-verified value (unlike this project's other
-    thresholds) -- there is no GT for "is this shape porous" to
-    calibrate against.
 
     flow_cache_path : optional path to persist predict_flows()'s
     expensive network-pass output to disk right before mask-formation
@@ -730,9 +689,6 @@ def run_full_pipeline(volume, model_path, cellprob=-2.5, flow=0.4, anisotropy=5.
     _report(f"{n4} cells — relabeling...")
     masks, n_final = relabel_sequential(masks)
 
-    _report(f"{n_final} cells — checking shape solidity...")
-    porous_cells = compute_porosity(masks, solidity_threshold=solidity_threshold)
-
     stats = {
         "n_raw":               n0,
         "n_after_gmm":         n1,
@@ -746,8 +702,6 @@ def run_full_pipeline(volume, model_path, cellprob=-2.5, flow=0.4, anisotropy=5.
         "large_contact_merges": lc_merges,
         "final_min_threshold_vox": final_min_threshold,
         "final_min_removed":   final_removed,
-        "porous_cells":        porous_cells,
-        "solidity_threshold":  solidity_threshold,
         "raw_masks":           raw_masks,
     }
     return masks, stats
@@ -756,15 +710,14 @@ def run_full_pipeline(volume, model_path, cellprob=-2.5, flow=0.4, anisotropy=5.
 def rerun_single_cell(volume, labels, label_id, model_path, cellprob=-2.5, flow=0.4,
                        anisotropy=5.747, max_gap=1.0, min_contact=10, large_contact=20,
                        gt_min=GT_MIN, gpu=True, min_hole_size=0, min_size=15,
-                       final_min_fraction=0.618, niter=None, solidity_threshold=0.5,
+                       final_min_fraction=0.618, niter=None,
                        pad_z=15, pad_xy=40, progress_cb=None, scale_zyx=(1.0, 0.174, 0.174)):
     """
     Re-run do_3D inference (+ the same GMM/Krendl-safe-merge/large-
     contact-merge/final-min-size cleanup as run_full_pipeline) on just
     the small padded bounding-box crop around one existing label,
-    instead of the whole volume -- turns "fix one porous/mis-segmented
-    cell" (see compute_porosity()) into seconds instead of the hours a
-    full-fish re-run costs.
+    instead of the whole volume -- turns "fix one mis-segmented cell"
+    into seconds instead of the hours a full-fish re-run costs.
 
     Safe to reuse run_full_pipeline() unmodified on a tiny crop: GMM
     cleanup already no-ops below 3 objects (see its own docstring), and
@@ -788,10 +741,9 @@ def rerun_single_cell(volume, labels, label_id, model_path, cellprob=-2.5, flow=
     Returns (new_labels, info):
       new_labels : full-size label array, label_id's voxels replaced.
       info : {'old_label': label_id, 'new_labels': [id, ...],
-              'n_new': int, 'porous_cells': {...}, 'crop_stats': {...}}
-             -- porous_cells is compute_porosity() re-run restricted to
-             just the newly spliced-in objects; crop_stats is
-             run_full_pipeline()'s own stats dict from the crop.
+              'n_new': int, 'crop_stats': {...}}
+             -- crop_stats is run_full_pipeline()'s own stats dict from
+             the crop.
 
     Raises ValueError if label_id isn't present in labels at all.
     """
@@ -832,7 +784,7 @@ def rerun_single_cell(volume, labels, label_id, model_path, cellprob=-2.5, flow=
         max_gap=max_gap, min_contact=min_contact, large_contact=large_contact,
         gt_min=gt_min, gpu=gpu, min_hole_size=min_hole_size, min_size=min_size,
         final_min_fraction=final_min_fraction, niter=niter, scale_zyx=scale_zyx,
-        solidity_threshold=solidity_threshold, progress_cb=progress_cb,
+        progress_cb=progress_cb,
     )
 
     keep_ids = sorted({int(v) for v in np.unique(crop_labels[orig_footprint]) if v > 0})
@@ -849,20 +801,8 @@ def rerun_single_cell(volume, labels, label_id, model_path, cellprob=-2.5, flow=
         next_id += 1
     new_labels[crop_sl] = region
 
-    # Scoped to just this crop, not the whole fish -- compute_porosity()
-    # runs regionprops (a real, non-free 3D convex-hull computation) over
-    # every label it's given, and only spliced_ids' results are ever kept
-    # below anyway. Passing the full new_labels here used to mean every
-    # "Re-run This Cell Only" click recomputed solidity for every cell in
-    # the entire fish, not just the one(s) actually just re-run -- for a
-    # fish with dozens of cells this alone could take minutes, defeating
-    # the whole point of this being the fast, crop-scoped alternative to a
-    # full re-run.
-    porous_recheck = compute_porosity(new_labels[crop_sl], solidity_threshold=solidity_threshold)
-    porous_recheck = {k: v for k, v in porous_recheck.items() if k in spliced_ids}
-
     info = dict(
         old_label=label_id, new_labels=spliced_ids, n_new=len(spliced_ids),
-        porous_cells=porous_recheck, crop_stats=crop_stats,
+        crop_stats=crop_stats,
     )
     return new_labels, info

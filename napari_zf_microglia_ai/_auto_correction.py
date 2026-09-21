@@ -11,7 +11,12 @@ cell:
      best REPRODUCES what Cellpose-SAM just segmented, no external GT
      needed (this is exactly what that sweep was built for).
 
-  2. Protect Skin as Label, BEFORE any real cell is touched -- seeded
+  2. Protect Skin as Label, BEFORE any real cell is touched -- unless the
+     labels handed in ALREADY carry a skin label (-1), in which case it
+     is reused exactly as it is and never re-seeded/re-trimmed. Either
+     way the pipeline then VERIFIES skin is present before it corrects
+     a single cell (see the "Gate" comment in step 2-3) and refuses to
+     continue if it is not. When protecting, skin is seeded
      (seed_skin_label()) and trimmed (trim_skin_label()) at the SAME
      calibrated `lo` real cells get in step 5 below (no longer offset
      by +1 -- that margin existed to keep skin from greedily grabbing
@@ -38,14 +43,15 @@ cell:
      trim absorbed, by size alone (same golden-ratio floor as every
      other debris pass in this plugin).
 
-  4. Figure out which real cells skin's own trim (step 2) actually
-     jointly resolved against -- read from trim_skin_label()'s own
-     foreign_nearby report, NOT a fresh pixel-adjacency scan of skin's
-     final territory (see _labels_touching_skin()'s own docstring: the
-     shared _clear_split_interface() convention deliberately clears a
-     1-voxel gap at any freshly split boundary, so a fresh scan would
-     almost never find a real touching neighbor even right after one
-     was genuinely resolved). THEN partition every real cell into
+  4. Figure out which real cells touch skin -- by GEOMETRY of skin's
+     final territory (after the trim and its debris pass): a cell
+     "touches" skin if, on any slice, some pixel of it is within
+     skin_touch_px pixels (default 3, in-plane) of a skin pixel --
+     see _labels_touching_skin()'s own docstring for why this is NOT
+     read from trim_skin_label()'s foreign_nearby report any more (that
+     report lists every label ever folded into a growth attempt, which
+     flagged all 33 of 33 cells of a real fish although none was within
+     45 px of skin's real territory). THEN partition every real cell into
      parallel-safe WAVES (_compute_correction_waves() -- two cells
      whose own maximum-possible working areas can never overlap are
      grouped into the same wave and corrected concurrently on a
@@ -94,6 +100,7 @@ from scipy.ndimage import find_objects
 from ._labeling import (
     seed_skin_label,
     trim_skin_label,
+    skin_voxel_count,
     correct_label_2d_stack,
     resort_labels,
     remove_debris,
@@ -106,28 +113,143 @@ from ._contrast_sweep import (
 )
 
 
-def _labels_touching_skin(skin_report: dict) -> "set[int]":
+def _labels_touching_skin(
+    labels: np.ndarray,
+    cell_ids: "list[int]",
+    skin_id: int,
+    max_gap_px: int,
+) -> "set[int]":
     """
-    Every real label skin's own trim (step 2) actually jointly resolved
-    against, anywhere in the volume -- read from trim_skin_label()'s own
-    foreign_nearby report, NOT a fresh post-hoc pixel-adjacency scan.
+    Every real cell within max_gap_px pixels of skin's FINAL territory on
+    at least one slice -- pure geometry on the labels array as it stands
+    (after skin's trim and debris pass), nothing inferred from how the
+    trim got there.
 
-    This distinction matters, confirmed directly: a fresh adjacency scan
-    of skin's FINAL territory almost never finds a real touching
-    neighbor, even right after skin was genuinely jointly corrected
-    against it -- _clear_split_interface() (shared by every joint
-    watershed split in this plugin) deliberately clears a 1-voxel gap at
-    the freshly computed boundary between the two labels, precisely so
-    they don't end up literally adjacent again. foreign_nearby, by
-    contrast, is populated from grow_correct_label_2d()'s own group
-    discovery -- which requires GENUINE touching adjacency BEFORE that
-    gap is cleared -- so it reliably captures "this cell was found
-    touching and corrected jointly with skin," which is exactly the
-    "Corrected as Adjacent Labels with the skin" condition step 5 needs
-    to decide 2D-vs-skin vs. plain 3D correction, regardless of the
-    small gap the correction itself leaves behind afterward.
+    "Within max_gap_px" means at most max_gap_px EMPTY pixels between the
+    cell and skin, in-plane (each slice is independent -- skin is
+    corrected per-slice in 2D, so 2D distance is what matters): the cell
+    is dilated by max_gap_px + 1 with a 3x3 structure (Chebyshev, the
+    same neighborhood every other adjacency test in this plugin uses),
+    and it counts if that reaches any skin pixel. max_gap_px=0 is plain
+    adjacency.
+
+    Why not read trim_skin_label()'s foreign_nearby report, as this
+    function used to: that report lists every label that was EVER folded
+    into a skin-growth attempt on any slice. Skin's first attempt on a
+    slice floods every above-threshold pixel of the (whole-slice) crop --
+    including the halo around every cell -- so every cell gets folded in
+    for a moment, and stays listed after the joint split hands those
+    pixels back. Confirmed on a real fish (NT36-3dpf D1F4): all 33 of 33
+    cells flagged, yet post-trim adjacency was 0 for every one and the
+    nearest real skin was 45-950 px away. And the old alternative -- a
+    strict 0-px adjacency scan -- misses a cell that the shared
+    _clear_split_interface() convention or a sub-threshold band leaves
+    1-2 px from skin, which is a genuine "touching" case.
+
+    Each cell only ever examines its own bounding box (grown by the gap),
+    so this stays cheap on a full fish.
     """
-    return {i for ids in skin_report.get("foreign_nearby", {}).values() for i in ids}
+    from scipy.ndimage import binary_dilation
+
+    Z, Y, X = labels.shape
+    max_lbl = int(max(cell_ids)) if cell_ids else 0
+    objs = find_objects(labels, max_label=max_lbl)
+    reach = int(max_gap_px) + 1
+    struct = np.ones((1, 3, 3), dtype=bool)  # in-plane only: slices are independent
+    touching: "set[int]" = set()
+    for lid in cell_ids:
+        sl = objs[lid - 1] if 0 < lid <= len(objs) else None
+        if sl is None:
+            continue
+        y0 = max(sl[1].start - reach, 0); y1 = min(sl[1].stop + reach, Y)
+        x0 = max(sl[2].start - reach, 0); x1 = min(sl[2].stop + reach, X)
+        crop = labels[sl[0], y0:y1, x0:x1]
+        skin = crop == skin_id
+        if not skin.any():
+            continue
+        grown = binary_dilation(crop == lid, structure=struct, iterations=reach)
+        if (grown & skin).any():
+            touching.add(int(lid))
+    return touching
+
+
+def _flag_possible_non_microglia(
+    labels: np.ndarray,
+    brain_mask: np.ndarray,
+    cell_ids: "list[int]",
+    skin_id: int,
+    skin_touch_px: int,
+    fraction: float,
+) -> "dict[int, dict]":
+    """
+    REPORT-ONLY screen for blobs that are probably not microglia:
+    macrophages (usually outside the skin, or lying over it) and skin
+    that MONAI did not remove and Cellpose then segmented as a cell.
+    Never changes a label -- it only returns what to mention.
+
+    A cell is flagged when EITHER criterion reaches `fraction` (0-1):
+
+      outside_brain -- share of the cell's VOXELS lying outside the brain
+                       mask (the cell sits beyond the brain boundary, or
+                       mostly over it).
+      skin_contact  -- share of the cell's own boundary SURFACE (its outer
+                       shell of voxels: the cell minus its 3D erosion) that
+                       is within skin_touch_px pixels, in-plane, of skin --
+                       the same reach the "touching skin" rule uses (a cell
+                       wrapped against skin even while inside the mask).
+
+    Returns {label_id: {"outside_brain_frac", "skin_surface_frac",
+    "reasons": ["outside_brain" and/or "skin_contact"], "volume_vox",
+    "centroid_zyx"}} for flagged cells only. Each cell only examines its
+    own bounding box, so this stays cheap on a full fish.
+    """
+    from scipy.ndimage import binary_dilation, binary_erosion
+
+    Z, Y, X = labels.shape
+    max_lbl = int(max(cell_ids)) if cell_ids else 0
+    objs = find_objects(labels, max_label=max_lbl)
+    reach = int(skin_touch_px) + 1
+    struct2d = np.ones((1, 3, 3), dtype=bool)
+    flagged: "dict[int, dict]" = {}
+    for lid in cell_ids:
+        sl = objs[lid - 1] if 0 < lid <= len(objs) else None
+        if sl is None:
+            continue
+        z0, z1 = sl[0].start, sl[0].stop
+        y0 = max(sl[1].start - reach, 0); y1 = min(sl[1].stop + reach, Y)
+        x0 = max(sl[2].start - reach, 0); x1 = min(sl[2].stop + reach, X)
+        crop = labels[z0:z1, y0:y1, x0:x1]
+        cell = crop == lid
+        n_vox = int(cell.sum())
+        if n_vox == 0:
+            continue
+
+        outside_frac = float((cell & ~brain_mask[z0:z1, y0:y1, x0:x1]).sum()) / n_vox
+
+        skin_frac = 0.0
+        skin = crop == skin_id
+        if skin.any():
+            shell = cell & ~binary_erosion(cell)
+            n_shell = int(shell.sum())
+            if n_shell:
+                near_skin = binary_dilation(skin, structure=struct2d, iterations=reach)
+                skin_frac = float((shell & near_skin).sum()) / n_shell
+
+        reasons = []
+        if outside_frac >= fraction:
+            reasons.append("outside_brain")
+        if skin_frac >= fraction:
+            reasons.append("skin_contact")
+        if reasons:
+            zz, yy, xx = np.nonzero(cell)
+            flagged[int(lid)] = {
+                "outside_brain_frac": outside_frac,
+                "skin_surface_frac": skin_frac,
+                "reasons": reasons,
+                "volume_vox": n_vox,
+                "centroid_zyx": (float(zz.mean()) + z0, float(yy.mean()) + y0, float(xx.mean()) + x0),
+            }
+    return flagged
 
 
 def _compute_correction_waves(
@@ -239,10 +361,13 @@ def auto_contrast_correct_stack(
     image: np.ndarray,
     scale_zyx: "tuple[float, float, float]",
     brain_mask: np.ndarray,
+    skin_image: "np.ndarray | None" = None,
     min_volume: "int | None" = None,
     final_min_fraction: float = 0.618,
     pad: int = 15,
     skin_pad: int = 25,
+    skin_touch_px: int = 3,
+    non_microglia_fraction: float = 0.40,
     sigma: float = 1.0,
     n_cells_calib: int = 5,
     slices_per_cell_calib: int = 10,
@@ -268,6 +393,27 @@ def auto_contrast_correct_stack(
                           same convention as Protect Skin as Label's own
                           (nonzero = brain, kept). Required: skin
                           protection is not optional in this pipeline.
+    skin_image          : optional (Z, Y, X) array, same shape as image --
+                          used ONLY for skin's own trim (step 2), in
+                          place of `image`. `image` (the just-segmented
+                          signal) is often background-processed in a way
+                          that zeroes everything outside the brain mask
+                          by design (Tab 1 Background mode 1 "_ExtRm" or
+                          mode 2 "_NoBG" -- see _background.py), which
+                          leaves nothing for skin's own trim to find no
+                          matter what threshold is used -- and neither
+                          does a "Background=Off" brain_only, despite
+                          the name: run_inference() always returns
+                          volume * eroded_mask regardless of bg_mode
+                          (see _inference.py's own docstring), "Off"
+                          only skips the EXTRA background-threshold
+                          pass. Pass the raw, never-masked imported
+                          channel itself here when available (or any
+                          other image that still retains real
+                          outside-brain signal). None (default) falls
+                          back to `image` itself, matching this
+                          function's behavior before this parameter
+                          existed.
     min_volume          : Common Settings' Min volume (voxels) -- drives
                           both the debris pass right after skin
                           protection and the final whole-layer pass.
@@ -286,6 +432,22 @@ def auto_contrast_correct_stack(
                           own docstring), so it gets its own, wider
                           default rather than sharing a real cell's
                           tighter one
+    skin_touch_px        : a real cell counts as "touching skin" (and is
+                          corrected in 2D against it, step 5) if some
+                          pixel of it, on any slice, has at most this
+                          many empty pixels between it and skin's final
+                          territory -- 0 = plain adjacency. Default 3.
+                          Measured on the final skin mask, not inferred
+                          from the skin trim's own group discovery (see
+                          _labels_touching_skin()).
+    non_microglia_fraction : REPORT-ONLY. A cell is listed in the report as a
+                          "possible non-microglia blob" (macrophage, or
+                          skin MONAI left behind that Cellpose segmented)
+                          when at least this share (0-1, default 0.40) of
+                          its voxels lies outside the brain mask, OR of its
+                          boundary surface is within skin_touch_px of skin.
+                          Nothing is removed or altered -- see
+                          _flag_possible_non_microglia().
     n_cells_calib, slices_per_cell_calib, n_lo_steps, edge_margin_um
                         : passed straight through to the contrast sweep
                           (select_calibration_samples / default_lo_candidates)
@@ -309,8 +471,16 @@ def auto_contrast_correct_stack(
         skin_label_id           -- the ID skin was seeded as (-1)
         skin_report              -- trim_skin_label()'s own report dict
                                   for the skin correction
-        n_skin_debris_removed_px -- px of stray skin debris swept up
-                                  right after protection (step 3)
+        n_skin_debris_fragments_removed -- fragments of stray skin
+                                  debris swept up right after protection
+                                  (step 3) -- a FRAGMENT count, not a
+                                  pixel count (matches remove_debris()'s
+                                  own return contract -- the pre-fix
+                                  version of this report mislabeled it
+                                  "px", which on a fish where skin ended
+                                  up fully fragmented made a complete
+                                  wipeout of skin read as a trivial "N px
+                                  removed" debris cleanup)
         touching_skin_cell_ids -- sorted [label_id, ...] -- every real
                                   cell corrected in 2D against skin
                                   (step 5's first mode) rather than 3D
@@ -382,47 +552,105 @@ def auto_contrast_correct_stack(
     )
 
     # ── Step 2: protect skin BEFORE any real cell is touched, at the
-    #    same calibrated lo real cells get in step 5 (no longer +1 --
-    #    skin's own trim jointly resolves against a touching cell now,
-    #    instead of just excluding it, so that safety margin is no
-    #    longer needed), at its own dedicated skin_pad ──────────────────
-    _report(f"Auto-correct: protecting skin (lo={best_lo:.4g})...")
-    seeded, skin_id = seed_skin_label(labels, brain_mask)
-    labels_with_skin, skin_report = trim_skin_label(
-        seeded, image, skin_id, best_lo, pad=skin_pad, sigma=sigma,
-        auto_grow=auto_grow, growth_step=growth_step, max_iterations=max_iterations,
-        until_stable=until_stable, max_stability_passes=max_stability_passes,
-    )
+    #    SAME calibrated best_lo real cells get (reusing it, not a
+    #    separately-computed skin threshold -- confirmed directly by
+    #    the user: skin's real intensity range is approximately the
+    #    same as real cells' own, since the contrast sweep already
+    #    adapts best_lo per-fish to capture even faint cells Cellpose-
+    #    SAM recognizes -- the SAME reasoning applies to skin. A
+    #    separate Otsu-based threshold was tried and confirmed WRONG on
+    #    real data: this fish's outside-brain intensity histogram has
+    #    no real second mode (93% of voxels sit in one narrow spike,
+    #    then a smoothly decaying tail with no bump) -- Otsu just
+    #    chopped an arbitrary point off that tail (0.095% of voxels
+    #    survived, visually nothing), nowhere near where the user could
+    #    actually see real skin structure (~90-115). The REAL bug was
+    #    only ever the image source (`image` here is often "_ExtRm"/
+    #    "_NoBG", zeroed outside the brain mask by design -- see
+    #    skin_image's own docstring above) -- best_lo was fine all
+    #    along once given real signal to work with ─────────────────────
+    skin_id = -1
+    n_skin_existing = skin_voxel_count(labels, skin_id)
+    if n_skin_existing > 0:
+        # Skin is ALREADY protected on the labels handed in (e.g. the user
+        # clicked Protect Skin as Label first, or loaded a labels file that
+        # was protected in an earlier session) -- never seed/trim it a
+        # second time: re-protecting would re-trim a territory the user
+        # may have already inspected or hand-corrected, and (before this
+        # check existed) re-seeded on top of it. Reuse it exactly as it is.
+        _report(
+            f"Auto-correct: skin already protected (label {skin_id}, "
+            f"{n_skin_existing:,} voxels) -- reusing it, skipping skin protection."
+        )
+        labels_with_skin = labels
+        skin_report = {
+            "already_protected": True,
+            "n_skin_voxels_reused": n_skin_existing,
+            "foreign_touching": {}, "foreign_nearby": {},
+            "slices_grown": {}, "slices_stability_passes": {},
+            "stable": True, "converged": True, "slices_not_converged": [],
+            "n_debris_removed_px": 0,
+        }
+        n_skin_debris_fragments_removed = 0
+    else:
+        skin_src = skin_image if skin_image is not None else image
+        _report(f"Auto-correct: protecting skin (lo={best_lo:.4g})...")
+        seeded, skin_id = seed_skin_label(labels, brain_mask)
+        labels_with_skin, skin_report = trim_skin_label(
+            seeded, skin_src, skin_id, best_lo, pad=skin_pad, sigma=sigma,
+            auto_grow=auto_grow, growth_step=growth_step, max_iterations=max_iterations,
+            until_stable=until_stable, max_stability_passes=max_stability_passes,
+        )
+        skin_report["already_protected"] = False
 
-    # ── Step 3: remove debris skin just absorbed, right here, before
-    #    any real cell's own turn -- trim_skin_label() no longer clamps
-    #    against the brain mask (that clamp used to block legitimate
-    #    inner-boundary correction manual Correct Label never had to
-    #    fight -- see its own docstring), so this is what actually
-    #    catches a small stray blob it picked up along the way ─────────
-    n_skin_debris_removed = 0
-    if min_volume is not None:
-        threshold = int(round(final_min_fraction * min_volume))
-        _report(f"Auto-correct: removing debris skin absorbed (below {threshold} vox)...")
-        labels_with_skin, n_skin_debris_removed = remove_debris(
-            labels_with_skin, threshold, skin_label_id=skin_id,
+        # ── Step 3: remove debris skin just absorbed, right here, before
+        #    any real cell's own turn -- trim_skin_label() no longer clamps
+        #    against the brain mask (that clamp used to block legitimate
+        #    inner-boundary correction manual Correct Label never had to
+        #    fight -- see its own docstring), so this is what actually
+        #    catches a small stray blob it picked up along the way. Counts
+        #    FRAGMENTS removed, not pixels -- see remove_debris()'s own
+        #    docstring; do not relabel this "_px" again ─────────────────
+        n_skin_debris_fragments_removed = 0
+        if min_volume is not None:
+            threshold = int(round(final_min_fraction * min_volume))
+            _report(f"Auto-correct: removing debris skin absorbed (below {threshold} vox)...")
+            labels_with_skin, n_skin_debris_fragments_removed = remove_debris(
+                labels_with_skin, threshold, skin_label_id=skin_id,
+            )
+
+    # ── Gate: NO cell is corrected unless skin is verifiably protected
+    #    on the array about to be corrected -- whichever branch above got
+    #    us here. A protection that ended up with nothing (e.g. a brain
+    #    mask covering the whole frame, so there is no outside to seed,
+    #    or every skin fragment swept as debris) would silently let every
+    #    cell's correction bleed into skin residue -- the exact failure
+    #    skin protection exists to prevent -- so this refuses instead. ──
+    n_skin_final = skin_voxel_count(labels_with_skin, skin_id)
+    if n_skin_final == 0:
+        raise ValueError(
+            "skin is not protected (no voxel carries the skin label after "
+            "protection) -- refusing to auto-correct cells without it. "
+            "Check that the brain mask really excludes skin/outside tissue "
+            "and that the signal layer used for skin still has signal "
+            "outside the brain."
         )
 
     _report("Auto-correct: resorting cells by Centroid Z...")
     new_labels = resort_labels(labels_with_skin, sort_by="centroid_z")
 
-    # ── Step 4: which cells skin's own trim actually jointly resolved
-    #    against (see _labels_touching_skin()'s own docstring for why
-    #    this reads skin_report's foreign_nearby rather than re-scanning
-    #    skin's final territory for direct pixel adjacency), THEN
-    #    partition every real cell into parallel-safe waves ────────────
+    # ── Step 4: which cells touch skin's final territory (geometry, see
+    #    _labels_touching_skin()'s own docstring), THEN partition every
+    #    real cell into parallel-safe waves ────────────────────────────
     # See _compute_correction_waves()'s own docstring for the exact
     # partitioning scheme and why it's safe -- one shared wave partition
     # covers every real cell, touching skin or not, since both
     # correction modes in step 5 share the identical worst-case reach
     # formula (pad + growth_step*max_iterations).
-    touching_skin_ids = _labels_touching_skin(skin_report)
-    _report(f"Auto-correct: {len(touching_skin_ids)} cell(s) touch skin.")
+    touching_skin_ids = _labels_touching_skin(
+        new_labels, [int(i) for i in np.unique(new_labels) if i > 0], skin_id, skin_touch_px,
+    )
+    _report(f"Auto-correct: {len(touching_skin_ids)} cell(s) within {skin_touch_px}px of skin.")
 
     unique_ids2 = np.unique(new_labels)
     unique_ids2 = unique_ids2[unique_ids2 > 0]
@@ -437,9 +665,11 @@ def auto_contrast_correct_stack(
     )
     n_workers = max(1, int((os.cpu_count() or 4) * 0.75))
     _report(
-        f"Auto-correct: {n_total} cell(s) ({len(touching_skin_ids)} touching skin, "
-        f"corrected in 2D against it) split into {len(waves)} parallel-safe "
-        f"wave(s) (up to {n_workers} cell(s) at once)..."
+        f"Auto-correct: {n_total} cell(s) "
+        + (f"({len(touching_skin_ids)} within {skin_touch_px}px of skin, corrected in 2D against it, "
+           f"the rest in 3D) " if touching_skin_ids else "(none near skin, all corrected in 3D) ")
+        + f"split into {len(waves)} parallel-safe "
+        f"wave(s) (up to {n_workers} thread(s) at once)..."
     )
 
     # ── Step 5: each cell's own correction -- 2D against skin for a
@@ -452,7 +682,18 @@ def auto_contrast_correct_stack(
         # finished and its own single-cell result is merged back below,
         # so no wave-mate ever sees a partially-updated array.
 
-        def _correct_one(lid, _snapshot=wave_snapshot):
+        # ONE shared thread budget (n_workers = 75% of cores), split
+        # between cells-in-this-wave (outer) and slices-within-a-cell
+        # (inner), never multiplied: a wave of 12 cells on 6 cores runs
+        # 6 cells x 1 slice-thread; a wave of 1 cell runs 1 cell x 6
+        # slice-threads. The old code gave every cell its own full
+        # 75%-of-cores slice pool on top of the cell pool (6 x 6 = 36
+        # concurrent slice corrections), each allocating a full-volume
+        # copy -- that's what exhausted 119 GB of RAM on 2026-09-18.
+        n_outer = max(1, min(n_workers, len(wave)))
+        n_inner = max(1, n_workers // n_outer)
+
+        def _correct_one(lid, _snapshot=wave_snapshot, _n_inner=n_inner):
             try:
                 if lid in touching_skin_ids:
                     result_labels, cell_report = correct_label_2d_stack(
@@ -460,6 +701,7 @@ def auto_contrast_correct_stack(
                         pad=pad, sigma=sigma, auto_grow=auto_grow,
                         growth_step=growth_step, max_iterations=max_iterations,
                         until_stable=until_stable, max_stability_passes=max_stability_passes,
+                        n_workers=_n_inner,
                     )
                     cell_report = dict(cell_report)
                     cell_report["_mode"] = "2d_vs_skin"
@@ -472,14 +714,24 @@ def auto_contrast_correct_stack(
                         auto_grow=auto_grow,
                     )
                     cell_report["_mode"] = "3d"
-                return lid, result_labels, cell_report, None
+                # Hand back ONLY this cell's own box, then let the full-
+                # volume result_labels go out of scope right here. The
+                # merge below only ever reads this box anyway (see
+                # _compute_correction_waves()'s own docstring), but the
+                # old code returned the whole array, so `list(pool.map())`
+                # kept one full-volume copy alive per cell in the wave
+                # until the wave's last cell finished.
+                z0, z1, y0, y1, x0, x1 = boxes[lid]
+                box_result = result_labels[z0:z1, y0:y1, x0:x1].copy()
+                del result_labels
+                return lid, box_result, cell_report, None
             except ValueError as exc:
                 return lid, None, None, str(exc)
 
-        with ThreadPoolExecutor(max_workers=n_workers) as pool:
+        with ThreadPoolExecutor(max_workers=n_outer) as pool:
             wave_results = list(pool.map(_correct_one, wave))
 
-        for lid, result_labels, cell_report, err in wave_results:
+        for lid, box_result, cell_report, err in wave_results:
             n_done += 1
             if err is not None:
                 skipped_cells[lid] = err
@@ -487,13 +739,14 @@ def auto_contrast_correct_stack(
             # Wave members' own boxes never overlap (that's the whole
             # point of the partition), so copying just this cell's own
             # expanded working area back is safe and unambiguous --
-            # every other voxel in result_labels is identical to
+            # every other voxel of its result was identical to
             # wave_snapshot anyway (this cell's own correction couldn't
             # have reached beyond its own box).
             z0, z1, y0, y1, x0, x1 = boxes[lid]
-            new_labels[z0:z1, y0:y1, x0:x1] = result_labels[z0:z1, y0:y1, x0:x1]
+            new_labels[z0:z1, y0:y1, x0:x1] = box_result
             cell_reports[lid] = cell_report
             n_corrected += 1
+        del wave_results
 
         _report(
             f"Auto-correct: wave {wave_idx + 1}/{len(waves)} done "
@@ -508,19 +761,32 @@ def auto_contrast_correct_stack(
         _report(f"Auto-correct: removing debris below {threshold} vox...")
         new_labels, n_debris_removed = remove_debris(new_labels, threshold, skin_label_id=skin_id)
 
+    # ── Report-only screen: possible non-microglia blobs (no label is
+    #    changed by this) ────────────────────────────────────────────────
+    _report("Auto-correct: checking for possible non-microglia blobs (report only)...")
+    possible_non_microglia = _flag_possible_non_microglia(
+        new_labels, brain_mask, [int(i) for i in np.unique(new_labels) if i > 0],
+        skin_id, skin_touch_px, non_microglia_fraction,
+    )
+    if possible_non_microglia:
+        _report(f"Auto-correct: {len(possible_non_microglia)} possible non-microglia blob(s) flagged (report only).")
+
     report = {
         "best_lo": best_lo,
         "sweep_mean_iou": sweep["best_mean_iou"],
         "n_calibration_samples": sweep["n_samples"],
         "skin_label_id": skin_id,
         "skin_report": skin_report,
-        "n_skin_debris_removed_px": n_skin_debris_removed,
+        "n_skin_debris_fragments_removed": n_skin_debris_fragments_removed,
         "touching_skin_cell_ids": sorted(touching_skin_ids),
+        "skin_touch_px": skin_touch_px,
         "n_cells_total": n_total,
         "n_cells_corrected": n_corrected,
         "skipped_cells": skipped_cells,
         "cell_reports": cell_reports,
         "n_debris_fragments_removed": n_debris_removed,
+        "possible_non_microglia": possible_non_microglia,
+        "non_microglia_fraction": non_microglia_fraction,
     }
     return new_labels.astype(np.int32), report
 
@@ -575,11 +841,19 @@ def format_auto_correction_report(report: dict) -> str:
         f"{report['n_calibration_samples']} samples)"
     )
     skin_report = report["skin_report"]
-    lines.append(
-        f"  Skin protected as label {report['skin_label_id']} "
-        f"(lo={report['best_lo']:.4g}) -- "
-        f"{report.get('n_skin_debris_removed_px', 0)} px of stray skin debris removed."
-    )
+    n_skin_frag = report.get("n_skin_debris_fragments_removed", 0)
+    if skin_report.get("already_protected"):
+        lines.append(
+            f"  Skin was ALREADY protected as label {report['skin_label_id']} "
+            f"({skin_report.get('n_skin_voxels_reused', 0):,} voxels) -- reused exactly "
+            f"as it was, not re-protected or re-trimmed."
+        )
+    else:
+        lines.append(
+            f"  Skin protected as label {report['skin_label_id']} "
+            f"(lo={report['best_lo']:.4g}, same threshold real cells use) -- "
+            f"{n_skin_frag} debris fragment(s) of stray skin removed."
+        )
     skin_slices_grown = skin_report.get("slices_grown", {})
     skin_slices_stability = skin_report.get("slices_stability_passes", {})
     if skin_slices_grown:
@@ -606,6 +880,31 @@ def format_auto_correction_report(report: dict) -> str:
     )
     for lid, reason in report["skipped_cells"].items():
         lines.append(f"  label {lid} skipped: {reason}")
+    lines.append("")
+
+    # Report-only: blobs that are probably not microglia. Nothing below
+    # was changed in the labels on account of this list.
+    flagged = report.get("possible_non_microglia", {})
+    pct = int(round(100 * report.get("non_microglia_fraction", 0.40)))
+    if flagged:
+        lines.append(
+            f"Possible NON-microglia blob(s) -- {len(flagged)} cell(s) with >= {pct}% "
+            f"outside the brain mask and/or of their surface against skin "
+            f"(macrophage or leftover skin?). REPORT ONLY -- nothing was removed or changed:"
+        )
+        for lid, f in sorted(flagged.items()):
+            z, y, x = f["centroid_zyx"]
+            why = " + ".join(
+                {"outside_brain": f"{100 * f['outside_brain_frac']:.0f}% of volume outside brain",
+                 "skin_contact": f"{100 * f['skin_surface_frac']:.0f}% of surface within "
+                                 f"{report.get('skin_touch_px', 3)}px of skin"}[r]
+                for r in f["reasons"]
+            )
+            lines.append(
+                f"  label {lid}: {why} ({f['volume_vox']:,} vox, centroid z={z:.0f} y={y:.0f} x={x:.0f})"
+            )
+    else:
+        lines.append(f"No possible non-microglia blobs (>= {pct}% outside brain / against skin).")
     lines.append("")
 
     # Per-cell detail: a cell touching skin was corrected 2D-per-slice

@@ -28,14 +28,14 @@ from superqt import QLabeledSlider, QLabeledDoubleSlider
 
 from ._io import load_file
 from ._inference import DEFAULT_MODEL, _SKIN_SEG_DIR, run_inference
-from ._background import remove_outside_brain, remove_global, fill_outside_brain_random
+from ._background import remove_global, fill_outside_brain_random
 from ._labeling import (
     create_labels, resort_labels, split_label, join_labels, remove_debris,
     correct_label_from_intensity, correct_label_from_intensity_3d,
     correct_adjacent_labels_2d,
     copy_label_to_adjacent_slice,
     sand_label,
-    seed_skin_label, trim_skin_label, remove_label,
+    seed_skin_label, trim_skin_label, remove_label, skin_voxel_count,
 )
 from ._statistics import compute_stats
 from ._contrast_sweep import (
@@ -1736,6 +1736,24 @@ class ZFMicrogliaAIWidget(QWidget):
         cp_note.setStyleSheet("color: #aaa; font-size: 10px;")
         cpg.addWidget(cp_note)
 
+        cp_signal_row = QHBoxLayout()
+        cp_signal_row.addWidget(QLabel("Signal layer:"))
+        self._cp_signal_combo = QComboBox()
+        cp_signal_row.addWidget(self._cp_signal_combo)
+        cpg.addLayout(cp_signal_row)
+        cp_signal_note = QLabel(
+            "  Explicit, not \"whatever's currently selected in the layer "
+            "list\" -- this is the ONE layer segmented, its own contrast "
+            "updated by auto-correct on completion, and (via its own "
+            "Background=Off sibling, auto-found next to it) the source for "
+            "Protect Skin as Label's own real outside-brain signal. Picking "
+            "the wrong layer here silently ran the whole multi-hour "
+            "pipeline on the wrong channel before this field existed."
+        )
+        cp_signal_note.setWordWrap(True)
+        cp_signal_note.setStyleSheet("color: #888; font-size: 10px;")
+        cpg.addWidget(cp_signal_note)
+
         cp_model_row = QHBoxLayout()
         self._cp_model_lbl = QLabel(
             str(self._state["cellpose_model_path"]) if self._state["cellpose_model_path"] else "— no model selected —"
@@ -1780,9 +1798,8 @@ class ZFMicrogliaAIWidget(QWidget):
             "  Euler-integration steps each voxel's flow trajectory gets "
             "before instances are formed. 200 is Cellpose's own default. "
             "If a cell comes out looking porous/\"pumice stone\" in 3D "
-            "(parallel banding per 2D slice) -- see the Solidity warning "
-            "below after a run -- try raising Cellprob first (e.g. "
-            "toward -0.3): a faint cell's raw probability map is noisy "
+            "(parallel banding per 2D slice), try raising Cellprob first "
+            "(e.g. toward -0.3): a faint cell's raw probability map is noisy "
             "near a permissive threshold, letting marginal, unstable "
             "voxels flicker in and out slice-by-slice before flow-"
             "following even starts, which is the actual usual cause. "
@@ -1972,9 +1989,10 @@ class ZFMicrogliaAIWidget(QWidget):
             "overlap the original label survive the splice -- a "
             "neighbouring cell caught by the padding is discarded, not "
             "duplicated. If the fix reveals more than one real cell, "
-            "all of them are kept as new label IDs. Requires the "
-            "matching '<image>_cellpose_labels' layer to already exist "
-            "(run the full segmentation once first)."
+            "all of them are kept as new label IDs. Works on the selected "
+            "labels layer (or the '<image>_cellpose_labels' / '<image>_labels' "
+            "layer of the selected volume) -- from a full segmentation run "
+            "or a labels file loaded from disk."
         )
         cp_relabel_note.setWordWrap(True)
         cp_relabel_note.setStyleSheet("color: #888; font-size: 10px;")
@@ -2812,6 +2830,21 @@ class ZFMicrogliaAIWidget(QWidget):
         skin_note.setWordWrap(True)
         skin_note.setStyleSheet("color: #888; font-size: 10px;")
         dlt.addWidget(skin_note)
+
+        skin_labels_row = QHBoxLayout()
+        skin_labels_row.addWidget(QLabel("Labels layer:"))
+        self._skin_labels_combo = QComboBox()
+        skin_labels_row.addWidget(self._skin_labels_combo)
+        dlt.addLayout(skin_labels_row)
+        skin_labels_note = QLabel(
+            "  Explicit, not \"whatever Labels layer happens to be active "
+            "in napari's own layer list\" -- shared by both Protect Skin "
+            "as Label and Auto-correct Existing Labels below, same reason "
+            "as Signal layer / Brain mask layer above."
+        )
+        skin_labels_note.setWordWrap(True)
+        skin_labels_note.setStyleSheet("color: #888; font-size: 10px;")
+        dlt.addWidget(skin_labels_note)
 
         skin_signal_row = QHBoxLayout()
         skin_signal_row.addWidget(QLabel("Signal layer:"))
@@ -4484,9 +4517,15 @@ class ZFMicrogliaAIWidget(QWidget):
     def _on_bg_mode_changed(self, btn):
         """Enable/disable the tolerance slider, and show/hide Signal Erosion
         (mode 2 only -- it's meaningless in every other mode), depending
-        on the selected Background mode."""
+        on the selected Background mode.
+
+        BG Threshold is mode 2 ONLY -- mode 1 ("_ExtRm") used to also
+        show it enabled, but mode 1's own computation never actually
+        used its value for anything that survived into the saved output
+        (see the real bug fixed at its call site in _on_run()'s worker);
+        showing it as active there was misleading."""
         mode = self._bg_group.checkedId()
-        has_tol = mode in (1, 2)
+        has_tol = mode == 2
         self._tol_slider.setEnabled(has_tol)
         self._tol_spin.setEnabled(has_tol)
         self._tol_lbl.setEnabled(has_tol)
@@ -5496,6 +5535,7 @@ class ZFMicrogliaAIWidget(QWidget):
             self._stats_image_combo, self._correct_signal_combo,
             self._split_signal_combo, self._ccal_signal_combo,
             self._adjcorr_signal_combo, self._skin_signal_combo,
+            self._cp_signal_combo,
         )
         cur_by_combo = {c: c.currentData() for c in image_combos}
         for c in image_combos:
@@ -5508,6 +5548,19 @@ class ZFMicrogliaAIWidget(QWidget):
                     c.addItem(lyr.name, lyr.name)
                     if lyr.name == cur_by_combo[c]:
                         c.setCurrentIndex(c.count() - 1)
+        # Signal layer for Cellpose-SAM Segmentation: default-select an
+        # "_ExtRm"-suffixed layer when the user hasn't picked anything
+        # yet -- matches this section's own show/hide rule (it only
+        # appears when an "_ExtRm" layer is present), and preserves the
+        # old implicit _active_layer() behavior's most common real case
+        # without carrying over its silent-wrong-layer failure mode.
+        if cur_by_combo[self._cp_signal_combo] is None:
+            for lyr in self._viewer.layers:
+                if isinstance(lyr, napari.layers.Image) and lyr.name.endswith("_ExtRm"):
+                    idx = self._cp_signal_combo.findData(lyr.name)
+                    if idx >= 0:
+                        self._cp_signal_combo.setCurrentIndex(idx)
+                    break
         for c in image_combos:
             c.blockSignals(False)
 
@@ -5528,7 +5581,7 @@ class ZFMicrogliaAIWidget(QWidget):
         # Labels layers (Score Against GT)
         for combo in (
             self._gtscore_pred_combo, self._gtscore_gt_combo, self._ccal_labels_combo,
-            self._skin_mask_combo, self._cp_brainmask_combo,
+            self._skin_mask_combo, self._cp_brainmask_combo, self._skin_labels_combo,
         ):
             cur = combo.currentData()
             combo.blockSignals(True)
@@ -5798,6 +5851,93 @@ class ZFMicrogliaAIWidget(QWidget):
             out = Path(".")
         out.mkdir(parents=True, exist_ok=True)
         return out
+
+    def _resolve_skin_signal_image(self, signal_layer_name: str, out_dir: Path):
+        """
+        Find a signal image that still retains real outside-brain
+        content, for skin's own trim -- separate from whatever image
+        was actually used to segment/correct the real cells.
+
+        Why this exists: the signal layer picked for segmentation is
+        very often "_ExtRm" or "_NoBG" (Tab 1 Background mode 1/2). Both
+        zero everything outside the brain mask -- and so, it turns out,
+        does "_brain_only.tif" itself, Background=Off included:
+        run_inference() always returns volume * eroded_mask regardless
+        of bg_mode (see its own docstring) -- "Off" only skips the
+        EXTRA background-threshold pass, it never meant unmasked. An
+        earlier version of this function (and of Tab 1's own save
+        logic) wrongly treated a "Background=Off _brain_only.tif" as
+        real, unmasked signal -- confirmed directly on real fish data
+        that it is not (min=max=0 outside the brain mask, same as
+        "_ExtRm"). The ONLY real, never-masked source is the raw
+        imported channel itself -- exactly what manually picking that
+        layer for Protect Skin as Label does, and what this now
+        reproduces automatically.
+
+        Strategy: strip a known _BG_SUFFIX (see module level), then a
+        trailing "_brain_only", off the signal layer's own name to
+        recover the raw layer's own original name (e.g.
+        "<stem>_brain_only_ExtRm" -> "<stem>_brain_only" -> "<stem>",
+        matching load_file()'s own per-channel naming in _io.py).
+        Checked first against layers already open in the viewer (free,
+        no disk read, and exactly this fish's real acquisition data --
+        no reload can differ from it), then "<out_dir>/<stem>_original.
+        tif" on disk (Run Skin-Remover now always saves this whenever a
+        background-removing mode is used -- see its own worker).
+
+        Returns (image_array_or_None, note_str_or_None). image is None
+        when nothing better than the signal layer itself could be
+        found -- caller should fall back to its own `image`. Skin still
+        uses the SAME best_lo real cells get (confirmed by the user:
+        skin's real intensity range is approximately the same as real
+        cells', since the contrast sweep already adapts best_lo per-
+        fish to capture even faint cells -- a separately-computed
+        threshold was tried and confirmed wrong on real data, see
+        auto_contrast_correct_stack()'s own step-2 comment) -- this
+        function only fixes WHICH IMAGE that threshold is applied to.
+        """
+        base_name = signal_layer_name
+        for suffix in _BG_SUFFIX.values():
+            if suffix and base_name.endswith(suffix):
+                base_name = base_name[: -len(suffix)]
+                break
+        if base_name == signal_layer_name:
+            # Signal layer is already a raw/unprocessed layer (no bg
+            # suffix to strip) -- it's already the best available
+            # source, nothing to swap.
+            return None, None
+        raw_name = base_name
+        if raw_name.endswith("_brain_only"):
+            raw_name = raw_name[: -len("_brain_only")]
+
+        if raw_name in self._viewer.layers:
+            lyr = self._viewer.layers[raw_name]
+            if isinstance(lyr, napari.layers.Image):
+                return np.asarray(lyr.data), (
+                    f"using '{raw_name}' (the raw imported channel, "
+                    f"already open) for skin's own signal instead of "
+                    f"'{signal_layer_name}'"
+                )
+
+        candidate = out_dir / f"{raw_name}_original.tif"
+        if candidate.exists():
+            try:
+                return tifffile.imread(str(candidate)), (
+                    f"using '{candidate.name}' (the raw imported "
+                    f"channel) for skin's own signal instead of "
+                    f"'{signal_layer_name}'"
+                )
+            except Exception as exc:
+                print(f"Could not load {candidate} for skin signal: {exc}")
+
+        return None, (
+            f"no raw channel '{raw_name}' found (checked open layers "
+            f"and '{out_dir}/{raw_name}_original.tif') -- skin's own "
+            f"trim is falling back to '{signal_layer_name}', which may "
+            f"have little or no real signal outside the brain mask "
+            f"(re-run Run Skin-Remover to produce '{raw_name}_original."
+            f"tif', or keep the raw '{raw_name}' layer open)"
+        )
 
     def _start_recovery_timer(self, interval_ms: int = 10 * 60 * 1000):
         """
@@ -6513,6 +6653,18 @@ class ZFMicrogliaAIWidget(QWidget):
                     brain_mask, brain_only, eroded_mask = run_inference(
                         volume, model_path, threshold, device, erosion_voxels
                     )
+                    # NOTE: brain_only here (bg_mode == 0, "Off") is NOT an
+                    # unmasked/raw image -- run_inference() itself always
+                    # returns volume * eroded_mask (see its own docstring),
+                    # regardless of bg_mode. "Off" only means "skip the
+                    # EXTRA background-threshold pass below" -- it never
+                    # meant "no masking at all". A prior version of this
+                    # code wrongly saved this as an "unmasked" skin-signal
+                    # source; it's just as zeroed outside the brain mask
+                    # as "_ExtRm"/"_NoBG" and was removed -- see
+                    # _resolve_skin_signal_image()'s own docstring for the
+                    # real fix (reads the true raw, never-masked signal
+                    # layer/source file directly).
 
                     # Step 2: optional background processing -- all three
                     # modes use eroded_mask (MONAI Erosion, from Step 1) as
@@ -6529,10 +6681,20 @@ class ZFMicrogliaAIWidget(QWidget):
                     # MONAI Erosion's semantic brain-segmentation boundary,
                     # so it must not share MONAI Erosion's slider/value.
                     if bg_mode == 1:
-                        vol_proc, *_ = remove_outside_brain(
-                            volume, eroded_mask, tolerance_pct=bg_tolerance_pct
-                        )
-                        brain_only = (vol_proc * eroded_mask).astype(volume.dtype)
+                        # Mode 1 ("_ExtRm", Remove outside-brain): the
+                        # ENTIRE exterior is removed, matching its own
+                        # name -- not a selective "background only, keep
+                        # real outside-brain signal" pass. remove_outside_
+                        # brain() computes exactly that selective result,
+                        # but it was then being immediately overwritten
+                        # by `* eroded_mask` anyway (a real, found bug --
+                        # its own BG Threshold value never once affected
+                        # this mode's actual saved output, only its own
+                        # now-discarded intermediate print/log lines
+                        # implied it did). Fixed to skip that wasted,
+                        # misleading computation and compute the (byte-
+                        # identical to before) real result directly.
+                        brain_only = (volume * eroded_mask).astype(volume.dtype)
                     elif bg_mode == 2:
                         vol_proc, *_ = remove_global(
                             volume, eroded_mask, tolerance_pct=bg_tolerance_pct,
@@ -6617,6 +6779,27 @@ class ZFMicrogliaAIWidget(QWidget):
                 out = out_dir / f"{stem}_brain_only{bg_suffix}.tif"
                 tifffile.imwrite(str(out), brain_only, compression="zlib")
                 print(f"Saved: {out}")
+            # Always save the true raw, never-masked input volume too,
+            # whenever a background-removing mode was actually used --
+            # no checkbox, same precedent as Cellpose-SAM's cp_masks
+            # (needed by a LATER step, not a user-facing convenience).
+            # "<stem>_brain_only.tif"/"_ExtRm"/"_NoBG" are ALL masked to
+            # the brain region by run_inference() itself, regardless of
+            # bg_mode -- see the NOTE above where brain_only is computed.
+            # This is the one real source of outside-brain signal Protect
+            # Skin as Label / auto-correct's skin protection needs to
+            # find real skin signal at all (see
+            # _resolve_skin_signal_image()'s own docstring) -- without
+            # it, a fish processed only via "_ExtRm"/"_NoBG" has no
+            # on-disk source for that at all, and skin protection can
+            # only work if the original raw layer happens to still be
+            # open in the same viewer session. Reuses the exact naming
+            # convention _gt_annotation.py's own GT-package tool already
+            # established ("_original.tif" = raw, unmasked).
+            if bg_mode != 0:
+                orig_out = out_dir / f"{stem}_original.tif"
+                tifffile.imwrite(str(orig_out), volume, compression="zlib")
+                print(f"Saved: {orig_out} (raw, unmasked -- for skin protection)")
             if self._save_mask_cb.isChecked():
                 out = out_dir / f"{stem}_brain_mask.tif"
                 tifffile.imwrite(
@@ -7693,11 +7876,40 @@ class ZFMicrogliaAIWidget(QWidget):
         timer.timeout.connect(_poll)
         timer.start(200)
 
+    def _hang_watch_start(self, what: str, after_s: int = 600):
+        """If the background operation just started is STILL running after
+        `after_s` seconds (and every `after_s` after that), dump every
+        thread's stack to the terminal napari was launched from -- so a run
+        that looks stuck says exactly which line it is on, instead of only
+        the last status message (which can stay unchanged through several
+        later steps). Cancelled by _hang_watch_stop() on completion."""
+        import faulthandler
+        import sys as _sys
+        try:
+            faulthandler.dump_traceback_later(after_s, repeat=True, file=_sys.stderr)
+            print(f"[{what}] started -- if it is still running after {after_s // 60} min, "
+                  f"every thread's stack is printed here (every {after_s // 60} min).")
+        except Exception as exc:  # e.g. stderr without a real file descriptor
+            print(f"[{what}] stack-dump watchdog unavailable: {exc}")
+
+    def _hang_watch_stop(self):
+        import faulthandler
+        try:
+            faulthandler.cancel_dump_traceback_later()
+        except Exception:
+            pass
+
     def _on_protect_skin(self):
-        lyr = self._active_labels_layer()
-        if lyr is None:
-            self._skin_status_lbl.setText("No Labels layer selected.")
+        # Explicit combo, not _active_labels_layer()'s "active selection,
+        # or topmost Labels layer" guessing fallback -- same reasoning as
+        # Signal layer / Brain mask layer above: this can silently
+        # protect skin on the wrong Labels layer with no indication
+        # anything was wrong.
+        labels_name = self._skin_labels_combo.currentData()
+        if not labels_name or labels_name not in self._viewer.layers:
+            self._skin_status_lbl.setText("ERROR: pick a Labels layer first (above).")
             return
+        lyr = self._viewer.layers[labels_name]
 
         signal_name = self._skin_signal_combo.currentData()
         if not signal_name or signal_name not in self._viewer.layers:
@@ -7727,14 +7939,55 @@ class ZFMicrogliaAIWidget(QWidget):
             )
             return
 
+        # Never protect twice: if this labels layer already carries the
+        # skin label, refuse instead of re-seeding/re-trimming on top of a
+        # territory the user may already have inspected or hand-corrected.
+        # Judged by the layer's own contents (see skin_voxel_count()), so
+        # it holds however the skin got there -- this button earlier, the
+        # auto-correct pipeline, a labels file loaded from disk.
+        n_existing_skin = skin_voxel_count(labels, -1)
+        if n_existing_skin > 0:
+            self._skin_status_lbl.setText(
+                f"Skin is ALREADY protected on '{labels_name}' (label -1, "
+                f"{n_existing_skin:,} voxels) -- nothing done. To protect it "
+                f"again from scratch, click 'Remove Skin Label' first."
+            )
+            return
+
         pad = self._skin_pad_spin.value()
-        lo, _hi = (float(v) for v in signal_lyr.contrast_limits)
+        # Only the FALLBACK now -- `lo` itself comes from a contrast sweep
+        # against THESE labels (see _worker below), exactly like the
+        # auto-correct pipeline's own step 1. The signal layer's current
+        # low limit is whatever happened to be there (e.g. the value an
+        # IMS load left behind), which has nothing to do with the labels
+        # being protected against -- silently using it was the bug.
+        manual_lo, _hi = (float(v) for v in signal_lyr.contrast_limits)
+        scale = tuple(float(sv) for sv in lyr.scale)
+
+        # The calibrated `lo` still applies directly to a swapped-in
+        # raw source -- both share the exact same underlying intensity
+        # SCALE (the raw channel IS what "_ExtRm"/"_NoBG" started from,
+        # just not zeroed outside the brain mask), so no recalibration
+        # is needed, only a different IMAGE to threshold against. A
+        # separately-computed skin threshold was tried and confirmed
+        # wrong on real data -- see auto_contrast_correct_stack()'s own
+        # step-2 comment for the full story.
+        skin_image, skin_note = self._resolve_skin_signal_image(signal_name, self._output_dir())
+        skin_display_name = signal_name
+        if skin_image is not None:
+            skin_src = skin_image
+            skin_display_name = f"{signal_name}'s raw source"
+            print(f"Protect Skin as Label: {skin_note}")
+        else:
+            skin_src = image
+            if skin_note:
+                print(f"Protect Skin as Label: {skin_note}")
 
         self._skin_protect_btn.setEnabled(False)
         self._skin_report_view.hide()
         self._skin_status_lbl.setText(
-            f"Protecting skin -- seeding outside brain mask, then trimming "
-            f"to real signal (>= {lo:.3g}) from '{signal_name}'…"
+            f"Calibrating lo with the contrast sweep against '{labels_name}', "
+            f"then protecting skin from '{skin_display_name}'…"
         )
 
         result = {}
@@ -7745,9 +7998,44 @@ class ZFMicrogliaAIWidget(QWidget):
 
         def _worker():
             try:
+                # Step 0 -- calibrate lo from THESE labels (same sweep,
+                # same defaults, same sample selection as step 1 of the
+                # auto-correct pipeline), so Protect Skin and Auto-correct
+                # always agree on what "signal" means for this fish.
+                try:
+                    samples = select_calibration_samples(
+                        labels, scale, n_cells=5, slices_per_cell=10, edge_margin_um=50.0,
+                    )
+                    if not samples:
+                        raise ValueError(
+                            "no interior/complex-enough cells found for contrast calibration"
+                        )
+                    candidates = default_lo_candidates(image, samples, 15, n_steps=40)
+                    sweep = sweep_contrast_lower_value(
+                        labels, image, samples, candidates, pad=15,
+                        progress_cb=lambda m: result.__setitem__("_progress", f"Calibrating lo: {m}"),
+                    )
+                    lo = float(sweep["best_lo"])
+                    result["calibrated"] = True
+                    result["lo_note"] = (
+                        f"calibrated by the contrast sweep, mean IoU "
+                        f"{sweep['best_mean_iou']:.3f} on {sweep['n_samples']} samples"
+                    )
+                except ValueError as exc:
+                    # Can't calibrate (e.g. too few usable cells): fall back
+                    # to the layer's current low limit, but SAY SO -- never
+                    # silently, which is exactly what hid this before.
+                    lo = manual_lo
+                    result["calibrated"] = False
+                    result["lo_note"] = (
+                        f"NOT calibrated ({exc}) -- fell back to the signal layer's "
+                        f"current low limit"
+                    )
+                result["lo"] = lo
+                result["_progress"] = f"Protecting skin (lo={lo:.3g}): seeding outside brain mask, then trimming…"
                 seeded, skin_id = seed_skin_label(labels, brain_mask)
                 new_labels, rep = trim_skin_label(
-                    seeded, image, skin_id, lo, pad=pad,
+                    seeded, skin_src, skin_id, lo, pad=pad,
                     growth_step=5, max_iterations=10,
                     until_stable=True, max_stability_passes=100,
                 )
@@ -7767,20 +8055,38 @@ class ZFMicrogliaAIWidget(QWidget):
 
         thread = threading.Thread(target=_worker, daemon=True)
         thread.start()
+        self._hang_watch_start("Protect Skin as Label")
 
         timer = QTimer(self)
 
         def _poll():
             if thread.is_alive():
+                if "_progress" in result:
+                    self._skin_status_lbl.setText(result["_progress"])
                 return
             timer.stop()
             timer.deleteLater()
+            self._hang_watch_stop()
             if "error" in result:
                 self._skin_status_lbl.setText(f"ERROR: {result['error']}")
                 self._skin_protect_btn.setEnabled(True)
                 return
+            from qtpy.QtWidgets import QApplication as _QApp
+            import time as _time
+            self._skin_status_lbl.setText("Computation finished -- applying skin to the viewer…")
+            _QApp.processEvents()
+            _t = _time.time()
             lyr.data[:] = result["labels"]  # in-place -- see Resort Labels above for why
             lyr.refresh()
+            print(f"[Protect Skin] applied the result to the labels layer in {_time.time() - _t:.1f}s")
+            # Same visible feedback the auto-correct handlers give: when the
+            # sweep calibrated lo, the signal layer's LOW limit moves to it
+            # and the HIGH limit stays exactly as it was.
+            if result.get("calibrated"):
+                try:
+                    signal_lyr.contrast_limits = (result["lo"], float(signal_lyr.contrast_limits[1]))
+                except Exception as exc:
+                    print(f"Protect Skin: could not set the signal layer's contrast limits: {exc}")
             skin_id = result["skin_id"]
             self._skin_id_spin.setValue(skin_id)
             n_px = int((result["labels"] == skin_id).sum())
@@ -7814,11 +8120,12 @@ class ZFMicrogliaAIWidget(QWidget):
             touch_note = f" {len(touching_ids)} label(s) touching skin -- see report below." if touching_ids else ""
             n_debris = result.get("n_debris", 0)
             debris_note = (
-                f" {n_debris:,} px of stray skin debris removed."
+                f" {n_debris:,} debris fragment(s) of stray skin removed."
                 if n_debris else ""
             )
             self._skin_status_lbl.setText(
-                f"Done — skin protected as label {skin_id}, {n_px:,} px "
+                f"Done — skin protected as label {skin_id}, {n_px:,} px, "
+                f"lo={result['lo']:.3g} ({result['lo_note']}) "
                 f"(real signal only, outside the brain mask). Every other "
                 f"Correct Label / auto-correct call now treats it as "
                 f"ordinary protected territory. Use 'Remove Skin Label' "
@@ -7928,22 +8235,28 @@ class ZFMicrogliaAIWidget(QWidget):
         Runs auto_contrast_correct_stack() -- the exact same 6-step
         pipeline Cellpose-SAM Segmentation's own "Auto-correct labels
         via contrast sweep" checkbox chains onto a fresh run -- against
-        the ACTIVE Labels layer as it currently stands, instead of a
-        just-produced one. Lets a labels layer segmented earlier (any
-        route, any prior session -- e.g. loaded via "Load Labels layer
-        (.tif)", or one that predates this pipeline entirely) get the
-        same treatment without re-running Cellpose-SAM from scratch.
+        whichever Labels layer is explicitly picked in Labels layer
+        above, instead of a just-produced one. Lets a labels layer
+        segmented earlier (any route, any prior session -- e.g. loaded
+        via "Load Labels layer (.tif)", or one that predates this
+        pipeline entirely) get the same treatment without re-running
+        Cellpose-SAM from scratch.
 
-        Reuses Protect Skin as Label's own Signal layer / Brain mask
-        layer / Bbox padding fields (this pipeline's own skin-protection
-        step needs exactly the same two layers that button does, and
-        the padding field means the same thing there too) rather than
-        duplicating a second, identical set of combos right below it.
+        Reuses Protect Skin as Label's own Labels layer / Signal layer /
+        Brain mask layer / Bbox padding fields (this pipeline's own
+        skin-protection step needs exactly the same layers that button
+        does, and the padding field means the same thing there too)
+        rather than duplicating a second, identical set of combos right
+        below it.
         """
-        lyr = self._active_labels_layer()
-        if lyr is None:
-            self._ac_status_lbl.setText("No Labels layer selected.")
+        # Explicit combo, not _active_labels_layer()'s "active selection,
+        # or topmost Labels layer" guessing fallback -- same reasoning
+        # as every other explicit-selection fix in this section.
+        labels_name = self._skin_labels_combo.currentData()
+        if not labels_name or labels_name not in self._viewer.layers:
+            self._ac_status_lbl.setText("ERROR: pick a Labels layer first (Protect Skin as Label, above).")
             return
+        lyr = self._viewer.layers[labels_name]
 
         signal_name = self._skin_signal_combo.currentData()
         if not signal_name or signal_name not in self._viewer.layers:
@@ -7978,6 +8291,10 @@ class ZFMicrogliaAIWidget(QWidget):
         min_volume = self._current_min_volume()
         final_min_fraction = self._finalfrac_spin.value()
 
+        skin_image, skin_note = self._resolve_skin_signal_image(signal_name, self._output_dir())
+        if skin_note:
+            print(f"Auto-correct Existing Labels: {skin_note}")
+
         self._ac_labels_btn.setEnabled(False)
         self._ac_log_view.hide()
         self._ac_status_lbl.setText("Auto-correcting existing labels...")
@@ -7989,7 +8306,7 @@ class ZFMicrogliaAIWidget(QWidget):
                 def _progress(msg):
                     result["_progress"] = msg
                 new_labels, report = auto_contrast_correct_stack(
-                    labels, image, scale, brain_mask,
+                    labels, image, scale, brain_mask, skin_image=skin_image,
                     min_volume=min_volume, final_min_fraction=final_min_fraction,
                     skin_pad=skin_pad, growth_step=5, max_iterations=10,
                     until_stable=True, max_stability_passes=100,
@@ -8003,6 +8320,7 @@ class ZFMicrogliaAIWidget(QWidget):
 
         thread = threading.Thread(target=_worker, daemon=True)
         thread.start()
+        self._hang_watch_start("Auto-correct Existing Labels")
 
         timer = QTimer(self)
 
@@ -8013,6 +8331,7 @@ class ZFMicrogliaAIWidget(QWidget):
                 return
             timer.stop()
             timer.deleteLater()
+            self._hang_watch_stop()
             if "error" in result:
                 self._ac_status_lbl.setText(f"ERROR: {result['error']}")
                 self._ac_labels_btn.setEnabled(True)
@@ -8020,8 +8339,18 @@ class ZFMicrogliaAIWidget(QWidget):
 
             new_labels = result["labels"]
             report = result["report"]
+            # The computation is finished at this point; what follows runs on
+            # the GUI thread and touches the live viewer. Say so on screen and
+            # time it, so a slow hand-over to napari is visible as such rather
+            # than looking like the last computation step never ended.
+            from qtpy.QtWidgets import QApplication as _QApp
+            import time as _time
+            self._ac_status_lbl.setText("Computation finished -- applying the corrected labels to the viewer…")
+            _QApp.processEvents()
+            _t = _time.time()
             lyr.data[:] = new_labels  # in-place -- see Resort Labels above for why
             lyr.refresh()
+            print(f"[Auto-correct] applied the result to the labels layer in {_time.time() - _t:.1f}s")
 
             # Same visible feedback the chained Cellpose-SAM pipeline
             # gives: signal contrast reflects the calibrated threshold,
@@ -8031,7 +8360,11 @@ class ZFMicrogliaAIWidget(QWidget):
             # Low end moves to the calibrated threshold; high end stays
             # exactly as it already was on the signal layer (e.g. from
             # the IMS load), not an arbitrary offset off best_lo.
+            self._ac_status_lbl.setText("Applying the calibrated contrast to the signal layer…")
+            _QApp.processEvents()
+            _t = _time.time()
             signal_lyr.contrast_limits = (best_lo, float(signal_lyr.contrast_limits[1]))
+            print(f"[Auto-correct] set the signal layer's contrast in {_time.time() - _t:.1f}s")
             skin_rep = report["skin_report"]
             self._skin_id_spin.setValue(report["skin_label_id"])
             touching_ids = sorted({i for ids in skin_rep.get("foreign_touching", {}).values() for i in ids})
@@ -8050,12 +8383,20 @@ class ZFMicrogliaAIWidget(QWidget):
             report_text = format_auto_correction_report(report)
             self._ac_log_view.setPlainText(report_text)
             self._ac_log_view.show()
+            n_skin_final = int((new_labels == report["skin_label_id"]).sum())
+            skin_warn = (
+                " WARNING: skin ended up with 0 voxels -- check the "
+                "signal layer actually has real content outside the "
+                "brain mask (an '_ExtRm'/'_NoBG' layer has none by "
+                "design; use its raw source instead)."
+                if n_skin_final == 0 else f" Skin: {n_skin_final:,} voxels."
+            )
             self._ac_status_lbl.setText(
                 f"Done — lo={best_lo:.4g}, skin protected as label {report['skin_label_id']}, "
                 f"{report['n_cells_corrected']}/{report['n_cells_total']} cells corrected "
                 f"({len(report.get('touching_skin_cell_ids', []))} touching skin, in 2D; "
                 f"the rest in 3D), {report['n_debris_fragments_removed']} debris fragment(s) "
-                f"removed. Full report below."
+                f"removed.{skin_warn} Full report below."
             )
             self._ac_labels_btn.setEnabled(True)
 
@@ -8899,10 +9240,19 @@ class ZFMicrogliaAIWidget(QWidget):
         job["timer"] = timer
 
     def _on_run_cellpose_seg(self):
-        target = self._active_layer()
-        if target is None:
-            self._cp_status_lbl.setText("Select a brain_only layer first.")
+        # Explicit combo, not _active_layer()'s "whatever's currently
+        # selected in the layer list, or topmost Image layer" fallback --
+        # that implicit resolution could silently run this whole
+        # multi-hour pipeline against the wrong Image layer (e.g. a raw
+        # unrelated channel from a multi-channel IMS load) with no
+        # indication anything was wrong, since it fed BOTH the
+        # segmentation input AND the contrast/skin-signal steps that ran
+        # hours later. See Signal layer's own note in the UI for why.
+        signal_name = self._cp_signal_combo.currentData()
+        if not signal_name or signal_name not in self._viewer.layers:
+            self._cp_status_lbl.setText("ERROR: pick a Signal layer first (above).")
             return
+        target = self._viewer.layers[signal_name]
         volume = np.asarray(target.data)
         if volume.ndim != 3:
             self._cp_status_lbl.setText(f"ERROR: 3D volume required, got {volume.ndim}D.")
@@ -9067,35 +9417,16 @@ class ZFMicrogliaAIWidget(QWidget):
                 self._viewer.layers.remove(lname)
             self._viewer.add_labels(labels, name=lname, scale=scale)
 
-            porous = stats.get("porous_cells") or {}
-            porous_note = ""
-            if porous:
-                sol_thr = stats.get("solidity_threshold", 0.5)
-                ids_str = ", ".join(
-                    f"#{lid} (solidity={sol:.2f})"
-                    for lid, sol in sorted(porous.items(), key=lambda kv: kv[1])
-                )
-                porous_note = (
-                    f" WARNING: {len(porous)} cell(s) look porous/skeletonized "
-                    f"(solidity < {sol_thr:.2f}): {ids_str} -- select these label "
-                    f"IDs in the layer to inspect. Try Re-run This Cell Only with "
-                    f"a stricter Cellprob (e.g. -0.3) first -- usually a faint "
-                    f"cell's noisy probability map, not a flow-convergence issue; "
-                    f"raising Flow iterations alone rarely fixes it by itself."
-                )
-
             base_status = (
                 f"Segmentation done — {stats['n_final']} cells "
                 f"(raw={stats['n_raw']} -> gmm={stats['n_after_gmm']} -> "
                 f"safe={stats['n_after_safe_merge']} -> large={stats['n_after_large_contact']}). "
                 f"Saved {cp_raw_path.name} and {cp_krendl_path.name}."
-                f"{porous_note}"
             )
             base_email = (
                 f"Cellpose-SAM Segmentation on {stem} finished.\n\n"
                 f"{stats['n_final']} cells (raw={stats['n_raw']} -> gmm={stats['n_after_gmm']} "
                 f"-> safe={stats['n_after_safe_merge']} -> large={stats['n_after_large_contact']})."
-                f"{porous_note}"
             )
 
             print(f"{'='*70}")
@@ -9103,8 +9434,6 @@ class ZFMicrogliaAIWidget(QWidget):
             print(f"  raw={stats['n_raw']}  after_gmm={stats['n_after_gmm']}"
                   f"  after_safe_merge={stats['n_after_safe_merge']}"
                   f"  after_large_contact={stats['n_after_large_contact']}")
-            if porous:
-                print(f"  {porous_note.strip()}")
             print(f"{'='*70}\n")
 
             if not self._cp_autocorrect_cb.isChecked():
@@ -9162,6 +9491,10 @@ class ZFMicrogliaAIWidget(QWidget):
         min_volume = self._current_min_volume()
         final_min_fraction = self._finalfrac_spin.value()
 
+        skin_image, skin_note = self._resolve_skin_signal_image(signal_layer.name, out_dir)
+        if skin_note:
+            print(f"Auto-correct: {skin_note}")
+
         result3 = {}
 
         def _worker3():
@@ -9169,7 +9502,7 @@ class ZFMicrogliaAIWidget(QWidget):
                 def _progress3(msg):
                     result3["_progress"] = msg
                 new_labels, report = auto_contrast_correct_stack(
-                    labels, volume, scale, brain_mask,
+                    labels, volume, scale, brain_mask, skin_image=skin_image,
                     min_volume=min_volume, final_min_fraction=final_min_fraction,
                     growth_step=5, max_iterations=10,
                     until_stable=True, max_stability_passes=100,
@@ -9260,17 +9593,29 @@ class ZFMicrogliaAIWidget(QWidget):
                 self._skin_report_view.show()
             else:
                 self._skin_report_view.hide()
-            n_skin_debris = report.get("n_skin_debris_removed_px", 0)
+            n_skin_frag = report.get("n_skin_debris_fragments_removed", 0)
             debris_note = (
-                f" {n_skin_debris:,} px of stray skin debris removed."
-                if n_skin_debris else ""
+                f" {n_skin_frag:,} debris fragment(s) of stray skin removed."
+                if n_skin_frag else ""
             )
-            self._skin_status_lbl.setText(
-                f"Done (via auto-correct) — skin protected as label "
-                f"{report['skin_label_id']}, real signal only, outside the "
-                f"brain mask. Use 'Remove Skin Label' below whenever you no "
-                f"longer need it.{debris_note}"
-            )
+            n_skin_final = int((new_labels == report["skin_label_id"]).sum())
+            if n_skin_final == 0:
+                self._skin_status_lbl.setText(
+                    f"WARNING — skin protected as label {report['skin_label_id']} "
+                    f"but ended up with 0 voxels. This usually means the "
+                    f"signal used has its background already zeroed outside "
+                    f"the brain (an '_ExtRm'/'_NoBG' file), and no raw "
+                    f"channel layer/'_original.tif' was found to recover "
+                    f"real skin signal from."
+                )
+            else:
+                self._skin_status_lbl.setText(
+                    f"Done (via auto-correct) — skin protected as label "
+                    f"{report['skin_label_id']} ({n_skin_final:,} voxels, "
+                    f"lo={best_lo:.4g}, real signal only, outside the brain "
+                    f"mask). Use 'Remove Skin Label' below whenever you no "
+                    f"longer need it.{debris_note}"
+                )
 
             report_text = format_auto_correction_report(report)
             autocorrect_status = (
@@ -9416,53 +9761,98 @@ class ZFMicrogliaAIWidget(QWidget):
         timer4.timeout.connect(_poll4)
         timer4.start(500)
 
-    def _on_rerun_single_cell(self):
-        # _active_layer() only ever returns an Image layer -- if the
-        # currently *selected* layer is instead the segmented Labels
-        # layer itself (the normal state right after a full run, since
-        # napari auto-selects the layer add_labels() just created), it
-        # silently falls back to "topmost Image layer", which is wrong
-        # whenever more than one Image layer is loaded (e.g. ch0+ch1 from
-        # multi-channel loading) -- previously surfaced as a false
-        # "no '<stem>_cellpose_labels' layer found" error even though the
-        # user was looking straight at it. Resolve the stem from the
-        # active Labels layer's own name first, when that's what's
-        # actually selected, instead of ignoring the selection outright.
-        active = self._viewer.layers.selection.active
-        target = None
-        lname = None
-        if (isinstance(active, napari.layers.Labels)
-                and active.name.endswith("_cellpose_labels")):
-            stem_candidate = active.name[: -len("_cellpose_labels")]
-            if stem_candidate in self._viewer.layers:
-                cand_layer = self._viewer.layers[stem_candidate]
-                if isinstance(cand_layer, napari.layers.Image):
-                    target = cand_layer
-                    lname = active.name
+    def _resolve_rerun_layers(self):
+        """
+        Find the (image volume, labels layer) pair for "Re-run This Cell
+        Only" -> (image_layer, labels_layer, error_message_or_None).
 
-        if target is None:
-            target = self._active_layer()
-        if target is None:
-            self._cp_status_lbl.setText(
+        The labels layer is NOT required to be named '<stem>_cellpose_labels'
+        any more. That name only exists right after a full Cellpose-SAM run
+        in this session; a labels file loaded from disk with "Load Labels
+        layer" is named '<image>_labels', and users legitimately rename or
+        load others (e.g. a '..._cp_krendl' result). Requiring the exact
+        name made the tool refuse a perfectly good, correctly-shaped labels
+        layer the user was looking straight at.
+
+        Resolution order:
+          1. A Labels layer is the current selection -> that IS the labels
+             to fix (a brain-mask layer is never taken for it). Its image is
+             the Image layer of the same shape whose name is the longest
+             prefix of the labels layer's name (falling back to the only
+             same-shape image if there is exactly one).
+          2. Otherwise the selected Image layer is the volume, and its labels
+             are looked up as '<image>_cellpose_labels', then
+             '<image>_labels', then any single Labels layer of the same shape
+             whose name starts with the image's name. If more than one
+             qualifies the user is asked to select the one they mean --
+             never a silent guess between candidates.
+        """
+        layers = self._viewer.layers
+
+        def core(layer):  # shape ignoring stray singleton axes (see the squeeze below)
+            return tuple(int(n) for n in layer.data.shape if n != 1)
+
+        images = [ly for ly in layers if isinstance(ly, napari.layers.Image)]
+        labs = [ly for ly in layers if isinstance(ly, napari.layers.Labels)]
+        active = layers.selection.active
+
+        if (isinstance(active, napari.layers.Labels)
+                and not active.name.endswith("_brain_mask")):
+            same = [im for im in images if core(im) == core(active)]
+            prefixed = [im for im in same if active.name.startswith(im.name)]
+            if prefixed:
+                return max(prefixed, key=lambda im: len(im.name)), active, None
+            if len(same) == 1:
+                return same[0], active, None
+            if not same:
+                return None, None, (
+                    f"ERROR: no Image layer with the same shape as '{active.name}' "
+                    f"is open -- open the volume this labels layer was made from."
+                )
+            return None, None, (
+                f"ERROR: several Image layers match '{active.name}''s shape "
+                f"({', '.join(im.name for im in same)}) -- select the volume "
+                f"layer, then click Re-run again."
+            )
+
+        image = self._active_layer()
+        if image is None:
+            return None, None, (
                 "Select the brain_only layer first (the same one Cellpose-SAM "
                 "Segmentation ran on)."
             )
+        stem = image.name
+        for name in (f"{stem}_cellpose_labels", f"{stem}_labels"):
+            if name in layers and isinstance(layers[name], napari.layers.Labels):
+                return image, layers[name], None
+        same = [ly for ly in labs
+                if core(ly) == core(image) and ly.name.startswith(stem)
+                and not ly.name.endswith("_brain_mask")]
+        if len(same) == 1:
+            return image, same[0], None
+        if len(same) > 1:
+            return None, None, (
+                f"ERROR: several labels layers match '{stem}' "
+                f"({', '.join(ly.name for ly in same)}) -- click the one to fix "
+                f"in the layer list, then click Re-run again."
+            )
+        return None, None, (
+            f"ERROR: no labels layer found for '{stem}' (looked for "
+            f"'{stem}_cellpose_labels', '{stem}_labels', and any Labels layer "
+            f"of the same shape starting with that name) -- load or run "
+            f"segmentation on this volume first."
+        )
+
+    def _on_rerun_single_cell(self):
+        target, labels_layer, err = self._resolve_rerun_layers()
+        if err:
+            self._cp_status_lbl.setText(err)
             return
+        lname = labels_layer.name
         volume = np.asarray(target.data)
         if volume.ndim != 3:
             self._cp_status_lbl.setText(f"ERROR: 3D volume required, got {volume.ndim}D.")
             return
-
-        stem = target.name
-        if lname is None:
-            lname = f"{stem}_cellpose_labels"
-        if lname not in self._viewer.layers:
-            self._cp_status_lbl.setText(
-                f"ERROR: no '{lname}' layer found — run Cellpose-SAM Segmentation "
-                f"on this volume first."
-            )
-            return
-        labels_layer = self._viewer.layers[lname]
         labels = np.asarray(labels_layer.data)
         if labels.ndim != 3:
             # A stray singleton axis (e.g. from a save/reload round-trip
@@ -9591,27 +9981,17 @@ class ZFMicrogliaAIWidget(QWidget):
             labels_layer.refresh()
 
             new_ids_str = ", ".join(str(i) for i in info["new_labels"]) or "(none -- discarded, no overlap survived)"
-            porous_note = ""
-            if info["porous_cells"]:
-                porous_note = (
-                    f" Still porous after re-run: "
-                    + ", ".join(f"#{lid} (solidity={sol:.2f})" for lid, sol in info["porous_cells"].items())
-                    + " -- try a stricter Cellprob (e.g. -0.3) instead of/alongside "
-                    "a higher niter; usually the more effective lever for a faint cell."
-                )
             self._cp_status_lbl.setText(
                 f"Done — label {label_id} replaced with {info['n_new']} new label(s): "
-                f"{new_ids_str}.{porous_note}"
+                f"{new_ids_str}."
             )
             self._cp_log_view.append(
                 f"\nDone — label {label_id} replaced with {info['n_new']} new label(s): "
-                f"{new_ids_str}.{porous_note}"
+                f"{new_ids_str}."
             )
             sb = self._cp_log_view.verticalScrollBar()
             sb.setValue(sb.maximum())
             print(f"RE-RUN SINGLE CELL — label {label_id} -> {info['n_new']} new label(s): {new_ids_str}")
-            if porous_note:
-                print(f"  {porous_note.strip()}")
 
         timer3.timeout.connect(_poll3)
         timer3.start(500)

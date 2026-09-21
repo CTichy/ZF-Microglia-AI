@@ -272,6 +272,55 @@ def _create_labels_threaded(
 # Public API
 # ─────────────────────────────────────────────────────────────────────────────
 
+def label_centroids_zyx(labels: np.ndarray, label_ids) -> "list[tuple[float, float, float]]":
+    """
+    Centroid (z, y, x), in voxel coordinates, of each label in `label_ids`
+    -- the SAME numbers, bit for bit, as
+    `scipy.ndimage.center_of_mass(labels > 0, labels, label_ids)`, but
+    computed from each label's own bounding box instead of the whole
+    volume.
+
+    Why not scipy's: with a whole-volume `labels` array it builds several
+    volume-sized float64 temporaries and, when `labels` contains a
+    negative sentinel (Protect Skin as Label's -1), takes a much slower
+    path -- measured on a real 101x2048x2048 fish: 17.8 s without skin,
+    167 s with it, for 33 cells. That single call was ~3 min of the
+    auto-correct's calibration selection AND ~3 min of its Centroid-Z
+    resort. From each label's bounding box (find_objects(), ~1 s for the
+    whole volume) the same answer takes a couple of seconds, skin or not.
+
+    Exactness: each coordinate is the sum of the label's integer voxel
+    coordinates divided by its voxel count -- both exactly representable,
+    so the correctly-rounded quotient is identical to scipy's (its float64
+    sum of integer-valued terms is exact too, in any order).
+
+    A label with no voxels returns (nan, nan, nan), like scipy's 0/0.
+    """
+    from scipy.ndimage import find_objects
+
+    ids = [int(i) for i in label_ids]
+    if not ids:
+        return []
+    objs = find_objects(labels, max_label=max(ids))
+    out: "list[tuple[float, float, float]]" = []
+    for lbl in ids:
+        sl = objs[lbl - 1] if 0 < lbl <= len(objs) else None
+        if sl is None:
+            out.append((float("nan"), float("nan"), float("nan")))
+            continue
+        zz, yy, xx = np.nonzero(labels[sl] == lbl)
+        n = int(zz.size)
+        if n == 0:
+            out.append((float("nan"), float("nan"), float("nan")))
+            continue
+        out.append((
+            (int(zz.sum(dtype=np.int64)) + n * sl[0].start) / n,
+            (int(yy.sum(dtype=np.int64)) + n * sl[1].start) / n,
+            (int(xx.sum(dtype=np.int64)) + n * sl[2].start) / n,
+        ))
+    return out
+
+
 def resort_labels(
     labels: np.ndarray,
     sort_by: str = "size",
@@ -293,8 +342,6 @@ def resort_labels(
     -------
     (Z, Y, X) int32 ndarray — same objects, renumbered 1…N
     """
-    from scipy.ndimage import center_of_mass as _com
-
     unique = np.unique(labels)
     unique = unique[unique > 0]
     if unique.size == 0:
@@ -351,7 +398,7 @@ def resort_labels(
         # wrong and would have crashed resorting a single-label volume by
         # centroid -- found and fixed while building a similar sweep that
         # copied the same mistaken assumption from here).
-        raw      = _com(labels > 0, labels, label_list)
+        raw      = label_centroids_zyx(labels, label_list)  # exact scipy equivalent, see its docstring
         keyed = [(float(c[axis]), int(lbl)) for lbl, c in zip(label_list, raw)]
         # natural: ascending (smallest coordinate first → label 1)
         keyed.sort(key=lambda t: t[0], reverse=reverse)
@@ -468,12 +515,21 @@ def _remove_debris_from_crop(crop: np.ndarray, lbl: int, threshold: int) -> int:
             return 1
         return 0
     counts = np.bincount(cc.ravel())
-    removed = 0
-    for piece_id in range(1, n_cc + 1):
-        if counts[piece_id] < threshold:
-            crop[cc == piece_id] = 0
-            removed += 1
-    return removed
+    # Decide every fragment's fate from its size table, then clear ALL the
+    # small ones in ONE pass over the crop. The previous version did
+    # `crop[cc == piece_id] = 0` once per small fragment, and each of those
+    # comparisons scans the WHOLE crop -- for skin that is the whole-volume
+    # bounding box (~424M voxels, ~0.3 s per scan), so cost grew as
+    # (number of small fragments) x (volume): ~5 min for ~1,000 fragments,
+    # over an hour for ~10,000. A skin label with thousands of tiny specks
+    # (raw-channel noise outside the brain) made "Remove debris" appear
+    # hung. Same result, O(volume) regardless of how many fragments.
+    small = counts < threshold
+    small[0] = False  # component 0 is background, never a fragment
+    n_small = int(small.sum())
+    if n_small:
+        crop[small[cc]] = 0  # cc > 0 only inside `mask`, so nothing else is touched
+    return n_small
 
 
 def remove_debris_for_label(labels: np.ndarray, label_id: int, threshold: int) -> "tuple[np.ndarray, int]":
@@ -1498,7 +1554,9 @@ def correct_label_from_intensity_3d(
         "slices_stability_passes": dict(sorted(slices_stability_passes.items())),
         "stable": not slices_unstable,
     }
-    return new_labels.astype(np.int32), report
+    # copy=False: new_labels is already this function's own private copy
+    # (labels.copy() above) -- a second full-volume copy here was pure waste.
+    return new_labels.astype(np.int32, copy=False), report
 
 
 def sand_label(
@@ -1971,7 +2029,8 @@ def correct_label_group_2d(
     for lid in label_ids:
         crop[finals[lid]] = lid
 
-    return new_labels.astype(np.int32), info
+    # copy=False: new_labels is already this function's own private copy.
+    return new_labels.astype(np.int32, copy=False), info
 
 
 def _correct_label_group_2d_core(
@@ -2333,6 +2392,24 @@ def copy_label_to_adjacent_slice(
     return new_labels, n_excluded_px
 
 
+def skin_voxel_count(labels: np.ndarray, skin_label_id: int = -1) -> int:
+    """
+    How many voxels of `labels` currently carry the skin sentinel label
+    (seed_skin_label()'s -1). 0 means skin is NOT protected on this
+    array; anything above 0 means it already is.
+
+    This is the single definition of "is the skin already protected"
+    every path checks -- the standalone Protect Skin as Label button
+    (refuses to protect twice) and the auto-correct pipeline (skips
+    re-protecting, and refuses to start correcting cells without it) --
+    so the answer can never differ between them. Based purely on the
+    array's own contents, never on any widget state or an earlier
+    button click: a labels layer loaded from disk, edited by hand, or
+    protected in a previous session is judged by what's actually in it.
+    """
+    return int(np.count_nonzero(labels == skin_label_id))
+
+
 def seed_skin_label(
     labels: np.ndarray,
     brain_mask: np.ndarray,
@@ -2419,6 +2496,7 @@ def correct_label_2d_stack(
     max_iterations: int = 10,
     until_stable: bool = True,
     max_stability_passes: int = 100,
+    n_workers: "int | None" = None,
 ) -> "tuple[np.ndarray, dict]":
     """
     Corrects ONE label across its whole Z range, slice by slice,
@@ -2495,6 +2573,25 @@ def correct_label_2d_stack(
                                 footprint stops changing between two
                                 consecutive attempts, or the pass cap
                                 is hit.
+    n_workers                  : how many slices to correct concurrently.
+                                None (default) = 75% of CPU cores, as
+                                before. A caller that is itself already
+                                running several of these in parallel
+                                (the auto-correct pipeline's wave
+                                workers) passes its own share here, so
+                                nested pools never multiply into
+                                (outer x inner) concurrent slices --
+                                that multiplication, on top of a
+                                full-volume copy per slice, is what
+                                exhausted 119 GB of RAM on 2026-09-18.
+
+    Memory: every per-slice call is handed a ONE-SLICE view of the
+    volume (new_labels[z:z+1] / image[z:z+1], z=0), never the whole
+    stack -- grow_correct_label_2d() and everything under it copies its
+    `labels` argument, so passing the full volume made each slice attempt
+    allocate a full-volume copy (1.7 GB for a 101x2048x2048 int32 fish)
+    to edit ~4 MB of it. The result is identical (they only ever read/
+    write slice z), the copy is ~400x smaller.
 
     Returns (new_labels, report). report is a dict:
         group               -- sorted [label_id] + every foreign label
@@ -2553,8 +2650,12 @@ def correct_label_2d_stack(
             # grow_correct_label_2d() has no separate auto_grow toggle --
             # it always attempts growth up to max_iterations, so
             # auto_grow=False is expressed as a 1-attempt cap instead.
+            #
+            # One-slice VIEW (z=0 of a 1-slice window), not the whole
+            # stack: see this function's own "Memory" docstring note.
+            # A view, not a copy, so it still aliases new_labels[z].
             result_labels, grow_report = grow_correct_label_2d(
-                new_labels, image, label_id, z, lo,
+                new_labels[z:z + 1], image[z:z + 1], label_id, 0, lo,
                 initial_pad=pad, growth_step=growth_step,
                 max_iterations=(max_iterations if auto_grow else 1),
                 sigma=sigma, until_stable=until_stable, max_stability_passes=max_stability_passes,
@@ -2571,7 +2672,7 @@ def correct_label_2d_stack(
         # or more real labels it discovered touching along the way
         # (exactly the point of calling it), but this function must
         # never modify another label's own territory.
-        own_result_mask = result_labels[z] == label_id
+        own_result_mask = result_labels[0] == label_id
         labels_z[labels_z == label_id] = 0
         labels_z[own_result_mask] = label_id
 
@@ -2609,9 +2710,17 @@ def correct_label_2d_stack(
     # ThreadPoolExecutor work already relies on. Capped at 75% of CPU
     # cores (not all of them) so this doesn't starve the rest of napari
     # (or another concurrent job) of every core.
-    n_workers = max(1, int((os.cpu_count() or 4) * 0.75))
-    with ThreadPoolExecutor(max_workers=n_workers) as pool:
-        list(pool.map(_process_slice, range(Z_dim)))
+    if n_workers is None:
+        n_workers = max(1, int((os.cpu_count() or 4) * 0.75))
+    n_workers = max(1, int(n_workers))
+    if n_workers == 1:
+        # No pool at all -- a caller already parallel across cells (the
+        # auto-correct waves) gets exactly its own thread, not one more.
+        for z in range(Z_dim):
+            _process_slice(z)
+    else:
+        with ThreadPoolExecutor(max_workers=n_workers) as pool:
+            list(pool.map(_process_slice, range(Z_dim)))
 
     report = {
         "group": sorted({label_id} | all_foreign),
@@ -2624,7 +2733,7 @@ def correct_label_2d_stack(
         "slices_not_converged": sorted(slices_not_converged),
         "n_debris_removed_px": 0,
     }
-    return new_labels.astype(np.int32), report
+    return new_labels.astype(np.int32, copy=False), report
 
 
 def trim_skin_label(

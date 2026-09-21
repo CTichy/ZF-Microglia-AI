@@ -597,9 +597,9 @@ Only crop-result pieces that actually overlap the original label's own footprint
 
 **Label ID to re-run** — type it directly, or click the cell in the viewer and use the **Use selected** button next to it.
 
-Typical use: after a full run flags a porous/skeletonized cell (see the warning that appears after Run Cellpose-SAM Segmentation above), re-run just that one label at a stricter Cellprob (e.g. -0.3) instead of raising the setting for the whole fish — a fish-wide stricter threshold can clip real boundary pixels off cells that already segment fine, just to fix the minority that don't.
+Typical use: when a cell comes out porous/skeletonized or otherwise wrongly segmented, re-run just that one label at a stricter Cellprob (e.g. -0.3) instead of raising the setting for the whole fish — a fish-wide stricter threshold can clip real boundary pixels off cells that already segment fine, just to fix the minority that don't.
 
-> **Tip:** select the volume layer (the `_ExtRm` image, not the labels layer) before clicking, if napari has auto-selected the labels layer from a previous action — the tool resolves the correct volume either way, but re-selecting the image layer directly is the more obvious path.
+> **Tip:** the tool works on whichever labels layer you have selected (any name — e.g. one loaded with **Load Labels layer**, such as `<stem>_brain_only_ExtRm_labels`), finding its volume by shape and name. If you select the volume instead, it looks for `<image>_cellpose_labels`, then `<image>_labels`, then any single labels layer of the same shape whose name starts with the volume's. If more than one qualifies it asks you to select the one you mean instead of guessing.
 
 ---
 
