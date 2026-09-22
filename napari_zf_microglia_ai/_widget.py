@@ -5514,7 +5514,12 @@ class ZFMicrogliaAIWidget(QWidget):
             # contrast came in as, e.g. from the IMS load) rather than
             # computed from an arbitrary offset off best_lo.
             best_hi = float(signal_lyr.contrast_limits[1])
-            signal_lyr.contrast_limits = (best_lo, best_hi)
+            # Guarded for the same reason as Auto-correct Existing Labels'
+            # own contrast assignment -- see its own comment.
+            try:
+                signal_lyr.contrast_limits = (best_lo, best_hi)
+            except Exception as exc:
+                print(f"Calibrate Correct-Label Contrast: could not set the signal layer's contrast limits: {exc}")
             self._ccal_status_lbl.setText(
                 f"Done — {sweep['n_samples']} sample(s) from "
                 f"{len(set(lbl for lbl, _z in samples))} cell(s). "
@@ -8074,7 +8079,6 @@ class ZFMicrogliaAIWidget(QWidget):
             from qtpy.QtWidgets import QApplication as _QApp
             import time as _time
             self._skin_status_lbl.setText("Computation finished -- applying skin to the viewer…")
-            _QApp.processEvents()
             _t = _time.time()
             lyr.data[:] = result["labels"]  # in-place -- see Resort Labels above for why
             lyr.refresh()
@@ -8346,7 +8350,6 @@ class ZFMicrogliaAIWidget(QWidget):
             from qtpy.QtWidgets import QApplication as _QApp
             import time as _time
             self._ac_status_lbl.setText("Computation finished -- applying the corrected labels to the viewer…")
-            _QApp.processEvents()
             _t = _time.time()
             lyr.data[:] = new_labels  # in-place -- see Resort Labels above for why
             lyr.refresh()
@@ -8361,10 +8364,24 @@ class ZFMicrogliaAIWidget(QWidget):
             # exactly as it already was on the signal layer (e.g. from
             # the IMS load), not an arbitrary offset off best_lo.
             self._ac_status_lbl.setText("Applying the calibrated contrast to the signal layer…")
-            _QApp.processEvents()
             _t = _time.time()
-            signal_lyr.contrast_limits = (best_lo, float(signal_lyr.contrast_limits[1]))
-            print(f"[Auto-correct] set the signal layer's contrast in {_time.time() - _t:.1f}s")
+            # Guarded: napari's own _update_thumbnail() (triggered by this
+            # assignment) has a documented history of internal crashes in
+            # this project (RuntimeError from scipy's ndi.zoom on a
+            # rank-mismatched slice -- a napari-internal race, not this
+            # plugin's data). Unguarded, that exception aborted this whole
+            # completion handler mid-way: the labels had ALREADY been
+            # applied (see above), but the report, skin UI and button
+            # re-enable below never ran -- the button stayed disabled and
+            # the status text frozen on this line forever, looking exactly
+            # like a hang. Same fix as Protect Skin's own contrast
+            # assignment below.
+            try:
+                signal_lyr.contrast_limits = (best_lo, float(signal_lyr.contrast_limits[1]))
+            except Exception as exc:
+                print(f"[Auto-correct] could not set the signal layer's contrast limits: {exc}")
+            else:
+                print(f"[Auto-correct] set the signal layer's contrast in {_time.time() - _t:.1f}s")
             skin_rep = report["skin_report"]
             self._skin_id_spin.setValue(report["skin_label_id"])
             touching_ids = sorted({i for ids in skin_rep.get("foreign_touching", {}).values() for i in ids})
@@ -9571,7 +9588,15 @@ class ZFMicrogliaAIWidget(QWidget):
             # Low end moves to the calibrated threshold; high end stays
             # exactly as it already was on the signal layer (e.g. from
             # the IMS load), not an arbitrary offset off best_lo.
-            signal_layer.contrast_limits = (best_lo, float(signal_layer.contrast_limits[1]))
+            # Guarded: napari's own thumbnail update (triggered by this
+            # assignment) has a documented history of internal crashes in
+            # this project -- see the identical guard on Auto-correct
+            # Existing Labels' own contrast assignment for the real
+            # traceback and why an unguarded crash here looks like a hang.
+            try:
+                signal_layer.contrast_limits = (best_lo, float(signal_layer.contrast_limits[1]))
+            except Exception as exc:
+                print(f"Cellpose-SAM auto-correct: could not set the signal layer's contrast limits: {exc}")
 
             skin_rep = report["skin_report"]
             self._skin_id_spin.setValue(report["skin_label_id"])
