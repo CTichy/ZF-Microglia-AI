@@ -378,6 +378,8 @@ def auto_contrast_correct_stack(
     until_stable: bool = True,
     max_stability_passes: int = 100,
     auto_grow: bool = True,
+    lo_override: "float | None" = None,
+    lo_adjustment: float = 0.0,
     progress_cb=None,
 ) -> "tuple[np.ndarray, dict]":
     """
@@ -457,6 +459,26 @@ def auto_contrast_correct_stack(
                           correction (step 5, both modes) -- same
                           meaning as Tab 3's own "Correct Label"
                           auto-grow / until-stable controls.
+    lo_override          : if given, SKIPS the contrast sweep (step 1)
+                          entirely and uses this value directly as
+                          `best_lo` for everything downstream -- the
+                          "use the signal layer's current low contrast
+                          limit instead of auto-sweeping" path. Mutually
+                          exclusive with `lo_adjustment` in effect: an
+                          override is used exactly as given, never
+                          further adjusted.
+    lo_adjustment        : only applied when `lo_override` is None (the
+                          sweep DID run). Subtracted from the swept
+                          `best_lo` before it's used for anything --
+                          "auto-sweep, but capture N units of fainter
+                          signal than the sweep itself would pick,"
+                          since the sweep optimizes for reproducing
+                          Cellpose-SAM's own existing footprint, not for
+                          recovering real signal the model may have
+                          under-segmented. Default 0.0 (no change).
+                          Report's `best_lo_swept` always holds the
+                          RAW sweep result even when this shifts the
+                          value actually used (`best_lo`).
     progress_cb          : optional callable(str), called with a
                           human-readable status line as each stage/step
                           advances
@@ -527,29 +549,41 @@ def auto_contrast_correct_stack(
         raise ValueError("no labels present -- nothing to correct")
 
     # ── Step 1: self-referential contrast calibration ──────────────────
-    _report("Auto-correct: selecting contrast-calibration samples...")
-    samples = select_calibration_samples(
-        labels, scale_zyx, n_cells=n_cells_calib, slices_per_cell=slices_per_cell_calib,
-        edge_margin_um=edge_margin_um,
-    )
-    if not samples:
-        raise ValueError(
-            "no interior/complex-enough cells found for contrast calibration "
-            "-- can't auto-correct this stack"
+    # Skipped entirely when lo_override is given -- see that parameter's
+    # own docstring. sweep stays None in that case; every report field
+    # that would normally read from it falls back to a value that says
+    # plainly "the sweep didn't run" rather than crashing on a missing key.
+    sweep = None
+    best_lo_swept = None
+    if lo_override is not None:
+        best_lo = float(lo_override)
+        _report(f"Auto-correct: using given lo={best_lo:.4g} (sweep skipped).")
+    else:
+        _report("Auto-correct: selecting contrast-calibration samples...")
+        samples = select_calibration_samples(
+            labels, scale_zyx, n_cells=n_cells_calib, slices_per_cell=slices_per_cell_calib,
+            edge_margin_um=edge_margin_um,
         )
-    lo_candidates = default_lo_candidates(image, samples, pad, n_steps=n_lo_steps)
+        if not samples:
+            raise ValueError(
+                "no interior/complex-enough cells found for contrast calibration "
+                "-- can't auto-correct this stack"
+            )
+        lo_candidates = default_lo_candidates(image, samples, pad, n_steps=n_lo_steps)
 
-    def _sweep_progress(msg: str) -> None:
-        _report(f"Auto-correct: {msg}")
+        def _sweep_progress(msg: str) -> None:
+            _report(f"Auto-correct: {msg}")
 
-    sweep = sweep_contrast_lower_value(
-        labels, image, samples, lo_candidates, pad=pad, progress_cb=_sweep_progress,
-    )
-    best_lo = sweep["best_lo"]
-    _report(
-        f"Auto-correct: calibrated lo={best_lo:.4g} "
-        f"(mean IoU={sweep['best_mean_iou']:.3f} on {sweep['n_samples']} samples)"
-    )
+        sweep = sweep_contrast_lower_value(
+            labels, image, samples, lo_candidates, pad=pad, progress_cb=_sweep_progress,
+        )
+        best_lo_swept = float(sweep["best_lo"])
+        best_lo = best_lo_swept - float(lo_adjustment)
+        adj_note = f" (swept {best_lo_swept:.4g}, adjusted by -{lo_adjustment:.4g})" if lo_adjustment else ""
+        _report(
+            f"Auto-correct: calibrated lo={best_lo:.4g}{adj_note} "
+            f"(mean IoU={sweep['best_mean_iou']:.3f} on {sweep['n_samples']} samples)"
+        )
 
     # ── Step 2: protect skin BEFORE any real cell is touched, at the
     #    SAME calibrated best_lo real cells get (reusing it, not a
@@ -773,8 +807,11 @@ def auto_contrast_correct_stack(
 
     report = {
         "best_lo": best_lo,
-        "sweep_mean_iou": sweep["best_mean_iou"],
-        "n_calibration_samples": sweep["n_samples"],
+        "best_lo_swept": best_lo_swept,  # None when lo_override skipped the sweep
+        "lo_override_used": lo_override is not None,
+        "lo_adjustment": float(lo_adjustment),
+        "sweep_mean_iou": sweep["best_mean_iou"] if sweep is not None else None,
+        "n_calibration_samples": sweep["n_samples"] if sweep is not None else 0,
         "skin_label_id": skin_id,
         "skin_report": skin_report,
         "n_skin_debris_fragments_removed": n_skin_debris_fragments_removed,
@@ -835,11 +872,22 @@ def _format_2d_vs_skin_report(report: dict, skin_id: int) -> str:
 
 def format_auto_correction_report(report: dict) -> str:
     lines = []
-    lines.append(
-        f"Auto-correction: lo={report['best_lo']:.4g} "
-        f"(calibration mean IoU={report['sweep_mean_iou']:.3f}, "
-        f"{report['n_calibration_samples']} samples)"
-    )
+    if report.get("lo_override_used"):
+        lines.append(
+            f"Auto-correction: lo={report['best_lo']:.4g} "
+            f"(given directly -- contrast sweep skipped)"
+        )
+    else:
+        adj = report.get("lo_adjustment", 0.0)
+        swept = report.get("best_lo_swept")
+        adj_note = (
+            f", adjusted -{adj:.4g} from the swept {swept:.4g}" if adj and swept is not None else ""
+        )
+        lines.append(
+            f"Auto-correction: lo={report['best_lo']:.4g}{adj_note} "
+            f"(calibration mean IoU={report['sweep_mean_iou']:.3f}, "
+            f"{report['n_calibration_samples']} samples)"
+        )
     skin_report = report["skin_report"]
     n_skin_frag = report.get("n_skin_debris_fragments_removed", 0)
     if skin_report.get("already_protected"):

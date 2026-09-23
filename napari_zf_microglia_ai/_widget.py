@@ -829,6 +829,12 @@ class ZFMicrogliaAIWidget(QWidget):
             thresh_row, self._thresh_slider, 0.01, 0.99, 0.01, decimals=2
         )
         t1.addLayout(thresh_row)
+        thresh_note = QLabel(
+            "  Sets the MONAI probability cutoff (0-1) a voxel must pass "
+            "to count as brain -- lower keeps more, higher keeps less."
+        )
+        thresh_note.setStyleSheet("color: #aaa; font-size: 10px;")
+        t1.addWidget(thresh_note)
         self._thresh_recommended_lbl = _add_recommended_label(
             t1, _root_cfg.get("monai_threshold_recommended"), noun="MONAI Threshold"
         )
@@ -845,9 +851,12 @@ class ZFMicrogliaAIWidget(QWidget):
         )
         t1.addLayout(erosion_row)
         erosion_note = QLabel(
-            "  Erodes the raw MONAI brain mask (Skin-Remover step)\n"
-            "  (raw brain_mask is always saved un-eroded)"
+            "  Shrinks the brain mask inward by this many voxels before "
+            "removing everything outside it -- pulls brain_only's own "
+            "edge in from skin. The saved brain_mask.tif itself is "
+            "always the un-eroded, full-size mask."
         )
+        erosion_note.setWordWrap(True)
         erosion_note.setStyleSheet("color: #aaa; font-size: 10px;")
         t1.addWidget(erosion_note)
         self._erosion_recommended_lbl = _add_recommended_label(
@@ -912,10 +921,15 @@ class ZFMicrogliaAIWidget(QWidget):
         self._sig_erosion_recommended_lbl.setVisible(False)
 
         bg_note = QLabel(
-            "  Probe: inside-brain mode (post-inference)\n"
-            "  Mode 1 & 2 use BG Threshold  |  Mode 3: no threshold\n"
-            "  Signal Erosion applies only to Mode 2 (noBG stack prep)"
+            "  BG Threshold sets how far above the inside-brain background "
+            "level (its most common intensity, measured after inference) "
+            "a voxel must sit to count as background and be removed -- "
+            "used by Mode 1 and Mode 2, ignored by Mode 3. Signal Erosion "
+            "shrinks each 2D slice's kept signal inward by this many "
+            "voxels, and only applies to Mode 2 (the noBG stack Create "
+            "MG Labels' Pixel Classifier route uses)."
         )
+        bg_note.setWordWrap(True)
         bg_note.setStyleSheet("color: #aaa; font-size: 10px;")
         t1.addWidget(bg_note)
 
@@ -953,8 +967,8 @@ class ZFMicrogliaAIWidget(QWidget):
         t1.addWidget(_sep())
 
         # ── Verify MONAI Threshold / Erosion (GT sweep) — always visible, ──
-        # third of the plugin's three GT-sweep tools (see Tab 2's BG
-        # Threshold/Erosion sweep, Tab 4's Cellpose-SAM epoch sweep). Scores
+        # third of the plugin's three GT-sweep tools (see Sweeps & Utilities'
+        # BG Threshold/Erosion sweep, AI Tools' Cellpose-SAM epoch sweep). Scores
         # the brain MASK itself against a hand-corrected GT mask (from GT
         # Annotation) rather than per-cell labels -- no GPU hard-gate, since
         # inference already falls back to CPU/MPS elsewhere in this tab.
@@ -1047,6 +1061,15 @@ class ZFMicrogliaAIWidget(QWidget):
         self._bs_erstep_spin.setValue(1)
         bs_er_row2.addWidget(self._bs_erstep_spin)
         bsl.addLayout(bs_er_row2)
+        bs_range_note = QLabel(
+            "  Tests every MONAI Threshold from min to max (step between "
+            "each) crossed with every Erosion (vox) from min to max, "
+            "scoring each combination's brain mask against GT brain mask "
+            "above."
+        )
+        bs_range_note.setWordWrap(True)
+        bs_range_note.setStyleSheet("color: #aaa; font-size: 10px;")
+        bsl.addWidget(bs_range_note)
 
         (self._bs_sieve_cb, self._bs_sieve2_w_spin, self._bs_sieve2_s_spin,
          self._bs_sieve3_w_spin, self._bs_sieve3_s_spin) = _add_sieve_controls(
@@ -1258,34 +1281,14 @@ class ZFMicrogliaAIWidget(QWidget):
         sanding_note.setWordWrap(True)
         sanding_note.setStyleSheet("color: #888; font-size: 10px;")
         common_layout.addWidget(sanding_note)
-
-        sandxy_row = QHBoxLayout()
-        sandxy_row.addWidget(QLabel("Sanding sigma XY (vox):"))
-        self._sanding_sigxy_slider = QLabeledDoubleSlider(Qt.Horizontal)
-        self._sanding_sigxy_slider.setDecimals(2)
-        self._sanding_sigxy_slider.setMinimum(0.0)
-        self._sanding_sigxy_slider.setMaximum(3.0)
-        self._sanding_sigxy_slider.setSingleStep(0.1)
-        self._sanding_sigxy_slider.setValue(_root_cfg.get("sanding_sigma_xy", 0.7))
-        sandxy_row.addWidget(self._sanding_sigxy_slider)
-        self._sanding_sigxy_spin = _add_reliable_spinbox(
-            sandxy_row, self._sanding_sigxy_slider, 0.0, 3.0, 0.1, decimals=2
+        sanding_sigma_note = QLabel(
+            "  Sigma XY/Z values are set in the Edit MG Labels tab's own "
+            "Sanding section, not here — single shared source for both "
+            "this checkbox's chained use and the Edit tab's own tools."
         )
-        common_layout.addLayout(sandxy_row)
-
-        sandz_row = QHBoxLayout()
-        sandz_row.addWidget(QLabel("Sanding sigma Z (vox):"))
-        self._sanding_sigz_slider = QLabeledDoubleSlider(Qt.Horizontal)
-        self._sanding_sigz_slider.setDecimals(2)
-        self._sanding_sigz_slider.setMinimum(0.0)
-        self._sanding_sigz_slider.setMaximum(3.0)
-        self._sanding_sigz_slider.setSingleStep(0.1)
-        self._sanding_sigz_slider.setValue(_root_cfg.get("sanding_sigma_z", 0.7))
-        sandz_row.addWidget(self._sanding_sigz_slider)
-        self._sanding_sigz_spin = _add_reliable_spinbox(
-            sandz_row, self._sanding_sigz_slider, 0.0, 3.0, 0.1, decimals=2
-        )
-        common_layout.addLayout(sandz_row)
+        sanding_sigma_note.setWordWrap(True)
+        sanding_sigma_note.setStyleSheet("color: #888; font-size: 10px;")
+        common_layout.addWidget(sanding_sigma_note)
 
         common_group.setLayout(common_layout)
         t2.addWidget(common_group)
@@ -1341,6 +1344,17 @@ class ZFMicrogliaAIWidget(QWidget):
         self._sz_recommended_lbl = _add_recommended_label(
             pcg, _root_cfg.get("sigma_z_recommended"), noun="Smooth σ Z"
         )
+        smooth_note = QLabel(
+            "  Blurs the thresholded signal before splitting it into "
+            "2D slices and joining them into 3D cells -- Smooth σ XY "
+            "controls blur strength within each slice, Smooth σ Z "
+            "controls how strongly adjacent slices connect. Higher "
+            "values merge nearby fragments into one cell; too high "
+            "merges separate cells together."
+        )
+        smooth_note.setWordWrap(True)
+        smooth_note.setStyleSheet("color: #888; font-size: 10px;")
+        pcg.addWidget(smooth_note)
 
         self._labels_btn = QPushButton("Create Labels")
         self._labels_btn.setStyleSheet("QPushButton { font-weight: bold; padding: 6px; }")
@@ -1474,6 +1488,14 @@ class ZFMicrogliaAIWidget(QWidget):
         self._ps_erstep_spin.setValue(1)
         ps_er_row2.addWidget(self._ps_erstep_spin)
         psl.addLayout(ps_er_row2)
+        ps_range_note = QLabel(
+            "  Tests every BG Threshold from min to max (step between "
+            "each) crossed with every Signal Erosion from min to max, "
+            "scoring each combination's labels against GT."
+        )
+        ps_range_note.setStyleSheet("color: #aaa; font-size: 10px;")
+        ps_range_note.setWordWrap(True)
+        psl.addWidget(ps_range_note)
 
         ps_cells_row = QHBoxLayout()
         ps_cells_row.addWidget(QLabel("Complex cells to test:"))
@@ -1494,6 +1516,15 @@ class ZFMicrogliaAIWidget(QWidget):
         self._ps_padxy_spin.setValue(40)
         ps_cells_row2.addWidget(self._ps_padxy_spin)
         psl.addLayout(ps_cells_row2)
+        ps_cells_note = QLabel(
+            "  Complex cells to test picks how many of the most "
+            "morphologically complex GT cells to crop and score. Pad "
+            "Z/Pad XY set how many extra voxels around each cell's own "
+            "bounding box are included in its crop."
+        )
+        ps_cells_note.setStyleSheet("color: #aaa; font-size: 10px;")
+        ps_cells_note.setWordWrap(True)
+        psl.addWidget(ps_cells_note)
 
         ps_scale_row = QHBoxLayout()
         ps_scale_row.addWidget(QLabel("Z (µm):"))
@@ -1509,6 +1540,14 @@ class ZFMicrogliaAIWidget(QWidget):
         self._ps_scalexy_spin.setValue(0.174)
         ps_scale_row.addWidget(self._ps_scalexy_spin)
         psl.addLayout(ps_scale_row)
+        ps_scale_note = QLabel(
+            "  This fish's own voxel size -- independent of whatever's "
+            "currently open in the viewer -- used to crop and measure "
+            "this sweep's own sampled cells correctly."
+        )
+        ps_scale_note.setStyleSheet("color: #aaa; font-size: 10px;")
+        ps_scale_note.setWordWrap(True)
+        psl.addWidget(ps_scale_note)
 
         self._ps_is_gt_cb = _add_gt_checkbox(psl, "this sweep", visible=False)
 
@@ -1668,6 +1707,14 @@ class ZFMicrogliaAIWidget(QWidget):
         self._sg_szstep_spin.setValue(1.0)
         sg_sz_row2.addWidget(self._sg_szstep_spin)
         sgl.addLayout(sg_sz_row2)
+        sg_range_note = QLabel(
+            "  Tests every sigma XY from min to max (step between each) "
+            "crossed with every sigma Z from min to max, scoring each "
+            "combination's labels against GT."
+        )
+        sg_range_note.setStyleSheet("color: #aaa; font-size: 10px;")
+        sg_range_note.setWordWrap(True)
+        sgl.addWidget(sg_range_note)
 
         sg_cells_row = QHBoxLayout()
         sg_cells_row.addWidget(QLabel("Complex cells to test:"))
@@ -1825,6 +1872,16 @@ class ZFMicrogliaAIWidget(QWidget):
             cp_cellprob_row, self._cp_cellprob_slider, -6.0, 6.0, 0.1, decimals=2
         )
         cpg.addLayout(cp_cellprob_row)
+        cp_cellprob_note = QLabel(
+            "  Sets how confident Cellpose-SAM must be (-6 to 6, "
+            "Cellpose's own scale) that a voxel is foreground before "
+            "it's kept -- higher keeps only the most confident voxels "
+            "and fragments faint cells more; lower keeps more marginal "
+            "signal and risks noise."
+        )
+        cp_cellprob_note.setWordWrap(True)
+        cp_cellprob_note.setStyleSheet("color: #888; font-size: 10px;")
+        cpg.addWidget(cp_cellprob_note)
         self._cp_cellprob_recommended_lbl = _add_recommended_label(
             cpg, _root_cfg.get("cellpose_cellprob_recommended"), noun="Cellprob threshold"
         )
@@ -1849,13 +1906,10 @@ class ZFMicrogliaAIWidget(QWidget):
         )
         cpg.addLayout(cp_maxgap_row)
         cp_maxgap_note = QLabel(
-            "  Physical distance now (not voxels) -- previously this "
-            "slider's value was compared against a distance transform "
-            "computed with no voxel-scale correction, so \"2\" meant "
-            "2.0µm along Z but only 0.35µm in-plane (Z=1.0µm/vox, "
-            "XY=0.174µm/vox), a ~5.7x inconsistency purely from which "
-            "direction a fragment happened to break. Old voxel-based "
-            "values don't carry over -- needs recalibrating."
+            "  Sets the largest real physical gap, in microns, between "
+            "two fragments that Krendl safe-merge will still stitch "
+            "back into one cell. Measured as a true physical distance "
+            "(accounting for Z vs XY voxel size), not a voxel count."
         )
         cp_maxgap_note.setWordWrap(True)
         cp_maxgap_note.setStyleSheet("color: #888; font-size: 10px;")
@@ -1875,18 +1929,24 @@ class ZFMicrogliaAIWidget(QWidget):
             cp_mincontact_row, self._cp_mincontact_slider, 0, 200, 1
         )
         cpg.addLayout(cp_mincontact_row)
+        cp_mincontact_note = QLabel(
+            "  Fallback for when the gap above is too far to bridge: "
+            "merges two fragments anyway if they share at least this "
+            "many voxels of touching surface."
+        )
+        cp_mincontact_note.setWordWrap(True)
+        cp_mincontact_note.setStyleSheet("color: #888; font-size: 10px;")
+        cpg.addWidget(cp_mincontact_note)
         self._cp_mincontact_recommended_lbl = _add_recommended_label(
             cpg, _root_cfg.get("cellpose_min_contact_vox_recommended"), unit=" vox", noun="Safe-merge min contact"
         )
 
         cp_gtmin_note = QLabel(
-            "Safe-merge's \"already a whole cell\" floor is no longer a "
-            "separate field here -- it now reads the shared Min volume "
-            "field in Common Settings above, since both are the exact "
-            "same measurement (smallest true GT cell volume). Recalibrated "
-            "automatically from real GT statistics by the BG Threshold/"
-            "Erosion sweep, the Sigma sweep, the Cellprob/Large-contact "
-            "sweep below, or Tab 3 Statistics when marked as verified GT."
+            "Safe-merge's own \"already a whole cell\" floor -- a "
+            "fragment at or above this size is never merged into "
+            "another one -- reads the shared Min volume field in Common "
+            "Settings above, since both are the same measurement "
+            "(smallest true GT cell volume)."
         )
         cp_gtmin_note.setWordWrap(True)
         cp_gtmin_note.setStyleSheet("color: #888; font-size: 10px;")
@@ -1903,6 +1963,16 @@ class ZFMicrogliaAIWidget(QWidget):
             cp_largecontact_row, self._cp_largecontact_slider, 1, 2000, 10
         )
         cpg.addLayout(cp_largecontact_row)
+        cp_largecontact_note = QLabel(
+            "  A later, separate merge pass: joins two fragments, "
+            "regardless of size, whenever their shared touching surface "
+            "is at least this many voxels -- catches large, obviously-"
+            "one-cell splits Safe-merge's own smaller-fragment rules "
+            "don't cover."
+        )
+        cp_largecontact_note.setWordWrap(True)
+        cp_largecontact_note.setStyleSheet("color: #888; font-size: 10px;")
+        cpg.addWidget(cp_largecontact_note)
         self._cp_largecontact_recommended_lbl = _add_recommended_label(
             cpg, _root_cfg.get("cellpose_large_contact_recommended"), unit=" vox", noun="Large-contact merge"
         )
@@ -1911,18 +1981,16 @@ class ZFMicrogliaAIWidget(QWidget):
         self._cp_autocorrect_cb.setChecked(True)
         cpg.addWidget(self._cp_autocorrect_cb)
         cp_autocorrect_note = QLabel(
-            "  After segmentation: calibrates the contrast threshold that best "
-            "reproduces these labels from the raw signal (self-referential, no "
-            "GT needed -- same engine as Tab 5's Calibrate Correct-Label "
-            "Contrast sweep), protects skin as its own label at that threshold "
-            "+1 (Protect Skin as Label, using the brain mask layer below), "
-            "resorts every cell by Centroid Z, then corrects every cell one "
-            "at a time in that order with the same auto-grow + until-stable "
-            "3D engine as Tab 3's own Correct Label (fixed for this pipeline: "
-            "pad 15px, growth step 5px up to 10 attempts/slice, until-stable "
-            "up to 100 passes/slice), and finally runs Remove Debris once "
-            "over the result. Produces one consolidated report covering "
-            "every cell, not one report per cell."
+            "  After segmentation: calibrates the contrast threshold that "
+            "best reproduces these labels from the raw signal, protects "
+            "skin at that same threshold (using the brain mask layer "
+            "below), resorts every cell by Centroid Z, then corrects "
+            "every cell in that order (2D against skin for a touching "
+            "cell, 3D otherwise, growth step 5px up to 10 attempts/slice, "
+            "until-stable up to 100 passes/slice), and removes leftover "
+            "debris. Uses the Auto-sweep + Reduce best_lo by controls in "
+            "Edit MG Labels' Contrast low (best_lo) calibration section. "
+            "Produces one consolidated report covering every cell."
         )
         cp_autocorrect_note.setWordWrap(True)
         cp_autocorrect_note.setStyleSheet("color: #888; font-size: 10px;")
@@ -1945,12 +2013,11 @@ class ZFMicrogliaAIWidget(QWidget):
         cpg.addWidget(cp_brainmask_note)
 
         cp_sanding_note = QLabel(
-            "  After auto-correct above (if enabled): labels get their "
-            "contours softened (sanding), using the shared \"Soften label "
-            "contours\" checkbox + sigma XY/Z fields in Common Settings "
-            "above -- same setting Correct Label and Correct Adjacent "
-            "Labels use, so a cell touched by any of these tools ends up "
-            "consistently smooth."
+            "  After auto-correct above (if enabled): softens every "
+            "label's contours using the \"Soften label contours\" "
+            "checkbox in Common Settings and the Sigma XY/Z values set "
+            "in Edit MG Labels' Sanding section -- the same setting "
+            "Correct Label and Correct Adjacent Labels use."
         )
         cp_sanding_note.setWordWrap(True)
         cp_sanding_note.setStyleSheet("color: #888; font-size: 10px;")
@@ -2108,6 +2175,14 @@ class ZFMicrogliaAIWidget(QWidget):
         self._kr_scalexy_spin.setValue(0.174)
         kr_scale_row.addWidget(self._kr_scalexy_spin)
         krl.addLayout(kr_scale_row)
+        kr_scale_note = QLabel(
+            "  This fish's own voxel size -- independent of whatever's "
+            "currently open in the viewer -- used to compute max_gap as "
+            "a true physical distance."
+        )
+        kr_scale_note.setStyleSheet("color: #aaa; font-size: 10px;")
+        kr_scale_note.setWordWrap(True)
+        krl.addWidget(kr_scale_note)
 
         kr_cp_row = QHBoxLayout()
         kr_cp_row.addWidget(QLabel("Cellprob min:"))
@@ -2131,6 +2206,13 @@ class ZFMicrogliaAIWidget(QWidget):
         self._kr_cpstep_spin.setValue(0.25)
         kr_cp_row2.addWidget(self._kr_cpstep_spin)
         krl.addLayout(kr_cp_row2)
+        kr_cp_note = QLabel(
+            "  Tests every Cellprob threshold from min to max, step apart, "
+            "scoring each against GT voxel-level Dice/IoU."
+        )
+        kr_cp_note.setStyleSheet("color: #aaa; font-size: 10px;")
+        kr_cp_note.setWordWrap(True)
+        krl.addWidget(kr_cp_note)
 
         (self._kr_sieve_cb, self._kr_sieve2_w_spin, self._kr_sieve2_s_spin,
          self._kr_sieve3_w_spin, self._kr_sieve3_s_spin) = _add_sieve_controls(
@@ -2297,14 +2379,186 @@ class ZFMicrogliaAIWidget(QWidget):
 
         self._gt_package_job = {"thread": None, "timer": None}
 
-        t2.addWidget(_sep())
+        t2.addStretch()
+        tab2.setLayout(t2)
+        tabs.addTab(_wrap_scroll(tab2), "Create MG Labels")
 
-        # ── Downstream label tools (Resort / Split / Save) — shown only
-        #    when a label-creation option is applicable to the active layer ── #
+        # ============================================================ #
+        # TAB "Edit MG Labels" — every edit/correct/modify tool for an
+        # existing Labels layer, reading its layers/labels from ONE
+        # shared selector section at the top instead of each tool's own
+        # combo/spinbox scattered across the old single tab.
+        # ============================================================ #
+        tab_edit = QWidget()
+        te = QVBoxLayout()
+        te.setSpacing(6)
+
+        te_note = QLabel(
+            "Edit, correct, or modify an existing Labels layer (from "
+            "either route, any session). Pick the Signal / Labels / "
+            "Brain mask layers and Label A/B once in the section below — "
+            "every tool on this tab reads from there, not its own field."
+        )
+        te_note.setWordWrap(True)
+        te_note.setStyleSheet("color: #888; font-size: 10px;")
+        te.addWidget(te_note)
+        te.addWidget(_sep())
+
+        # ── Edit MG Labels — every tool below reads its layers/labels from
+        #    the ONE shared selector section immediately below, never its
+        #    own combo/spinbox -- see that section's own comment. ── #
         self._downstream_label_tools = QWidget()
         dlt = QVBoxLayout()
         dlt.setContentsMargins(0, 0, 0, 0)
         dlt.setSpacing(6)
+
+        edit_sel_group = QGroupBox("Layers and label(s) being edited")
+        esl = QVBoxLayout()
+        esl.setSpacing(4)
+        edit_sel_note = QLabel(
+            "  Select the Signal, Labels, and Brain mask layers here once "
+            "for every tool below. Split, Correct Label, and Copy Label "
+            "to Adjacent Slice act on Label A only. Join Labels and "
+            "Correct Adjacent Labels act on Label A and Label B together. "
+            "Resort Labels, Remove Debris, Auto-correct Existing Labels, "
+            "and Save Labels act on the whole Labels layer -- no label ID "
+            "needed. Protect/Remove/Hide Skin Label always act on label "
+            "-1, not on Label A/B."
+        )
+        edit_sel_note.setWordWrap(True)
+        edit_sel_note.setStyleSheet("color: #888; font-size: 10px;")
+        esl.addWidget(edit_sel_note)
+
+        edit_signal_row = QHBoxLayout()
+        edit_signal_row.addWidget(QLabel("Signal layer:"))
+        self._edit_signal_combo = QComboBox()
+        edit_signal_row.addWidget(self._edit_signal_combo)
+        esl.addLayout(edit_signal_row)
+
+        edit_labels_row = QHBoxLayout()
+        edit_labels_row.addWidget(QLabel("Labels layer:"))
+        self._edit_labels_combo = QComboBox()
+        edit_labels_row.addWidget(self._edit_labels_combo)
+        esl.addLayout(edit_labels_row)
+
+        edit_mask_row = QHBoxLayout()
+        edit_mask_row.addWidget(QLabel("Brain mask layer:"))
+        self._edit_mask_combo = QComboBox()
+        edit_mask_row.addWidget(self._edit_mask_combo)
+        esl.addLayout(edit_mask_row)
+
+        edit_a_row = QHBoxLayout()
+        edit_a_row.addWidget(QLabel("Label A:"))
+        self._edit_label_a_spin = QSpinBox()
+        self._edit_label_a_spin.setMinimum(-99999)
+        self._edit_label_a_spin.setMaximum(99999)
+        self._edit_label_a_spin.setValue(1)
+        edit_a_row.addWidget(self._edit_label_a_spin)
+        self._edit_label_a_sel_btn = QPushButton("Use selected")
+        self._edit_label_a_sel_btn.setFixedWidth(90)
+        edit_a_row.addWidget(self._edit_label_a_sel_btn)
+        esl.addLayout(edit_a_row)
+
+        edit_b_row = QHBoxLayout()
+        edit_b_row.addWidget(QLabel("Label B:"))
+        self._edit_label_b_spin = QSpinBox()
+        self._edit_label_b_spin.setMinimum(-99999)
+        self._edit_label_b_spin.setMaximum(99999)
+        self._edit_label_b_spin.setValue(2)
+        edit_b_row.addWidget(self._edit_label_b_spin)
+        self._edit_label_b_sel_btn = QPushButton("Use selected")
+        self._edit_label_b_sel_btn.setFixedWidth(90)
+        edit_b_row.addWidget(self._edit_label_b_sel_btn)
+        esl.addLayout(edit_b_row)
+
+        self._edit_sel_status_lbl = QLabel("")
+        self._edit_sel_status_lbl.setWordWrap(True)
+        esl.addWidget(self._edit_sel_status_lbl)
+
+        edit_sel_group.setLayout(esl)
+        dlt.addWidget(edit_sel_group)
+
+        sanding_group = QGroupBox("Sanding (soften label contours)")
+        sdg = QVBoxLayout()
+        sdg.setSpacing(4)
+        sanding_group_note = QLabel(
+            "  Enable or disable sanding with the \"Soften label contours "
+            "(sanding) after any label correction\" checkbox in Create MG "
+            "Labels. Sigma XY and Sigma Z below set how strongly Correct "
+            "Label, Correct Adjacent Labels, and the Cellpose-SAM "
+            "auto-correct pipeline smooth each corrected label's edges, "
+            "in voxels."
+        )
+        sanding_group_note.setWordWrap(True)
+        sanding_group_note.setStyleSheet("color: #888; font-size: 10px;")
+        sdg.addWidget(sanding_group_note)
+        sandxy_row = QHBoxLayout()
+        sandxy_row.addWidget(QLabel("Sanding sigma XY (vox):"))
+        self._sanding_sigxy_slider = QLabeledDoubleSlider(Qt.Horizontal)
+        self._sanding_sigxy_slider.setDecimals(2)
+        self._sanding_sigxy_slider.setMinimum(0.0)
+        self._sanding_sigxy_slider.setMaximum(3.0)
+        self._sanding_sigxy_slider.setSingleStep(0.1)
+        self._sanding_sigxy_slider.setValue(_root_cfg.get("sanding_sigma_xy", 0.7))
+        sandxy_row.addWidget(self._sanding_sigxy_slider)
+        self._sanding_sigxy_spin = _add_reliable_spinbox(
+            sandxy_row, self._sanding_sigxy_slider, 0.0, 3.0, 0.1, decimals=2
+        )
+        sdg.addLayout(sandxy_row)
+        sandz_row = QHBoxLayout()
+        sandz_row.addWidget(QLabel("Sanding sigma Z (vox):"))
+        self._sanding_sigz_slider = QLabeledDoubleSlider(Qt.Horizontal)
+        self._sanding_sigz_slider.setDecimals(2)
+        self._sanding_sigz_slider.setMinimum(0.0)
+        self._sanding_sigz_slider.setMaximum(3.0)
+        self._sanding_sigz_slider.setSingleStep(0.1)
+        self._sanding_sigz_slider.setValue(_root_cfg.get("sanding_sigma_z", 0.7))
+        sandz_row.addWidget(self._sanding_sigz_slider)
+        self._sanding_sigz_spin = _add_reliable_spinbox(
+            sandz_row, self._sanding_sigz_slider, 0.0, 3.0, 0.1, decimals=2
+        )
+        sdg.addLayout(sandz_row)
+        sanding_group.setLayout(sdg)
+        dlt.addWidget(sanding_group)
+
+        lo_calib_group = QGroupBox("Contrast low (best_lo) calibration")
+        lcg = QVBoxLayout()
+        lcg.setSpacing(4)
+        lo_calib_note = QLabel(
+            "  Used by Protect Skin as Label and Auto-correct Existing "
+            "Labels to pick their contrast-low threshold (best_lo). Check "
+            "Auto-sweep to calculate best_lo from the active labels; set "
+            "Reduce best_lo by (0-6) to subtract that amount from the "
+            "swept value and capture slightly more signal (e.g. "
+            "best_lo=107 minus 3 corrects at 104). Uncheck Auto-sweep to skip the "
+            "sweep and use the Signal layer's own current contrast low "
+            "limit instead -- Reduce best_lo by is then ignored. To "
+            "change how many cells/slices the sweep samples, the edge "
+            "margin, or the number of sweep steps, use Sweeps & "
+            "Utilities' \"Calibrate Correct-Label Contrast\" tool -- both "
+            "read the same settings from there."
+        )
+        lo_calib_note.setWordWrap(True)
+        lo_calib_note.setStyleSheet("color: #888; font-size: 10px;")
+        lcg.addWidget(lo_calib_note)
+
+        self._ac_autosweep_cb = QCheckBox("Auto-sweep for best contrast low (best_lo)")
+        self._ac_autosweep_cb.setChecked(True)
+        lcg.addWidget(self._ac_autosweep_cb)
+
+        ac_reduce_row = QHBoxLayout()
+        ac_reduce_row.addWidget(QLabel("Reduce best_lo by:"))
+        self._ac_reduce_slider = QLabeledSlider(Qt.Horizontal)
+        self._ac_reduce_slider.setMinimum(0)
+        self._ac_reduce_slider.setMaximum(6)
+        self._ac_reduce_slider.setValue(3)
+        ac_reduce_row.addWidget(self._ac_reduce_slider)
+        lcg.addLayout(ac_reduce_row)
+
+        lo_calib_group.setLayout(lcg)
+        dlt.addWidget(lo_calib_group)
+
+        dlt.addWidget(_sep())
 
         sort_row = QHBoxLayout()
         sort_row.addWidget(QLabel("Sort by:"))
@@ -2334,13 +2588,9 @@ class ZFMicrogliaAIWidget(QWidget):
         self._debris_btn.setStyleSheet("QPushButton { padding: 5px; }")
         dlt.addWidget(self._debris_btn)
         debris_note = QLabel(
-            "  Removes any object below Final min-size fraction x Min "
-            "volume (Common Settings, 6a) from the active Labels layer "
-            "as it currently stands -- for debris a manual edit left "
-            "behind (e.g. deleting a whole label that was actually skin, "
-            "or splitting one) that never went through Create Labels' "
-            "own volume filter, since that filter only ran once, before "
-            "the edit. Works on labels from either route."
+            "  Removes every object smaller than Final min-size fraction "
+            "x Min volume (set in Create MG Labels' Common Settings) "
+            "from the Labels layer selected above."
         )
         debris_note.setWordWrap(True)
         debris_note.setStyleSheet("color: #888; font-size: 10px;")
@@ -2351,18 +2601,6 @@ class ZFMicrogliaAIWidget(QWidget):
 
         dlt.addWidget(_sep())
 
-        split_lbl_row = QHBoxLayout()
-        split_lbl_row.addWidget(QLabel("Target label:"))
-        self._split_label_spin = QSpinBox()
-        self._split_label_spin.setMinimum(-1)  # -1 = skin (Protect Skin as Label); never 0
-        self._split_label_spin.setMaximum(99999)
-        self._split_label_spin.setValue(1)
-        split_lbl_row.addWidget(self._split_label_spin)
-        self._split_use_sel_btn = QPushButton("Use selected")
-        self._split_use_sel_btn.setFixedWidth(90)
-        split_lbl_row.addWidget(self._split_use_sel_btn)
-        dlt.addLayout(split_lbl_row)
-
         split_mode_row = QHBoxLayout()
         split_mode_row.addWidget(QLabel("Split mode:"))
         self._split_mode_combo = QComboBox()
@@ -2372,26 +2610,16 @@ class ZFMicrogliaAIWidget(QWidget):
         dlt.addLayout(split_mode_row)
 
         split_mode_note = QLabel(
-            "  2D splits only the CURRENT slice, watersheding on the "
-            "SIGNAL layer's raw intensity instead of the mask's shape -- "
-            "seeds sit at local brightness peaks, the cut runs along the "
-            "dimmest ridge between them. Use it when two things only "
-            "touch on one cross-section (e.g. real signal grazing a "
-            "skin-residue fragment right at that slice) with no real "
-            "geometric neck for a 3D/shape-based split to find, since "
-            "the mask can be wide right through a point the real signal "
-            "already dips low at. Every other slice of this label is "
-            "left completely untouched."
+            "  Splits Label A into Split into N parts. 3D uses the "
+            "label's full 3D shape to place the cut. 2D acts only on the "
+            "current slice, placing the cut along the dimmest ridge in "
+            "the Signal layer's own brightness between two peaks -- use "
+            "it when two parts only touch on one slice. Every other "
+            "slice of the label stays untouched either way."
         )
         split_mode_note.setWordWrap(True)
         split_mode_note.setStyleSheet("color: #888; font-size: 10px;")
         dlt.addWidget(split_mode_note)
-
-        split_signal_row = QHBoxLayout()
-        split_signal_row.addWidget(QLabel("Signal layer (2D mode only):"))
-        self._split_signal_combo = QComboBox()
-        split_signal_row.addWidget(self._split_signal_combo)
-        dlt.addLayout(split_signal_row)
 
         split_n_row = QHBoxLayout()
         split_n_row.addWidget(QLabel("Split into:"))
@@ -2405,7 +2633,7 @@ class ZFMicrogliaAIWidget(QWidget):
         dlt.addLayout(split_n_row)
 
         split_sigma_row = QHBoxLayout()
-        split_sigma_row.addWidget(QLabel("Smooth σ:"))
+        split_sigma_row.addWidget(QLabel("Smooth σ (vox):"))
         self._split_sigma_slider = QLabeledDoubleSlider(Qt.Horizontal)
         self._split_sigma_slider.setDecimals(1)
         self._split_sigma_slider.setMinimum(0.0)
@@ -2419,7 +2647,7 @@ class ZFMicrogliaAIWidget(QWidget):
         dlt.addLayout(split_sigma_row)
 
         split_dist_row = QHBoxLayout()
-        split_dist_row.addWidget(QLabel("Min distance:"))
+        split_dist_row.addWidget(QLabel("Min distance (vox):"))
         self._split_dist_slider = QLabeledSlider(Qt.Horizontal)
         self._split_dist_slider.setMinimum(1)
         self._split_dist_slider.setMaximum(30)
@@ -2429,6 +2657,15 @@ class ZFMicrogliaAIWidget(QWidget):
             split_dist_row, self._split_dist_slider, 1, 30, 1
         )
         dlt.addLayout(split_dist_row)
+        split_params_note = QLabel(
+            "  Smooth σ blurs the label's shape before finding split "
+            "points -- higher values merge close bumps into one part. "
+            "Min distance sets how far apart (in voxels) two split "
+            "points must be to count as separate parts."
+        )
+        split_params_note.setWordWrap(True)
+        split_params_note.setStyleSheet("color: #888; font-size: 10px;")
+        dlt.addWidget(split_params_note)
 
         self._split_btn = QPushButton("Split Label")
         self._split_btn.setStyleSheet("QPushButton { padding: 5px; }")
@@ -2441,38 +2678,13 @@ class ZFMicrogliaAIWidget(QWidget):
         dlt.addWidget(_sep())
 
         join_note = QLabel(
-            "  Join Labels — the inverse of Split: merges Label B into "
-            "Label A when one cell got wrongly cut into two pieces "
-            "(e.g. a thin process fooled the segmenter into treating it "
-            "as a neck). Label A's ID survives; Label B disappears."
+            "  Merges Label B into Label A. Label A's ID survives; "
+            "Label B is removed. Use it when one cell was wrongly split "
+            "into two labels."
         )
         join_note.setWordWrap(True)
         join_note.setStyleSheet("color: #888; font-size: 10px;")
         dlt.addWidget(join_note)
-
-        join_a_row = QHBoxLayout()
-        join_a_row.addWidget(QLabel("Label A (keep):"))
-        self._join_a_spin = QSpinBox()
-        self._join_a_spin.setMinimum(-1)  # -1 = skin (Protect Skin as Label); never 0
-        self._join_a_spin.setMaximum(99999)
-        self._join_a_spin.setValue(1)
-        join_a_row.addWidget(self._join_a_spin)
-        self._join_a_use_sel_btn = QPushButton("Use selected")
-        self._join_a_use_sel_btn.setFixedWidth(90)
-        join_a_row.addWidget(self._join_a_use_sel_btn)
-        dlt.addLayout(join_a_row)
-
-        join_b_row = QHBoxLayout()
-        join_b_row.addWidget(QLabel("Label B (merge into A):"))
-        self._join_b_spin = QSpinBox()
-        self._join_b_spin.setMinimum(-1)  # -1 = skin (Protect Skin as Label); never 0
-        self._join_b_spin.setMaximum(99999)
-        self._join_b_spin.setValue(2)
-        join_b_row.addWidget(self._join_b_spin)
-        self._join_b_use_sel_btn = QPushButton("Use selected")
-        self._join_b_use_sel_btn.setFixedWidth(90)
-        join_b_row.addWidget(self._join_b_use_sel_btn)
-        dlt.addLayout(join_b_row)
 
         self._join_btn = QPushButton("Join Labels")
         self._join_btn.setStyleSheet("QPushButton { padding: 5px; }")
@@ -2485,11 +2697,10 @@ class ZFMicrogliaAIWidget(QWidget):
         dlt.addWidget(_sep())
 
         correct_note = QLabel(
-            "  Correct Label — regenerates a label's shape from the "
-            "signal layer's own current contrast limits (whatever "
-            "intensity window it's displayed with right now). A "
-            "neighboring label's own pixels are never touched, even if "
-            "they fall inside the padded box."
+            "  Regenerates Label A's shape from the Signal layer's "
+            "current contrast limits -- the intensity window it's "
+            "displayed with right now. Never overwrites a neighboring "
+            "label's own pixels, even inside the padded working area."
         )
         correct_note.setWordWrap(True)
         correct_note.setStyleSheet("color: #888; font-size: 10px;")
@@ -2504,55 +2715,23 @@ class ZFMicrogliaAIWidget(QWidget):
         dlt.addLayout(correct_mode_row)
 
         correct_mode_note = QLabel(
-            "  3D is NOT a bounding box: it loops over 2D areas, one Z "
-            "slice at a time, each from its OWN local neighborhood -- "
-            "the label's own current footprint on that one slice, "
-            "padded. No other label nearby -> plain 2D correction "
-            "(same as 2D mode above); another label nearby -> the same "
-            "joint watershed split Correct Adjacent Labels uses, so the "
-            "local boundary against a genuinely adjacent cell is "
-            "properly re-derived too, not just excluded. The label's "
-            "own known Z range is corrected outright (each pair of "
-            "slices first swaps the bigger of the two footprints onto "
-            "the smaller one, so a single spuriously undersized slice "
-            "can't clip real signal); growth beyond that range copies "
-            "the current slice forward, verifying real signal supports "
-            "it before keeping it, stopping the moment it doesn't. "
-            "Afterwards, a debris-cleanup pass (same golden-ratio floor "
-            "as Cellpose-SAM's own final safety net) removes any small "
-            "disconnected leftover scoped to ONLY this label. Reports "
-            "which slices any other label touches or sits near, and "
-            "which slices still touch the edge of their own local area, "
-            "so a close call is never silently invisible."
+            "  3D corrects the label one Z slice at a time, each from "
+            "its own padded local area, and extends beyond the label's "
+            "known Z range while real signal keeps supporting it. A "
+            "slice with a nearby label is corrected jointly against it, "
+            "the same way Correct Adjacent Labels works. Removes any "
+            "small disconnected debris left over, scoped to this label "
+            "only. Reports which slices touch another label, and which "
+            "slices still touch the edge of their own working area."
         )
         correct_mode_note.setWordWrap(True)
         correct_mode_note.setStyleSheet("color: #888; font-size: 10px;")
         dlt.addWidget(correct_mode_note)
 
-        correct_signal_row = QHBoxLayout()
-        correct_signal_row.addWidget(QLabel("Signal layer:"))
-        self._correct_signal_combo = QComboBox()
-        correct_signal_row.addWidget(self._correct_signal_combo)
-        dlt.addLayout(correct_signal_row)
-
-        correct_label_row = QHBoxLayout()
-        correct_label_row.addWidget(QLabel("Label to correct:"))
-        self._correct_label_spin = QSpinBox()
-        self._correct_label_spin.setMinimum(-1)  # -1 = skin (Protect Skin as Label); never 0
-        self._correct_label_spin.setMaximum(99999)
-        self._correct_label_spin.setValue(1)
-        correct_label_row.addWidget(self._correct_label_spin)
-        self._correct_use_sel_btn = QPushButton("Use selected")
-        self._correct_use_sel_btn.setFixedWidth(90)
-        correct_label_row.addWidget(self._correct_use_sel_btn)
-        dlt.addLayout(correct_label_row)
-
         self._correct_skin3d_note = QLabel(
-            "  3D correction is disabled for the skin label (-1) -- it "
-            "walks the WHOLE outside-brain territory slice by slice, "
-            "wasting significant computation for no real benefit over "
-            "Protect Skin as Label's own dedicated (and far cheaper) "
-            "trim. Use 2D mode instead, or re-run Protect Skin as Label."
+            "  3D correction is disabled for the skin label (-1). Use "
+            "2D mode on a single slice instead, or use Protect Skin as "
+            "Label to correct skin's whole territory at once."
         )
         self._correct_skin3d_note.setWordWrap(True)
         self._correct_skin3d_note.setStyleSheet("color: #c88; font-size: 10px;")
@@ -2571,17 +2750,14 @@ class ZFMicrogliaAIWidget(QWidget):
         self._correct_grow_cb = QCheckBox("Auto-grow until signal clears the border")
         dlt.addWidget(self._correct_grow_cb)
         correct_grow_note = QLabel(
-            "  Retries with a bigger padding whenever the corrected label's own "
-            "edge touches the edge of its own working area, to catch real signal "
-            "too small a pad would otherwise cut off. In 3D mode this grows PER "
-            "SLICE, not the whole cell at once -- only the slice(s) that actually "
-            "need more room regrow, at whatever pad each one individually needs; "
-            "every other slice keeps its own already-correct result untouched. "
-            "In 2D mode, if growth starts overlapping a neighboring label, that "
-            "neighbor is automatically folded into a joint correction instead of "
-            "being encroached on. If it's still touching the edge after the max "
-            "iterations below, it stops and tells you (naming exactly which "
-            "slice(s), in 3D) rather than growing forever."
+            "  Enlarges the working area by Growth step (px), up to Max "
+            "growth iterations times, whenever the corrected label still "
+            "touches its own edge -- catches real signal a too-small pad "
+            "would otherwise cut off. In 3D mode each slice grows on its "
+            "own, independently of the others. In 2D mode, a neighboring "
+            "label the growth reaches is corrected jointly instead of "
+            "being overwritten. Stops and reports which slice(s) are "
+            "still touching the edge if the iteration limit is reached."
         )
         correct_grow_note.setWordWrap(True)
         correct_grow_note.setStyleSheet("color: #888; font-size: 10px;")
@@ -2608,15 +2784,11 @@ class ZFMicrogliaAIWidget(QWidget):
         self._correct_stable_cb = QCheckBox("Keep re-running until the shape stabilizes (3D only)")
         dlt.addWidget(self._correct_stable_cb)
         correct_stable_note = QLabel(
-            "  Independent of auto-grow above. Each 3D correction doesn't just "
-            "reshape this label -- wherever it finds a genuinely adjacent label "
-            "(e.g. a Protect-Skin-as-Label neighbor), the joint watershed split "
-            "also updates THAT label's own boundary, seeded from each label's "
-            "CURRENT shape. Feeding one pass's result back in as the next pass's "
-            "starting point lets the boundary settle a little closer each time, "
-            "instead of stopping after just the first (possibly still-settling) "
-            "placement. Re-runs until this label's own shape is IDENTICAL to the "
-            "previous pass, or the pass cap below is hit."
+            "  Re-runs the 3D correction, using each pass's result as "
+            "the next pass's starting shape, until this label's shape "
+            "stops changing or Max stability passes is reached. A "
+            "genuinely adjacent label (e.g. skin) has its own boundary "
+            "updated on every pass too. Independent of Auto-grow above."
         )
         correct_stable_note.setWordWrap(True)
         correct_stable_note.setStyleSheet("color: #888; font-size: 10px;")
@@ -2649,29 +2821,14 @@ class ZFMicrogliaAIWidget(QWidget):
         dlt.addWidget(_sep())
 
         copyslice_note = QLabel(
-            "  Copy Label to Adjacent Slice — copies this label's shape "
-            "from the CURRENT slice onto the next or previous slice, "
-            "e.g. to patch a slice where its cross-section is missing "
-            "or broken. The label's own old shape on the target slice "
-            "is replaced; a neighboring label's pixels are never "
-            "touched, even where the copied shape would otherwise land "
-            "on top of them."
+            "  Copies Label A's shape from the current slice onto the "
+            "next or previous slice, replacing its own old shape there. "
+            "Never overwrites a different label's pixels. Use it to "
+            "patch a slice where the cross-section is missing or broken."
         )
         copyslice_note.setWordWrap(True)
         copyslice_note.setStyleSheet("color: #888; font-size: 10px;")
         dlt.addWidget(copyslice_note)
-
-        copyslice_label_row = QHBoxLayout()
-        copyslice_label_row.addWidget(QLabel("Label to copy:"))
-        self._copyslice_label_spin = QSpinBox()
-        self._copyslice_label_spin.setMinimum(-1)  # -1 = skin (Protect Skin as Label); never 0
-        self._copyslice_label_spin.setMaximum(99999)
-        self._copyslice_label_spin.setValue(1)
-        copyslice_label_row.addWidget(self._copyslice_label_spin)
-        self._copyslice_use_sel_btn = QPushButton("Use selected")
-        self._copyslice_use_sel_btn.setFixedWidth(90)
-        copyslice_label_row.addWidget(self._copyslice_use_sel_btn)
-        dlt.addLayout(copyslice_label_row)
 
         copyslice_dir_row = QHBoxLayout()
         copyslice_dir_row.addWidget(QLabel("Copy to:"))
@@ -2692,54 +2849,16 @@ class ZFMicrogliaAIWidget(QWidget):
         dlt.addWidget(_sep())
 
         adjcorr_note = QLabel(
-            "  Correct Adjacent Labels (2D only) — for two labels that "
-            "end up touching/merged on ONE slice (e.g. two microglia, "
-            "or a cell and a skin-residue fragment, right after Copy "
-            "Label to Adjacent Slice pastes a shape that now touches a "
-            "neighbor). Correcting each label separately with Correct "
-            "Label doesn't work here -- at a shared threshold both "
-            "labels' regenerated regions can fuse where they touch, and "
-            "each one's own foreign-exclusion guard would draw the "
-            "boundary from the OTHER label's stale geometry, not the "
-            "real signal. This regenerates BOTH labels together from "
-            "the signal threshold, then splits the combined result at "
-            "the intensity valley between them -- same signal-based cut "
-            "Split Label's 2D mode uses -- instead of drawing the line "
-            "from stale label shapes."
+            "  Regenerates Label A and Label B together, on the current "
+            "slice only, from the Signal layer's current contrast "
+            "limits, then splits the combined shape at the dimmest "
+            "point between them. Use it for two labels that touch or "
+            "merge on one slice, where correcting each with Correct "
+            "Label separately would let them fuse."
         )
         adjcorr_note.setWordWrap(True)
         adjcorr_note.setStyleSheet("color: #888; font-size: 10px;")
         dlt.addWidget(adjcorr_note)
-
-        adjcorr_signal_row = QHBoxLayout()
-        adjcorr_signal_row.addWidget(QLabel("Signal layer:"))
-        self._adjcorr_signal_combo = QComboBox()
-        adjcorr_signal_row.addWidget(self._adjcorr_signal_combo)
-        dlt.addLayout(adjcorr_signal_row)
-
-        adjcorr_a_row = QHBoxLayout()
-        adjcorr_a_row.addWidget(QLabel("Label A:"))
-        self._adjcorr_a_spin = QSpinBox()
-        self._adjcorr_a_spin.setMinimum(-1)  # -1 = skin (Protect Skin as Label); never 0
-        self._adjcorr_a_spin.setMaximum(99999)
-        self._adjcorr_a_spin.setValue(1)
-        adjcorr_a_row.addWidget(self._adjcorr_a_spin)
-        self._adjcorr_a_use_sel_btn = QPushButton("Use selected")
-        self._adjcorr_a_use_sel_btn.setFixedWidth(90)
-        adjcorr_a_row.addWidget(self._adjcorr_a_use_sel_btn)
-        dlt.addLayout(adjcorr_a_row)
-
-        adjcorr_b_row = QHBoxLayout()
-        adjcorr_b_row.addWidget(QLabel("Label B:"))
-        self._adjcorr_b_spin = QSpinBox()
-        self._adjcorr_b_spin.setMinimum(-1)  # -1 = skin (Protect Skin as Label); never 0
-        self._adjcorr_b_spin.setMaximum(99999)
-        self._adjcorr_b_spin.setValue(2)
-        adjcorr_b_row.addWidget(self._adjcorr_b_spin)
-        self._adjcorr_b_use_sel_btn = QPushButton("Use selected")
-        self._adjcorr_b_use_sel_btn.setFixedWidth(90)
-        adjcorr_b_row.addWidget(self._adjcorr_b_use_sel_btn)
-        dlt.addLayout(adjcorr_b_row)
 
         adjcorr_pad_row = QHBoxLayout()
         adjcorr_pad_row.addWidget(QLabel("Bbox padding (px):"))
@@ -2753,9 +2872,9 @@ class ZFMicrogliaAIWidget(QWidget):
         self._adjcorr_grow_cb = QCheckBox("Auto-grow until signal clears the border")
         dlt.addWidget(self._adjcorr_grow_cb)
         adjcorr_grow_note = QLabel(
-            "  Same auto-grow behavior as Correct Label above, seeded with BOTH "
-            "labels from the start instead of just one. If growth reveals a third "
-            "label, it's folded into the joint correction too."
+            "  Same as Correct Label's Auto-grow, seeded with Label A "
+            "and Label B together. A third label the growth reaches is "
+            "corrected jointly too."
         )
         adjcorr_grow_note.setWordWrap(True)
         adjcorr_grow_note.setStyleSheet("color: #888; font-size: 10px;")
@@ -2782,14 +2901,10 @@ class ZFMicrogliaAIWidget(QWidget):
         self._adjcorr_stable_cb = QCheckBox("Keep re-running until the boundary stabilizes")
         dlt.addWidget(self._adjcorr_stable_cb)
         adjcorr_stable_note = QLabel(
-            "  Independent of auto-grow above. The joint watershed split doesn't "
-            "just shape label A -- it also redraws label B's (and any folded-in "
-            "neighbor's) boundary at the same time, seeded from each label's "
-            "CURRENT shape. Feeding one pass's result back in as the next pass's "
-            "starting point lets the shared boundary settle a little closer each "
-            "time, instead of stopping after just the first (possibly still-"
-            "settling) placement. Re-runs until every label in the group has a "
-            "shape IDENTICAL to the previous pass, or the pass cap below is hit."
+            "  Re-runs the joint correction, using each pass's result "
+            "as the next pass's starting shape, until every label in "
+            "the group stops changing or Max stability passes is "
+            "reached. Independent of Auto-grow above."
         )
         adjcorr_stable_note.setWordWrap(True)
         adjcorr_stable_note.setStyleSheet("color: #888; font-size: 10px;")
@@ -2815,48 +2930,18 @@ class ZFMicrogliaAIWidget(QWidget):
         dlt.addWidget(_sep())
 
         skin_note = QLabel(
-            "  Protect Skin as Label — turns everything OUTSIDE the brain "
-            "mask into a real, ordinary label (default ID -1), so it's "
-            "structurally protected by the same foreign-label exclusion "
-            "every Correct Label / Correct Adjacent Labels / auto-grow / "
-            "auto-correct call already has — a real cell's own correction "
-            "can no longer bleed into skin residue just because the "
-            "intensity threshold happens to be high enough there. Bulk-"
-            "fills outside-brain background first, then trims that label "
-            "down to real signal only (same 3D per-slice engine as "
-            "Correct Label, but never jointly splits against a real cell "
-            "it's touching — it only ever excludes it)."
+            "  Turns everything outside the Brain mask layer into "
+            "label -1, then trims that label down to real signal only. "
+            "Protects a real cell's own correction from bleeding into "
+            "skin, the same way it's already protected from any other "
+            "label. Always uses label -1, not Label A/B. Uses the "
+            "Signal / Labels / Brain mask layers selected above, and "
+            "the threshold set by Contrast low (best_lo) calibration "
+            "above."
         )
         skin_note.setWordWrap(True)
         skin_note.setStyleSheet("color: #888; font-size: 10px;")
         dlt.addWidget(skin_note)
-
-        skin_labels_row = QHBoxLayout()
-        skin_labels_row.addWidget(QLabel("Labels layer:"))
-        self._skin_labels_combo = QComboBox()
-        skin_labels_row.addWidget(self._skin_labels_combo)
-        dlt.addLayout(skin_labels_row)
-        skin_labels_note = QLabel(
-            "  Explicit, not \"whatever Labels layer happens to be active "
-            "in napari's own layer list\" -- shared by both Protect Skin "
-            "as Label and Auto-correct Existing Labels below, same reason "
-            "as Signal layer / Brain mask layer above."
-        )
-        skin_labels_note.setWordWrap(True)
-        skin_labels_note.setStyleSheet("color: #888; font-size: 10px;")
-        dlt.addWidget(skin_labels_note)
-
-        skin_signal_row = QHBoxLayout()
-        skin_signal_row.addWidget(QLabel("Signal layer:"))
-        self._skin_signal_combo = QComboBox()
-        skin_signal_row.addWidget(self._skin_signal_combo)
-        dlt.addLayout(skin_signal_row)
-
-        skin_mask_row = QHBoxLayout()
-        skin_mask_row.addWidget(QLabel("Brain mask layer:"))
-        self._skin_mask_combo = QComboBox()
-        skin_mask_row.addWidget(self._skin_mask_combo)
-        dlt.addLayout(skin_mask_row)
 
         skin_pad_row = QHBoxLayout()
         skin_pad_row.addWidget(QLabel("Bbox padding (px):"))
@@ -2882,14 +2967,13 @@ class ZFMicrogliaAIWidget(QWidget):
         self._skin_report_view.hide()
         dlt.addWidget(self._skin_report_view)
 
-        skin_remove_row = QHBoxLayout()
-        skin_remove_row.addWidget(QLabel("Skin label ID to remove:"))
-        self._skin_id_spin = QSpinBox()
-        self._skin_id_spin.setMinimum(-99999)
-        self._skin_id_spin.setMaximum(99999)
-        self._skin_id_spin.setValue(-1)
-        skin_remove_row.addWidget(self._skin_id_spin)
-        dlt.addLayout(skin_remove_row)
+        skin_remove_note = QLabel(
+            "  Always removes label ID -1 (never the shared Label A/B "
+            "fields)."
+        )
+        skin_remove_note.setWordWrap(True)
+        skin_remove_note.setStyleSheet("color: #888; font-size: 10px;")
+        dlt.addWidget(skin_remove_note)
 
         self._skin_remove_btn = QPushButton("Remove Skin Label")
         dlt.addWidget(self._skin_remove_btn)
@@ -2897,11 +2981,10 @@ class ZFMicrogliaAIWidget(QWidget):
         self._skin_hide_cb = QCheckBox("Hide skin label in the viewer")
         dlt.addWidget(self._skin_hide_cb)
         skin_hide_note = QLabel(
-            "  Purely visual -- makes the label ID above fully transparent "
-            "in the active Labels layer's own display, without touching "
-            "any data (unlike Remove Skin Label, which actually deletes "
-            "it). Every other label keeps its own real, distinct color. "
-            "Toggle off to restore skin's own color too."
+            "  Makes label -1 fully transparent in the Labels layer's "
+            "display only -- the underlying data is unchanged, unlike "
+            "Remove Skin Label which deletes it. Every other label keeps "
+            "its own color. Uncheck to restore skin's own color."
         )
         skin_hide_note.setWordWrap(True)
         skin_hide_note.setStyleSheet("color: #888; font-size: 10px;")
@@ -2910,19 +2993,15 @@ class ZFMicrogliaAIWidget(QWidget):
         dlt.addWidget(_sep())
 
         ac_note = QLabel(
-            "  Auto-correct Existing Labels — runs the exact same "
-            "pipeline the Cellpose-SAM Segmentation section's own "
-            "\"Auto-correct labels via contrast sweep\" checkbox chains "
-            "onto a fresh run, on the ACTIVE Labels layer as it "
-            "currently stands instead -- so a labels layer segmented "
-            "earlier (any route, any session, e.g. loaded via \"Load "
-            "Labels layer (.tif)\") can get the same treatment without "
-            "re-running Cellpose-SAM: self-calibrated contrast sweep, "
-            "skin protection + debris cleanup, then every cell "
-            "corrected (2D jointly against skin for a touching cell, "
-            "3D otherwise), then a final debris cleanup. Uses the same "
-            "Signal layer / Brain mask layer / Bbox padding fields as "
-            "Protect Skin as Label, above."
+            "  Calibrates contrast, protects skin, and corrects every "
+            "cell on the Labels layer selected above (2D against skin "
+            "for a touching cell, 3D otherwise), then removes leftover "
+            "debris -- usable on any existing Labels layer, not only a "
+            "layer fresh from Cellpose-SAM Segmentation. Always protects "
+            "skin as label -1. Uses the Signal / Labels / Brain mask "
+            "layers selected above, the threshold set by Contrast low "
+            "(best_lo) calibration above, and Protect Skin as Label's "
+            "Bbox padding."
         )
         ac_note.setWordWrap(True)
         ac_note.setStyleSheet("color: #888; font-size: 10px;")
@@ -2954,11 +3033,11 @@ class ZFMicrogliaAIWidget(QWidget):
         dlt.addWidget(self._save_labels_status_lbl)
 
         self._downstream_label_tools.setLayout(dlt)
-        t2.addWidget(self._downstream_label_tools)
+        te.addWidget(self._downstream_label_tools)
 
-        t2.addStretch()
-        tab2.setLayout(t2)
-        tabs.addTab(_wrap_scroll(tab2), "Create Labels")
+        te.addStretch()
+        tab_edit.setLayout(te)
+        tabs.addTab(_wrap_scroll(tab_edit), "Edit MG Labels")
 
         # ============================================================ #
         # TAB 3 — Statistics
@@ -3001,9 +3080,9 @@ class ZFMicrogliaAIWidget(QWidget):
                 self._stats_no_labels_hint.setVisible(False)
             else:
                 self._stats_no_labels_hint.setText(
-                    "No Labels layer yet — create one first via Tab 2's Create "
-                    "Labels (Pixel Classifier or Cellpose-SAM Segmentation), or "
-                    "load/create one another way, then come back here to "
+                    "No Labels layer yet — create one first via Create MG "
+                    "Labels (Pixel Classifier or Cellpose-SAM Segmentation), "
+                    "or load/create one another way, then come back here to "
                     "compute statistics."
                 )
                 self._stats_no_labels_hint.setVisible(True)
@@ -3256,6 +3335,15 @@ class ZFMicrogliaAIWidget(QWidget):
         self._gtscore_thresh_spin.setValue(0.5)
         gt_thresh_row.addWidget(self._gtscore_thresh_spin)
         gtl.addLayout(gt_thresh_row)
+        gt_thresh_note = QLabel(
+            "  A predicted cell counts as a true positive only if its IoU "
+            "with its matched GT cell is at least this value; below it, "
+            "the pair counts as one false positive and one false "
+            "negative instead."
+        )
+        gt_thresh_note.setStyleSheet("color: #aaa; font-size: 10px;")
+        gt_thresh_note.setWordWrap(True)
+        gtl.addWidget(gt_thresh_note)
 
         self._gtscore_btn = QPushButton("Score Against GT")
         self._gtscore_btn.setStyleSheet("QPushButton { font-weight: bold; padding: 5px; }")
@@ -3382,6 +3470,14 @@ class ZFMicrogliaAIWidget(QWidget):
         drift_speed_row.addWidget(self._drift_speed_slider)
         _add_reliable_spinbox(drift_speed_row, self._drift_speed_slider, 1, 100, 1)
         dfl.addLayout(drift_speed_row)
+        drift_speed_note = QLabel(
+            "  Sets how fast the camera tumbles, on an arbitrary 1-100 "
+            "scale (no physical unit) -- 1 is barely perceptible, 100 is "
+            "fast."
+        )
+        drift_speed_note.setStyleSheet("color: #888; font-size: 10px;")
+        drift_speed_note.setWordWrap(True)
+        dfl.addWidget(drift_speed_note)
 
         self._drift_btn = QPushButton("Start Drift")
         self._drift_btn.setStyleSheet("QPushButton { padding: 5px; }")
@@ -3452,10 +3548,11 @@ class ZFMicrogliaAIWidget(QWidget):
 
         t4_note = QLabel(
             "Builds and trains the two AI models the rest of the plugin "
-            "depends on: MONAI (Tab 1's skin/brain segmentation) and "
-            "Cellpose-SAM (Tab 2's microglia segmentation). Everything here "
-            "is either ground-truth creation or a training-launcher — for "
-            "GT-verification sweeps and related utilities, see Tab 5."
+            "depends on: MONAI (Skin Remover's skin/brain segmentation) "
+            "and Cellpose-SAM (Create MG Labels' microglia segmentation). "
+            "Everything here is either ground-truth creation or a "
+            "training-launcher — for GT-verification sweeps and related "
+            "utilities, see Sweeps & Utilities."
         )
         t4_note.setWordWrap(True)
         t4_note.setStyleSheet("color: #888; font-size: 10px;")
@@ -3608,6 +3705,15 @@ class ZFMicrogliaAIWidget(QWidget):
         self._pd_workers_spin.setValue(max(1, int((os.cpu_count() or 4) * 0.75)))
         pd_seed_row.addWidget(self._pd_workers_spin)
         pdl.addLayout(pd_seed_row)
+        pd_nums_note = QLabel(
+            "  n_val/n_test set how many fish go into the validation/test "
+            "split (the rest go to training). split_seed makes that split "
+            "reproducible. num_workers sets how many CPU processes "
+            "prepare the dataset in parallel."
+        )
+        pd_nums_note.setStyleSheet("color: #aaa; font-size: 10px;")
+        pd_nums_note.setWordWrap(True)
+        pdl.addWidget(pd_nums_note)
 
         self._pd_run_btn = QPushButton("Prepare Training Data")
         self._pd_run_btn.setStyleSheet("QPushButton { padding: 5px; }")
@@ -3679,6 +3785,14 @@ class ZFMicrogliaAIWidget(QWidget):
         self._mt_gpu_spin.setRange(0, 15)
         mt_lr_row.addWidget(self._mt_gpu_spin)
         mtl.addLayout(mt_lr_row)
+        mt_lr_note = QLabel(
+            "  lr is the optimizer's learning rate. gpu idx selects which "
+            "CUDA device (0 = first GPU) runs this training, for a "
+            "machine with more than one."
+        )
+        mt_lr_note.setStyleSheet("color: #aaa; font-size: 10px;")
+        mt_lr_note.setWordWrap(True)
+        mtl.addWidget(mt_lr_note)
 
         mt_resume_row = QHBoxLayout()
         mt_resume_row.addWidget(QLabel("resume:"))
@@ -3702,6 +3816,15 @@ class ZFMicrogliaAIWidget(QWidget):
         self._mt_ckptevery_spin.setValue(50)
         mt_sched_row.addWidget(self._mt_ckptevery_spin)
         mtl.addLayout(mt_sched_row)
+        mt_sched_note = QLabel(
+            "  val_every runs full-brain validation (the actual model-"
+            "selection metric) every N epochs. ckpt_every saves a "
+            "resumable checkpoint every N epochs, independent of "
+            "validation."
+        )
+        mt_sched_note.setStyleSheet("color: #aaa; font-size: 10px;")
+        mt_sched_note.setWordWrap(True)
+        mtl.addWidget(mt_sched_note)
 
         mt_pat_row = QHBoxLayout()
         mt_pat_row.addWidget(QLabel("Patience (checkpoints):"))
@@ -3865,6 +3988,17 @@ class ZFMicrogliaAIWidget(QWidget):
         self._xz_seed_spin.setValue(42)
         xz_opts2_row.addWidget(self._xz_seed_spin)
         xzl.addLayout(xz_opts2_row)
+        xz_opts_note = QLabel(
+            "  crop_size sets each crop's own width/height in pixels. "
+            "crops/slice sets how many random crops to take per source "
+            "slice; max/orientation caps the total kept per orientation "
+            "(XY/XZ/YZ). min_gt_pixels discards a crop whose GT label "
+            "area is smaller than this many pixels. seed makes the "
+            "random crop placement reproducible."
+        )
+        xz_opts_note.setStyleSheet("color: #aaa; font-size: 10px;")
+        xz_opts_note.setWordWrap(True)
+        xzl.addWidget(xz_opts_note)
 
         self._xz_clean_cb = QCheckBox("Clean truncated labels")
         self._xz_clean_cb.setChecked(True)
@@ -3970,6 +4104,13 @@ class ZFMicrogliaAIWidget(QWidget):
         self._ct_logevery_spin.setValue(5)
         ct_save_row.addWidget(self._ct_logevery_spin)
         ctl.addLayout(ct_save_row)
+        ct_save_note = QLabel(
+            "  save_every saves a resumable checkpoint every N epochs. "
+            "log_every writes train/test loss to the log every N epochs."
+        )
+        ct_save_note.setStyleSheet("color: #aaa; font-size: 10px;")
+        ct_save_note.setWordWrap(True)
+        ctl.addWidget(ct_save_note)
 
         ct_lr_row = QHBoxLayout()
         ct_lr_row.addWidget(QLabel("lr:"))
@@ -4168,6 +4309,16 @@ class ZFMicrogliaAIWidget(QWidget):
         self._es_saveevery_spin.setValue(10)
         es_span_row2.addWidget(self._es_saveevery_spin)
         esl.addLayout(es_span_row2)
+        es_span_note = QLabel(
+            "  Tests every saved checkpoint from this many save_every "
+            "intervals below the recommended epoch through this many "
+            "above it -- save_every must match the interval Train "
+            "Cellpose-SAM actually saved at, or the wrong checkpoint "
+            "files get looked up."
+        )
+        es_span_note.setStyleSheet("color: #aaa; font-size: 10px;")
+        es_span_note.setWordWrap(True)
+        esl.addWidget(es_span_note)
 
         es_cells_row = QHBoxLayout()
         es_cells_row.addWidget(QLabel("Complex cells to test:"))
@@ -4188,6 +4339,15 @@ class ZFMicrogliaAIWidget(QWidget):
         self._es_padxy_spin.setValue(40)
         es_cells_row2.addWidget(self._es_padxy_spin)
         esl.addLayout(es_cells_row2)
+        es_cells_note = QLabel(
+            "  Complex cells to test picks how many of the most "
+            "morphologically complex GT cells to crop and score. Pad "
+            "Z/Pad XY set how many extra voxels around each cell's own "
+            "bounding box are included in its crop."
+        )
+        es_cells_note.setStyleSheet("color: #aaa; font-size: 10px;")
+        es_cells_note.setWordWrap(True)
+        esl.addWidget(es_cells_note)
 
         es_scale_row = QHBoxLayout()
         es_scale_row.addWidget(QLabel("Z (µm):"))
@@ -4220,6 +4380,14 @@ class ZFMicrogliaAIWidget(QWidget):
         self._es_cellprob_spin.setValue(self._cp_cellprob_spin.value())
         es_inf_row.addWidget(self._es_cellprob_spin)
         esl.addLayout(es_inf_row)
+        es_inf_note = QLabel(
+            "  The Cellprob threshold every checkpoint is scored at -- "
+            "defaults to Create MG Labels' own current value, so results "
+            "reflect the settings production actually uses."
+        )
+        es_inf_note.setStyleSheet("color: #aaa; font-size: 10px;")
+        es_inf_note.setWordWrap(True)
+        esl.addWidget(es_inf_note)
 
         self._es_notify_cb = _make_notify_checkbox()
         esl.addWidget(self._es_notify_cb)
@@ -4252,43 +4420,27 @@ class ZFMicrogliaAIWidget(QWidget):
         t5.addWidget(esg)
         self._t5_category_groups.setdefault("cellpose", []).append(esg)
 
-        # ── Calibrate Correct-Label Contrast (from Cellpose-SAM) ──────── #
-        ccg = QGroupBox("Calibrate Correct-Label Contrast (from Cellpose-SAM)")
+        # ── Calibrate Correct-Label Contrast ──────────────────────────── #
+        ccg = QGroupBox("Calibrate Correct-Label Contrast")
         ccl = QVBoxLayout()
 
         ccal_note = QLabel(
-            "  Finds the lower-contrast value Correct Label should start "
-            "from -- not by checking against independent ground truth "
-            "(like every sweep above), but by finding whichever value "
-            "best REPRODUCES what Cellpose-SAM already segmented. Picks "
-            "the N most morphologically complex cells that sit away "
-            "from the volume's outer boundary (a proxy for \"not close "
-            "to skin\", since a boundary-adjacent cell is exactly the "
-            "one most likely to already have a skin-residue artifact "
-            "merged in -- the thing this calibration should be scored "
-            "against, not learn from), samples up to Slices/cell Z-slices "
-            "from EACH of those cells (default 5 cells x 10 slices = 50 "
-            "samples total, not 10 total), then sweeps candidate lo "
-            "values and keeps whichever "
-            "reproduces the most existing 2D footprints most closely "
-            "(mean IoU). On success, sets the signal layer's contrast "
-            "limits to [best lo, best lo + 20] directly."
+            "  Select a Labels layer and its Signal layer in Edit MG "
+            "Labels' shared selector, then run this to find the "
+            "contrast-low value (best_lo) that best reproduces the "
+            "Labels layer's own existing 2D shapes from the Signal "
+            "layer's intensity -- no ground truth needed. On success, "
+            "sets the Signal layer's contrast limits to [best lo, "
+            "best lo + 20]. Every other best_lo-driven tool (Protect "
+            "Skin as Label, Auto-correct Existing Labels, the "
+            "Cellpose-SAM auto-correct pipeline, via Edit MG Labels' "
+            "own \"Contrast low (best_lo) calibration\" section) runs "
+            "this exact sweep using the Cells / Slices-per-cell / Edge "
+            "margin / Sweep steps values set below."
         )
         ccal_note.setWordWrap(True)
         ccal_note.setStyleSheet("color: #888; font-size: 10px;")
         ccl.addWidget(ccal_note)
-
-        ccal_labels_row = QHBoxLayout()
-        ccal_labels_row.addWidget(QLabel("Cellpose-SAM labels layer:"))
-        self._ccal_labels_combo = QComboBox()
-        ccal_labels_row.addWidget(self._ccal_labels_combo)
-        ccl.addLayout(ccal_labels_row)
-
-        ccal_signal_row = QHBoxLayout()
-        ccal_signal_row.addWidget(QLabel("Signal layer:"))
-        self._ccal_signal_combo = QComboBox()
-        ccal_signal_row.addWidget(self._ccal_signal_combo)
-        ccl.addLayout(ccal_signal_row)
 
         ccal_cells_row = QHBoxLayout()
         ccal_cells_row.addWidget(QLabel("Cells:"))
@@ -4302,6 +4454,15 @@ class ZFMicrogliaAIWidget(QWidget):
         self._ccal_slices_spin.setValue(10)
         ccal_cells_row.addWidget(self._ccal_slices_spin)
         ccl.addLayout(ccal_cells_row)
+        ccal_cells_note = QLabel(
+            "  Cells sets how many of the most morphologically complex "
+            "labels to sample (ranked by skeleton branch count). "
+            "Slices/cell sets how many Z-slices to sample from each of "
+            "those cells -- total samples = Cells x Slices/cell."
+        )
+        ccal_cells_note.setWordWrap(True)
+        ccal_cells_note.setStyleSheet("color: #888; font-size: 10px;")
+        ccl.addWidget(ccal_cells_note)
 
         ccal_margin_row = QHBoxLayout()
         ccal_margin_row.addWidget(QLabel("Edge margin (µm):"))
@@ -4316,6 +4477,17 @@ class ZFMicrogliaAIWidget(QWidget):
         self._ccal_steps_spin.setValue(40)
         ccal_margin_row.addWidget(self._ccal_steps_spin)
         ccl.addLayout(ccal_margin_row)
+        ccal_margin_note = QLabel(
+            "  Edge margin excludes any cell whose centroid sits closer "
+            "than this to the volume's own boundary, in microns -- keeps "
+            "samples away from cells likely to already carry a "
+            "skin-residue artifact. Sweep steps sets how many candidate "
+            "lo values to test between the sampled cells' own intensity "
+            "range."
+        )
+        ccal_margin_note.setWordWrap(True)
+        ccal_margin_note.setStyleSheet("color: #888; font-size: 10px;")
+        ccl.addWidget(ccal_margin_note)
 
         ccal_pad_row = QHBoxLayout()
         ccal_pad_row.addWidget(QLabel("Bbox padding (px):"))
@@ -4324,6 +4496,13 @@ class ZFMicrogliaAIWidget(QWidget):
         self._ccal_pad_spin.setValue(15)
         ccal_pad_row.addWidget(self._ccal_pad_spin)
         ccl.addLayout(ccal_pad_row)
+        ccal_pad_note = QLabel(
+            "  Bbox padding sets how far around each sampled cell, in "
+            "pixels, the sweep crops before testing candidate lo values."
+        )
+        ccal_pad_note.setWordWrap(True)
+        ccal_pad_note.setStyleSheet("color: #888; font-size: 10px;")
+        ccl.addWidget(ccal_pad_note)
 
         self._ccal_run_btn = QPushButton("Run Contrast Calibration Sweep")
         self._ccal_run_btn.setStyleSheet("QPushButton { font-weight: bold; padding: 5px; }")
@@ -4446,19 +4625,14 @@ class ZFMicrogliaAIWidget(QWidget):
         self._drift_btn.clicked.connect(self._on_toggle_drift)
         self._resort_btn.clicked.connect(self._on_resort_labels)
         self._debris_btn.clicked.connect(self._on_remove_debris)
-        self._split_use_sel_btn.clicked.connect(self._on_use_selected_label)
+        self._edit_label_a_sel_btn.clicked.connect(self._on_use_selected_label_a)
+        self._edit_label_b_sel_btn.clicked.connect(self._on_use_selected_label_b)
         self._split_btn.clicked.connect(self._on_split_label)
-        self._join_a_use_sel_btn.clicked.connect(self._on_use_selected_label_join_a)
-        self._join_b_use_sel_btn.clicked.connect(self._on_use_selected_label_join_b)
         self._join_btn.clicked.connect(self._on_join_labels)
-        self._correct_use_sel_btn.clicked.connect(self._on_use_selected_label_correct)
         self._correct_btn.clicked.connect(self._on_correct_label)
-        self._correct_label_spin.valueChanged.connect(self._on_correct_label_id_changed)
-        self._on_correct_label_id_changed(self._correct_label_spin.value())
-        self._copyslice_use_sel_btn.clicked.connect(self._on_use_selected_label_copyslice)
+        self._edit_label_a_spin.valueChanged.connect(self._on_correct_label_id_changed)
+        self._on_correct_label_id_changed(self._edit_label_a_spin.value())
         self._copyslice_btn.clicked.connect(self._on_copy_label_to_adjacent_slice)
-        self._adjcorr_a_use_sel_btn.clicked.connect(self._on_use_selected_label_adjcorr_a)
-        self._adjcorr_b_use_sel_btn.clicked.connect(self._on_use_selected_label_adjcorr_b)
         self._adjcorr_btn.clicked.connect(self._on_correct_adjacent_labels)
         self._skin_protect_btn.clicked.connect(self._on_protect_skin)
         self._skin_remove_btn.clicked.connect(self._on_remove_skin_label)
@@ -5429,13 +5603,23 @@ class ZFMicrogliaAIWidget(QWidget):
         return None
 
     def _on_run_contrast_sweep(self):
-        labels_name = self._ccal_labels_combo.currentData()
+        # Reads Edit MG Labels' shared Signal/Labels selector, not its
+        # own combos -- one place to pick the layers, same as every
+        # other tool this sweep now feeds (Protect Skin as Label,
+        # Auto-correct Existing Labels, the chained pipeline stage).
+        labels_name = self._edit_labels_combo.currentData()
         if not labels_name or labels_name not in self._viewer.layers:
-            self._ccal_status_lbl.setText("ERROR: pick a Cellpose-SAM labels layer first.")
+            self._ccal_status_lbl.setText(
+                "ERROR: pick a Labels layer in Edit MG Labels' shared "
+                "\"Layers and label(s) being edited\" selector first."
+            )
             return
-        signal_name = self._ccal_signal_combo.currentData()
+        signal_name = self._edit_signal_combo.currentData()
         if not signal_name or signal_name not in self._viewer.layers:
-            self._ccal_status_lbl.setText("ERROR: pick a signal layer first.")
+            self._ccal_status_lbl.setText(
+                "ERROR: pick a signal layer in Edit MG Labels' shared "
+                "\"Layers and label(s) being edited\" selector first."
+            )
             return
 
         labels_lyr = self._viewer.layers[labels_name]
@@ -5537,9 +5721,7 @@ class ZFMicrogliaAIWidget(QWidget):
         # Image layers -- every combo that lets the user pick a signal/
         # intensity Image layer shares this one repopulation loop.
         image_combos = (
-            self._stats_image_combo, self._correct_signal_combo,
-            self._split_signal_combo, self._ccal_signal_combo,
-            self._adjcorr_signal_combo, self._skin_signal_combo,
+            self._stats_image_combo, self._edit_signal_combo,
             self._cp_signal_combo,
         )
         cur_by_combo = {c: c.currentData() for c in image_combos}
@@ -5585,8 +5767,8 @@ class ZFMicrogliaAIWidget(QWidget):
 
         # Labels layers (Score Against GT)
         for combo in (
-            self._gtscore_pred_combo, self._gtscore_gt_combo, self._ccal_labels_combo,
-            self._skin_mask_combo, self._cp_brainmask_combo, self._skin_labels_combo,
+            self._gtscore_pred_combo, self._gtscore_gt_combo,
+            self._edit_mask_combo, self._cp_brainmask_combo, self._edit_labels_combo,
         ):
             cur = combo.currentData()
             combo.blockSignals(True)
@@ -6223,6 +6405,28 @@ class ZFMicrogliaAIWidget(QWidget):
         run, never hand-tuned. Reads straight from config rather than a
         widget so every route/sweep launcher shares one source of truth."""
         return self._state.get("config", {}).get("min_volume_vox", 7500)
+
+    def _lo_sweep_sample_params(self) -> dict:
+        """The single canonical best_lo calibration-sweep sample-
+        selection parameters -- set in Sweeps & Utilities' own
+        "Calibrate Correct-Label Contrast" tool (the core sweep every
+        other autosweep-driven tool correlates to), read from there
+        instead of each tool hardcoding its own, possibly-diverging
+        copy. Covers n_cells/slices_per_cell/edge_margin_um/n_lo_steps
+        and the sample-crop padding used only while building candidate
+        lo values -- NOT the per-cell correction padding used elsewhere
+        in auto_contrast_correct_stack() (that stays whatever "Bbox
+        padding" field each caller already has; the two happen to share
+        a parameter name there, not a meaning, and unifying that too
+        would also change real per-cell correction behavior, not just
+        calibration -- out of scope here)."""
+        return {
+            "n_cells": self._ccal_ncells_spin.value(),
+            "slices_per_cell": self._ccal_slices_spin.value(),
+            "edge_margin_um": self._ccal_margin_spin.value(),
+            "n_lo_steps": self._ccal_steps_spin.value(),
+            "sample_pad": self._ccal_pad_spin.value(),
+        }
 
     def _update_gt_history(self, config_key: str, fish_key: str, value, mode: str = "mean"):
         """Persist this fish's contribution to config_key's cross-fish GT
@@ -7062,8 +7266,21 @@ class ZFMicrogliaAIWidget(QWidget):
                 return lyr
         return None
 
+    def _edit_labels_layer(self):
+        """Return the Labels layer explicitly picked in Edit MG Labels'
+        shared "Layers and label(s) being edited" selector, or None.
+        Every Edit MG Labels tool uses this instead of
+        _active_labels_layer()'s implicit "active selection, else
+        topmost" fallback -- the whole point of the shared selector is
+        that the layer being edited is always explicit, never guessed."""
+        name = self._edit_labels_combo.currentData()
+        if not name or name not in self._viewer.layers:
+            return None
+        lyr = self._viewer.layers[name]
+        return lyr if isinstance(lyr, napari.layers.Labels) else None
+
     def _on_resort_labels(self):
-        lyr = self._active_labels_layer()
+        lyr = self._edit_labels_layer()
         if lyr is None:
             self._resort_status_lbl.setText("No Labels layer selected.")
             return
@@ -7122,7 +7339,7 @@ class ZFMicrogliaAIWidget(QWidget):
         timer.start(200)
 
     def _on_remove_debris(self):
-        lyr = self._active_labels_layer()
+        lyr = self._edit_labels_layer()
         if lyr is None:
             self._debris_status_lbl.setText("No Labels layer selected.")
             return
@@ -7135,7 +7352,7 @@ class ZFMicrogliaAIWidget(QWidget):
         self._debris_status_lbl.setText(f"Removing debris (< {threshold} vox)...")
 
         labels = np.asarray(lyr.data)
-        skin_label_id = self._skin_id_spin.value()
+        skin_label_id = -1  # skin's fixed sentinel ID -- never the shared Label A/B fields
         result = {}
 
         def _worker():
@@ -7173,18 +7390,33 @@ class ZFMicrogliaAIWidget(QWidget):
         timer.timeout.connect(_poll)
         timer.start(200)
 
-    def _on_use_selected_label(self):
-        """Copy the currently selected label from the active Labels layer."""
-        lyr = self._active_labels_layer()
+    def _on_use_selected_label_a(self):
+        """Copy the currently selected label from the shared Edit MG
+        Labels Labels layer into the shared Label A field."""
+        lyr = self._edit_labels_layer()
         if lyr is None:
-            self._split_status_lbl.setText("No Labels layer selected.")
+            self._edit_sel_status_lbl.setText("No Labels layer selected.")
             return
         sel = int(lyr.selected_label)
         if sel == 0:
-            self._split_status_lbl.setText("Selected label is 0 (background).")
+            self._edit_sel_status_lbl.setText("Selected label is 0 (background).")
             return
-        self._split_label_spin.setValue(sel)
-        self._split_status_lbl.setText(f"Target set to label {sel}.")
+        self._edit_label_a_spin.setValue(sel)
+        self._edit_sel_status_lbl.setText(f"Label A set to {sel}.")
+
+    def _on_use_selected_label_b(self):
+        """Copy the currently selected label from the shared Edit MG
+        Labels Labels layer into the shared Label B field."""
+        lyr = self._edit_labels_layer()
+        if lyr is None:
+            self._edit_sel_status_lbl.setText("No Labels layer selected.")
+            return
+        sel = int(lyr.selected_label)
+        if sel == 0:
+            self._edit_sel_status_lbl.setText("Selected label is 0 (background).")
+            return
+        self._edit_label_b_spin.setValue(sel)
+        self._edit_sel_status_lbl.setText(f"Label B set to {sel}.")
 
     def _on_use_selected_label_rerun(self):
         """Copy the currently selected label from the active Labels layer
@@ -7201,12 +7433,12 @@ class ZFMicrogliaAIWidget(QWidget):
         self._cp_status_lbl.setText(f"Re-run target set to label {sel}.")
 
     def _on_split_label(self):
-        lyr = self._active_labels_layer()
+        lyr = self._edit_labels_layer()
         if lyr is None:
             self._split_status_lbl.setText("No Labels layer selected.")
             return
 
-        target_label = self._split_label_spin.value()
+        target_label = self._edit_label_a_spin.value()
         n_splits     = self._split_n_spin.value()
         sigma        = self._split_sigma_slider.value()
         min_dist     = self._split_dist_slider.value()
@@ -7215,7 +7447,7 @@ class ZFMicrogliaAIWidget(QWidget):
 
         image = None
         if mode == "2d":
-            signal_name = self._split_signal_combo.currentData()
+            signal_name = self._edit_signal_combo.currentData()
             if not signal_name or signal_name not in self._viewer.layers:
                 self._split_status_lbl.setText("ERROR: pick a signal layer first (required for 2D mode).")
                 return
@@ -7279,42 +7511,14 @@ class ZFMicrogliaAIWidget(QWidget):
         timer.timeout.connect(_poll)
         timer.start(200)
 
-    def _on_use_selected_label_join_a(self):
-        """Copy the currently selected label from the active Labels layer
-        into Join's Label A field."""
-        lyr = self._active_labels_layer()
-        if lyr is None:
-            self._join_status_lbl.setText("No Labels layer selected.")
-            return
-        sel = int(lyr.selected_label)
-        if sel == 0:
-            self._join_status_lbl.setText("Selected label is 0 (background).")
-            return
-        self._join_a_spin.setValue(sel)
-        self._join_status_lbl.setText(f"Label A set to {sel}.")
-
-    def _on_use_selected_label_join_b(self):
-        """Copy the currently selected label from the active Labels layer
-        into Join's Label B field."""
-        lyr = self._active_labels_layer()
-        if lyr is None:
-            self._join_status_lbl.setText("No Labels layer selected.")
-            return
-        sel = int(lyr.selected_label)
-        if sel == 0:
-            self._join_status_lbl.setText("Selected label is 0 (background).")
-            return
-        self._join_b_spin.setValue(sel)
-        self._join_status_lbl.setText(f"Label B set to {sel}.")
-
     def _on_join_labels(self):
-        lyr = self._active_labels_layer()
+        lyr = self._edit_labels_layer()
         if lyr is None:
             self._join_status_lbl.setText("No Labels layer selected.")
             return
 
-        label_a = self._join_a_spin.value()
-        label_b = self._join_b_spin.value()
+        label_a = self._edit_label_a_spin.value()
+        label_b = self._edit_label_b_spin.value()
         if label_a == label_b:
             self._join_status_lbl.setText("ERROR: Label A and Label B must be different.")
             return
@@ -7357,20 +7561,6 @@ class ZFMicrogliaAIWidget(QWidget):
         timer.timeout.connect(_poll)
         timer.start(200)
 
-    def _on_use_selected_label_correct(self):
-        """Copy the currently selected label from the active Labels layer
-        into Correct Label's target field."""
-        lyr = self._active_labels_layer()
-        if lyr is None:
-            self._correct_status_lbl.setText("No Labels layer selected.")
-            return
-        sel = int(lyr.selected_label)
-        if sel == 0:
-            self._correct_status_lbl.setText("Selected label is 0 (background).")
-            return
-        self._correct_label_spin.setValue(sel)
-        self._correct_status_lbl.setText(f"Label to correct set to {sel}.")
-
     def _on_correct_label_id_changed(self, value):
         """Skin (-1) can be corrected in 2D but never 3D -- 3D walks the
         WHOLE outside-brain territory slice by slice, real computation
@@ -7379,7 +7569,12 @@ class ZFMicrogliaAIWidget(QWidget):
         item so it can't even be selected, auto-switching back to 2D if
         it was already selected -- structurally prevents the wasted run
         rather than only erroring after the fact (that guard still
-        exists in _on_correct_label() too, as a defensive backstop)."""
+        exists in _on_correct_label() too, as a defensive backstop).
+        Reacts to the shared Label A field, not a Correct-Label-owned
+        spinbox -- Label A is shared with every other single-label tool,
+        but the disable-3D-for-skin rule is only meaningful, and only
+        checked, the moment Correct Label itself actually runs against
+        whatever Label A currently holds."""
         is_skin = (value == -1)
         model = self._correct_mode_combo.model()
         item_3d = model.item(1)  # index 1 == "3D (whole cell)", see _build_ui()
@@ -7390,12 +7585,12 @@ class ZFMicrogliaAIWidget(QWidget):
         self._correct_skin3d_note.setVisible(is_skin)
 
     def _on_correct_label(self):
-        lyr = self._active_labels_layer()
+        lyr = self._edit_labels_layer()
         if lyr is None:
             self._correct_status_lbl.setText("No Labels layer selected.")
             return
 
-        signal_name = self._correct_signal_combo.currentData()
+        signal_name = self._edit_signal_combo.currentData()
         if not signal_name or signal_name not in self._viewer.layers:
             self._correct_status_lbl.setText("ERROR: pick a signal layer first.")
             return
@@ -7411,7 +7606,7 @@ class ZFMicrogliaAIWidget(QWidget):
             )
             return
 
-        label_id = self._correct_label_spin.value()
+        label_id = self._edit_label_a_spin.value()
         pad = self._correct_pad_spin.value()
         mode = self._correct_mode_combo.currentData()
         if mode == "3d" and label_id == -1:
@@ -7646,27 +7841,13 @@ class ZFMicrogliaAIWidget(QWidget):
         timer.timeout.connect(_poll)
         timer.start(200)
 
-    def _on_use_selected_label_copyslice(self):
-        """Copy the currently selected label from the active Labels layer
-        into Copy Label to Adjacent Slice's target field."""
-        lyr = self._active_labels_layer()
-        if lyr is None:
-            self._copyslice_status_lbl.setText("No Labels layer selected.")
-            return
-        sel = int(lyr.selected_label)
-        if sel == 0:
-            self._copyslice_status_lbl.setText("Selected label is 0 (background).")
-            return
-        self._copyslice_label_spin.setValue(sel)
-        self._copyslice_status_lbl.setText(f"Label to copy set to {sel}.")
-
     def _on_copy_label_to_adjacent_slice(self):
-        lyr = self._active_labels_layer()
+        lyr = self._edit_labels_layer()
         if lyr is None:
             self._copyslice_status_lbl.setText("No Labels layer selected.")
             return
 
-        label_id = self._copyslice_label_spin.value()
+        label_id = self._edit_label_a_spin.value()
         direction = self._copyslice_dir_combo.currentData()
         z_src = int(self._viewer.dims.current_step[0])
         z_dst = z_src + direction
@@ -7721,41 +7902,13 @@ class ZFMicrogliaAIWidget(QWidget):
         timer.timeout.connect(_poll)
         timer.start(200)
 
-    def _on_use_selected_label_adjcorr_a(self):
-        """Copy the currently selected label from the active Labels layer
-        into Correct Adjacent Labels' Label A field."""
-        lyr = self._active_labels_layer()
-        if lyr is None:
-            self._adjcorr_status_lbl.setText("No Labels layer selected.")
-            return
-        sel = int(lyr.selected_label)
-        if sel == 0:
-            self._adjcorr_status_lbl.setText("Selected label is 0 (background).")
-            return
-        self._adjcorr_a_spin.setValue(sel)
-        self._adjcorr_status_lbl.setText(f"Label A set to {sel}.")
-
-    def _on_use_selected_label_adjcorr_b(self):
-        """Copy the currently selected label from the active Labels layer
-        into Correct Adjacent Labels' Label B field."""
-        lyr = self._active_labels_layer()
-        if lyr is None:
-            self._adjcorr_status_lbl.setText("No Labels layer selected.")
-            return
-        sel = int(lyr.selected_label)
-        if sel == 0:
-            self._adjcorr_status_lbl.setText("Selected label is 0 (background).")
-            return
-        self._adjcorr_b_spin.setValue(sel)
-        self._adjcorr_status_lbl.setText(f"Label B set to {sel}.")
-
     def _on_correct_adjacent_labels(self):
-        lyr = self._active_labels_layer()
+        lyr = self._edit_labels_layer()
         if lyr is None:
             self._adjcorr_status_lbl.setText("No Labels layer selected.")
             return
 
-        signal_name = self._adjcorr_signal_combo.currentData()
+        signal_name = self._edit_signal_combo.currentData()
         if not signal_name or signal_name not in self._viewer.layers:
             self._adjcorr_status_lbl.setText("ERROR: pick a signal layer first.")
             return
@@ -7771,8 +7924,8 @@ class ZFMicrogliaAIWidget(QWidget):
             )
             return
 
-        label_a = self._adjcorr_a_spin.value()
-        label_b = self._adjcorr_b_spin.value()
+        label_a = self._edit_label_a_spin.value()
+        label_b = self._edit_label_b_spin.value()
         if label_a == label_b:
             self._adjcorr_status_lbl.setText("ERROR: Label A and Label B must be different.")
             return
@@ -7909,20 +8062,20 @@ class ZFMicrogliaAIWidget(QWidget):
         # or topmost Labels layer" guessing fallback -- same reasoning as
         # Signal layer / Brain mask layer above: this can silently
         # protect skin on the wrong Labels layer with no indication
-        # anything was wrong.
-        labels_name = self._skin_labels_combo.currentData()
+        # anything was wrong. Shared with every other Edit MG Labels tool.
+        labels_name = self._edit_labels_combo.currentData()
         if not labels_name or labels_name not in self._viewer.layers:
             self._skin_status_lbl.setText("ERROR: pick a Labels layer first (above).")
             return
         lyr = self._viewer.layers[labels_name]
 
-        signal_name = self._skin_signal_combo.currentData()
+        signal_name = self._edit_signal_combo.currentData()
         if not signal_name or signal_name not in self._viewer.layers:
             self._skin_status_lbl.setText("ERROR: pick a signal layer first.")
             return
         signal_lyr = self._viewer.layers[signal_name]
 
-        mask_name = self._skin_mask_combo.currentData()
+        mask_name = self._edit_mask_combo.currentData()
         if not mask_name or mask_name not in self._viewer.layers:
             self._skin_status_lbl.setText("ERROR: pick a brain mask layer first.")
             return
@@ -7969,6 +8122,20 @@ class ZFMicrogliaAIWidget(QWidget):
         manual_lo, _hi = (float(v) for v in signal_lyr.contrast_limits)
         scale = tuple(float(sv) for sv in lyr.scale)
 
+        # Same shared autosweep checkbox / reduction slider every other
+        # lo-driven tool on this tab reads (Auto-correct Existing Labels,
+        # the Cellpose-SAM-chained pipeline stage): autosweep on -> sweep
+        # for best_lo, then subtract the reduction below; autosweep off
+        # -> skip the sweep entirely and protect at the signal layer's
+        # OWN current contrast low limit exactly as set in napari.
+        autosweep_on = self._ac_autosweep_cb.isChecked()
+        lo_reduction = float(self._ac_reduce_slider.value())
+        # Sample-selection parameters for the sweep itself -- Sweeps &
+        # Utilities' "Calibrate Correct-Label Contrast" tool is the
+        # canonical source (see _lo_sweep_sample_params()'s own
+        # docstring), not a second hardcoded copy.
+        sweep_params = self._lo_sweep_sample_params()
+
         # The calibrated `lo` still applies directly to a swapped-in
         # raw source -- both share the exact same underlying intensity
         # SCALE (the raw channel IS what "_ExtRm"/"_NoBG" started from,
@@ -8003,39 +8170,65 @@ class ZFMicrogliaAIWidget(QWidget):
 
         def _worker():
             try:
-                # Step 0 -- calibrate lo from THESE labels (same sweep,
-                # same defaults, same sample selection as step 1 of the
-                # auto-correct pipeline), so Protect Skin and Auto-correct
-                # always agree on what "signal" means for this fish.
-                try:
-                    samples = select_calibration_samples(
-                        labels, scale, n_cells=5, slices_per_cell=10, edge_margin_um=50.0,
-                    )
-                    if not samples:
-                        raise ValueError(
-                            "no interior/complex-enough cells found for contrast calibration"
-                        )
-                    candidates = default_lo_candidates(image, samples, 15, n_steps=40)
-                    sweep = sweep_contrast_lower_value(
-                        labels, image, samples, candidates, pad=15,
-                        progress_cb=lambda m: result.__setitem__("_progress", f"Calibrating lo: {m}"),
-                    )
-                    lo = float(sweep["best_lo"])
-                    result["calibrated"] = True
-                    result["lo_note"] = (
-                        f"calibrated by the contrast sweep, mean IoU "
-                        f"{sweep['best_mean_iou']:.3f} on {sweep['n_samples']} samples"
-                    )
-                except ValueError as exc:
-                    # Can't calibrate (e.g. too few usable cells): fall back
-                    # to the layer's current low limit, but SAY SO -- never
-                    # silently, which is exactly what hid this before.
+                if not autosweep_on:
+                    # Autosweep off -- per the shared control above, skip
+                    # the sweep entirely and protect at the signal layer's
+                    # own current contrast low, exactly as set in napari.
                     lo = manual_lo
                     result["calibrated"] = False
                     result["lo_note"] = (
-                        f"NOT calibrated ({exc}) -- fell back to the signal layer's "
-                        f"current low limit"
+                        "autosweep is off -- using the signal layer's "
+                        "current low limit"
                     )
+                else:
+                    # Step 0 -- calibrate lo from THESE labels, using the
+                    # exact same sweep (same sample-selection parameters,
+                    # read live from Sweeps & Utilities' "Calibrate
+                    # Correct-Label Contrast" tool -- the canonical
+                    # source, see _lo_sweep_sample_params()) as the
+                    # standalone tool itself and the auto-correct
+                    # pipeline's own step 1, so every best_lo-driven tool
+                    # in this plugin always agrees on what "signal" means
+                    # for this fish.
+                    try:
+                        samples = select_calibration_samples(
+                            labels, scale,
+                            n_cells=sweep_params["n_cells"],
+                            slices_per_cell=sweep_params["slices_per_cell"],
+                            edge_margin_um=sweep_params["edge_margin_um"],
+                        )
+                        if not samples:
+                            raise ValueError(
+                                "no interior/complex-enough cells found for contrast calibration"
+                            )
+                        candidates = default_lo_candidates(
+                            image, samples, sweep_params["sample_pad"],
+                            n_steps=sweep_params["n_lo_steps"],
+                        )
+                        sweep = sweep_contrast_lower_value(
+                            labels, image, samples, candidates, pad=sweep_params["sample_pad"],
+                            progress_cb=lambda m: result.__setitem__("_progress", f"Calibrating lo: {m}"),
+                        )
+                        best_lo_swept = float(sweep["best_lo"])
+                        lo = best_lo_swept - lo_reduction
+                        result["calibrated"] = True
+                        adj_note = f", reduced by {lo_reduction:.3g}" if lo_reduction else ""
+                        result["lo_note"] = (
+                            f"swept {best_lo_swept:.4g}{adj_note}, mean IoU "
+                            f"{sweep['best_mean_iou']:.3f} on {sweep['n_samples']} samples"
+                        )
+                    except ValueError as exc:
+                        # Can't calibrate (e.g. too few usable cells): fall back
+                        # to the layer's current low limit, but SAY SO -- never
+                        # silently, which is exactly what hid this before. No
+                        # reduction applied here -- there is no swept value to
+                        # subtract it from.
+                        lo = manual_lo
+                        result["calibrated"] = False
+                        result["lo_note"] = (
+                            f"NOT calibrated ({exc}) -- fell back to the signal layer's "
+                            f"current low limit"
+                        )
                 result["lo"] = lo
                 result["_progress"] = f"Protecting skin (lo={lo:.3g}): seeding outside brain mask, then trimming…"
                 seeded, skin_id = seed_skin_label(labels, brain_mask)
@@ -8060,7 +8253,14 @@ class ZFMicrogliaAIWidget(QWidget):
 
         thread = threading.Thread(target=_worker, daemon=True)
         thread.start()
-        self._hang_watch_start("Protect Skin as Label")
+        # 30 min, not the 10 min default -- skin's own per-slice trim
+        # already spans nearly the whole frame on most slices, and a
+        # lower lo (autosweep's reduction now genuinely applies here,
+        # instead of being silently ignored as before) means more real
+        # signal for its watershed/auto-grow passes to work through, so
+        # a legitimately long run is expected more often now than before
+        # this fix, not just a rare worst case.
+        self._hang_watch_start("Protect Skin as Label", after_s=1800)
 
         timer = QTimer(self)
 
@@ -8092,7 +8292,6 @@ class ZFMicrogliaAIWidget(QWidget):
                 except Exception as exc:
                     print(f"Protect Skin: could not set the signal layer's contrast limits: {exc}")
             skin_id = result["skin_id"]
-            self._skin_id_spin.setValue(skin_id)
             n_px = int((result["labels"] == skin_id).sum())
 
             # Every real label the skin correction found touching or nearby,
@@ -8141,11 +8340,11 @@ class ZFMicrogliaAIWidget(QWidget):
         timer.start(200)
 
     def _on_remove_skin_label(self):
-        lyr = self._active_labels_layer()
+        lyr = self._edit_labels_layer()
         if lyr is None:
             self._skin_status_lbl.setText("No Labels layer selected.")
             return
-        label_id = self._skin_id_spin.value()
+        label_id = -1  # skin's fixed sentinel ID -- never the shared Label A/B fields
         labels = np.asarray(lyr.data)
         new_labels, n_removed = remove_label(labels, label_id)
         if n_removed == 0:
@@ -8165,7 +8364,7 @@ class ZFMicrogliaAIWidget(QWidget):
         logic in this plugin that reads label values. See the
         checked-branch's own comment below for how this stays fast on
         a large fish without giving up per-label color fidelity."""
-        lyr = self._active_labels_layer()
+        lyr = self._edit_labels_layer()
 
         # If a DIFFERENT layer is currently hidden (e.g. the active
         # layer changed since it was toggled on), restore that one
@@ -8186,7 +8385,7 @@ class ZFMicrogliaAIWidget(QWidget):
             self._skin_hide_cb.blockSignals(False)
             return
 
-        skin_id = self._skin_id_spin.value()
+        skin_id = -1  # skin's fixed sentinel ID -- never the shared Label A/B fields
 
         if checked:
             # Benchmarked directly against a synthetic (101, 2048, 2048)
@@ -8246,31 +8445,31 @@ class ZFMicrogliaAIWidget(QWidget):
         pipeline entirely) get the same treatment without re-running
         Cellpose-SAM from scratch.
 
-        Reuses Protect Skin as Label's own Labels layer / Signal layer /
-        Brain mask layer / Bbox padding fields (this pipeline's own
-        skin-protection step needs exactly the same layers that button
-        does, and the padding field means the same thing there too)
-        rather than duplicating a second, identical set of combos right
-        below it.
+        Uses the shared Signal / Labels / Brain mask layers from the
+        "Layers and label(s) being edited" section at the top of this
+        tab (this pipeline's own skin-protection step needs exactly
+        those same layers), plus Protect Skin as Label's own Bbox
+        padding field, rather than duplicating a second, identical set
+        of combos right below it.
         """
         # Explicit combo, not _active_labels_layer()'s "active selection,
         # or topmost Labels layer" guessing fallback -- same reasoning
         # as every other explicit-selection fix in this section.
-        labels_name = self._skin_labels_combo.currentData()
+        labels_name = self._edit_labels_combo.currentData()
         if not labels_name or labels_name not in self._viewer.layers:
-            self._ac_status_lbl.setText("ERROR: pick a Labels layer first (Protect Skin as Label, above).")
+            self._ac_status_lbl.setText("ERROR: pick a Labels layer first (above).")
             return
         lyr = self._viewer.layers[labels_name]
 
-        signal_name = self._skin_signal_combo.currentData()
+        signal_name = self._edit_signal_combo.currentData()
         if not signal_name or signal_name not in self._viewer.layers:
-            self._ac_status_lbl.setText("ERROR: pick a signal layer first (Protect Skin as Label, above).")
+            self._ac_status_lbl.setText("ERROR: pick a signal layer first (above).")
             return
         signal_lyr = self._viewer.layers[signal_name]
 
-        mask_name = self._skin_mask_combo.currentData()
+        mask_name = self._edit_mask_combo.currentData()
         if not mask_name or mask_name not in self._viewer.layers:
-            self._ac_status_lbl.setText("ERROR: pick a brain mask layer first (Protect Skin as Label, above).")
+            self._ac_status_lbl.setText("ERROR: pick a brain mask layer first (above).")
             return
         mask_lyr = self._viewer.layers[mask_name]
 
@@ -8295,6 +8494,24 @@ class ZFMicrogliaAIWidget(QWidget):
         min_volume = self._current_min_volume()
         final_min_fraction = self._finalfrac_spin.value()
 
+        # Same lo-control choice as the Cellpose-SAM-chained pipeline
+        # stage (_run_auto_correction_stage): autosweep on -> sweep for
+        # best_lo internally, reduced by the slider below; autosweep off
+        # -> skip the sweep entirely and correct at the signal layer's
+        # OWN current contrast low limit exactly as set in napari.
+        if self._ac_autosweep_cb.isChecked():
+            lo_override = None
+            lo_adjustment = float(self._ac_reduce_slider.value())
+        else:
+            lo_override = float(signal_lyr.contrast_limits[0])
+            lo_adjustment = 0.0
+        # Sample-selection parameters for the sweep itself (only used
+        # when lo_override is None, i.e. autosweep is on) -- Sweeps &
+        # Utilities' "Calibrate Correct-Label Contrast" tool is the
+        # canonical source, see _lo_sweep_sample_params()'s own
+        # docstring, not a second hardcoded copy.
+        sweep_params = self._lo_sweep_sample_params()
+
         skin_image, skin_note = self._resolve_skin_signal_image(signal_name, self._output_dir())
         if skin_note:
             print(f"Auto-correct Existing Labels: {skin_note}")
@@ -8314,6 +8531,11 @@ class ZFMicrogliaAIWidget(QWidget):
                     min_volume=min_volume, final_min_fraction=final_min_fraction,
                     skin_pad=skin_pad, growth_step=5, max_iterations=10,
                     until_stable=True, max_stability_passes=100,
+                    lo_override=lo_override, lo_adjustment=lo_adjustment,
+                    n_cells_calib=sweep_params["n_cells"],
+                    slices_per_cell_calib=sweep_params["slices_per_cell"],
+                    edge_margin_um=sweep_params["edge_margin_um"],
+                    n_lo_steps=sweep_params["n_lo_steps"],
                     progress_cb=_progress,
                 )
                 result["labels"] = new_labels
@@ -8324,7 +8546,12 @@ class ZFMicrogliaAIWidget(QWidget):
 
         thread = threading.Thread(target=_worker, daemon=True)
         thread.start()
-        self._hang_watch_start("Auto-correct Existing Labels")
+        # 30 min -- same reasoning as Protect Skin as Label's own
+        # watchdog: this pipeline's skin-protection step does the exact
+        # same per-slice trim, now genuinely slower whenever autosweep's
+        # reduction lowers lo, so a longer legitimate run is the norm
+        # now, not the rare exception the 10 min default assumed.
+        self._hang_watch_start("Auto-correct Existing Labels", after_s=1800)
 
         timer = QTimer(self)
 
@@ -8383,7 +8610,6 @@ class ZFMicrogliaAIWidget(QWidget):
             else:
                 print(f"[Auto-correct] set the signal layer's contrast in {_time.time() - _t:.1f}s")
             skin_rep = report["skin_report"]
-            self._skin_id_spin.setValue(report["skin_label_id"])
             touching_ids = sorted({i for ids in skin_rep.get("foreign_touching", {}).values() for i in ids})
             nearby_ids = sorted({i for ids in skin_rep.get("foreign_nearby", {}).values() for i in ids})
             skin_report_lines = []
@@ -8421,7 +8647,7 @@ class ZFMicrogliaAIWidget(QWidget):
         timer.start(200)
 
     def _on_save_labels(self):
-        lyr = self._active_labels_layer()
+        lyr = self._edit_labels_layer()
         if lyr is None:
             self._save_labels_status_lbl.setText("No Labels layer selected.")
             return
@@ -9498,15 +9724,32 @@ class ZFMicrogliaAIWidget(QWidget):
                        completion its contrast_limits are set to the
                        calibrated best_lo, the same visible feedback the
                        standalone Calibrate Correct-Label Contrast sweep
-                       already gives, and the Protect Skin as Label
-                       section's own UI (skin-ID spinbox, its own report
-                       box) is populated too -- this pipeline calls
+                       already gives, and Protect Skin as Label's own
+                       report box is populated too -- this pipeline calls
                        seed_skin_label()/trim_skin_label() directly
                        rather than through _on_protect_skin(), so without
-                       this neither would otherwise ever update.
+                       this it would otherwise never update.
         """
         min_volume = self._current_min_volume()
         final_min_fraction = self._finalfrac_spin.value()
+
+        # Same shared autosweep checkbox / reduction slider the Edit MG
+        # Labels tab's own Auto-correct Existing Labels tool reads --
+        # Qt doesn't care which tab a widget is visually in when its
+        # .value()/.isChecked() is read from Python, so this chained
+        # pipeline stage and that standalone tool always agree.
+        if self._ac_autosweep_cb.isChecked():
+            lo_override = None
+            lo_adjustment = float(self._ac_reduce_slider.value())
+        else:
+            lo_override = float(signal_layer.contrast_limits[0])
+            lo_adjustment = 0.0
+        # Sample-selection parameters for the sweep itself (only used
+        # when lo_override is None, i.e. autosweep is on) -- Sweeps &
+        # Utilities' "Calibrate Correct-Label Contrast" tool is the
+        # canonical source, see _lo_sweep_sample_params()'s own
+        # docstring, not a second hardcoded copy.
+        sweep_params = self._lo_sweep_sample_params()
 
         skin_image, skin_note = self._resolve_skin_signal_image(signal_layer.name, out_dir)
         if skin_note:
@@ -9523,6 +9766,11 @@ class ZFMicrogliaAIWidget(QWidget):
                     min_volume=min_volume, final_min_fraction=final_min_fraction,
                     growth_step=5, max_iterations=10,
                     until_stable=True, max_stability_passes=100,
+                    n_cells_calib=sweep_params["n_cells"],
+                    slices_per_cell_calib=sweep_params["slices_per_cell"],
+                    edge_margin_um=sweep_params["edge_margin_um"],
+                    n_lo_steps=sweep_params["n_lo_steps"],
+                    lo_override=lo_override, lo_adjustment=lo_adjustment,
                     progress_cb=_progress3,
                 )
                 result3["labels"] = new_labels
@@ -9533,6 +9781,10 @@ class ZFMicrogliaAIWidget(QWidget):
 
         thread3 = threading.Thread(target=_worker3, daemon=True)
         thread3.start()
+        # Same watchdog + budget as Protect Skin as Label's own -- this
+        # stage runs the identical skin-protection trim, with the same
+        # now-genuine slowdown whenever autosweep's reduction lowers lo.
+        self._hang_watch_start("Cellpose-SAM auto-correct", after_s=1800)
 
         timer3 = QTimer(self)
 
@@ -9543,6 +9795,7 @@ class ZFMicrogliaAIWidget(QWidget):
                 return
             timer3.stop()
             timer3.deleteLater()
+            self._hang_watch_stop()
 
             if "error" in result3:
                 self._cp_status_lbl.setText(
@@ -9599,7 +9852,6 @@ class ZFMicrogliaAIWidget(QWidget):
                 print(f"Cellpose-SAM auto-correct: could not set the signal layer's contrast limits: {exc}")
 
             skin_rep = report["skin_report"]
-            self._skin_id_spin.setValue(report["skin_label_id"])
             touching_ids = sorted({i for ids in skin_rep.get("foreign_touching", {}).values() for i in ids})
             nearby_ids = sorted({i for ids in skin_rep.get("foreign_nearby", {}).values() for i in ids})
             skin_report_lines = []
