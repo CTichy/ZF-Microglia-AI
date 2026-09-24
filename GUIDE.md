@@ -2,6 +2,8 @@
 
 **For zebrafish confocal microscopy — step by step, from zero to microglia labels.**
 
+**See also:** [STATISTICS_GUIDE.md](STATISTICS_GUIDE.md) (the algorithm/formula behind every Statistics CSV column) · [SOFTWARE_GUIDE.md](SOFTWARE_GUIDE.md) (developer reference — every module and function explained in pseudocode).
+
 ---
 
 ## Table of Contents

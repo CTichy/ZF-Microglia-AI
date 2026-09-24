@@ -3491,6 +3491,57 @@ class ZFMicrogliaAIWidget(QWidget):
         self._drift_timer = None
         self._drift_rotation = None
 
+        # ── Autosave Labels Layer ──────────────────────────────────── #
+        # Periodic safety net for manual label editing (Correct Label,
+        # Correct Adjacent Labels, Split/Join, ...) -- independent of
+        # whatever else might go wrong (see _do_recovery_save()'s own
+        # docstring), so a crash loses at most one interval's worth of
+        # work, not the whole session. Scoped to ONLY the one Labels
+        # layer picked in Edit MG Labels' own shared "Layers and
+        # label(s) being edited" selector -- not every Labels layer in
+        # the viewer (the previous, unconditional version of this saved
+        # ALL of them, brain_mask layers included, which are cheap to
+        # regenerate via Tab 1 and were never what a crash would
+        # actually cost you). User-controlled: tick to disable
+        # entirely, and set how often in minutes or hours.
+        asv_cfg = self._state.get("config", {})
+        asg = QGroupBox("Autosave Labels Layer")
+        asvl = QVBoxLayout()
+        asv_note = QLabel(
+            "  Periodically saves ONLY the Labels layer currently picked in "
+            "Edit MG Labels' own \"Layers and label(s) being edited\" selector "
+            "to <output folder>/<layer name>_recovery.tif -- a safety net for "
+            "manual label editing, independent of anything else in this "
+            "plugin. Overwrites the previous recovery save each time; does "
+            "nothing if no Labels layer is currently selected there."
+        )
+        asv_note.setWordWrap(True)
+        asv_note.setStyleSheet("color: #888; font-size: 10px;")
+        asvl.addWidget(asv_note)
+
+        self._as_enable_cb = QCheckBox("Autosave the Labels layer being edited")
+        self._as_enable_cb.setChecked(bool(asv_cfg.get("autosave_labels_enabled", True)))
+        asvl.addWidget(self._as_enable_cb)
+
+        as_interval_row = QHBoxLayout()
+        as_interval_row.addWidget(QLabel("Every:"))
+        self._as_interval_spin = QSpinBox()
+        self._as_interval_spin.setRange(1, 999)
+        self._as_interval_spin.setValue(int(asv_cfg.get("autosave_labels_interval_value", 30)))
+        as_interval_row.addWidget(self._as_interval_spin)
+        self._as_interval_unit_combo = QComboBox()
+        self._as_interval_unit_combo.addItem("Minutes", "min")
+        self._as_interval_unit_combo.addItem("Hours", "hr")
+        unit_idx = self._as_interval_unit_combo.findData(asv_cfg.get("autosave_labels_interval_unit", "min"))
+        self._as_interval_unit_combo.setCurrentIndex(unit_idx if unit_idx >= 0 else 0)
+        as_interval_row.addWidget(self._as_interval_unit_combo)
+        asvl.addLayout(as_interval_row)
+
+        asg.setLayout(asvl)
+        asg = _make_collapsible(asg)
+        t5.addWidget(asg)
+        self._t5_category_groups.setdefault("general", []).append(asg)
+
         t3.addStretch()
         tab3.setLayout(t3)
         tabs.addTab(_wrap_scroll(tab3), "Statistics")
@@ -4623,6 +4674,9 @@ class ZFMicrogliaAIWidget(QWidget):
         self._gtp_run_btn.clicked.connect(self._on_gtp_run)
         self._notify_test_btn.clicked.connect(self._on_send_test_email)
         self._drift_btn.clicked.connect(self._on_toggle_drift)
+        self._as_enable_cb.toggled.connect(self._on_autosave_settings_changed)
+        self._as_interval_spin.valueChanged.connect(self._on_autosave_settings_changed)
+        self._as_interval_unit_combo.currentIndexChanged.connect(self._on_autosave_settings_changed)
         self._resort_btn.clicked.connect(self._on_resort_labels)
         self._debris_btn.clicked.connect(self._on_remove_debris)
         self._edit_label_a_sel_btn.clicked.connect(self._on_use_selected_label_a)
@@ -5797,6 +5851,99 @@ class ZFMicrogliaAIWidget(QWidget):
                             self._cp_brainmask_combo.setCurrentIndex(idx)
                         break
 
+        # Auto-select Edit MG Labels' three shared combos (Signal /
+        # Labels / Brain-mask) TOGETHER, from one shared anchor: the
+        # brain_only Image layer Tab 1 produced (_brain_only_ExtRm/
+        # _NoBG/_RndFill, or plain _brain_only) -- the same anchor
+        # _cp_brainmask_combo already uses for its own Signal/Brain-mask
+        # pair, above. Every tool in Edit MG Labels (Resort, Split,
+        # Join, Correct Label, Protect/Remove/Hide Skin, Auto-correct,
+        # ...) reads these three combos, and until this fix they started
+        # at "None" with no guessing at all: unlike the old
+        # (pre-2026-09-23) implicit _active_labels_layer() fallback this
+        # replaced (active selection, else topmost Labels layer), that
+        # left a real zero-click action -- toggling "Hide skin label in
+        # the viewer", purely visual and instantly reversible, nothing
+        # here to guess wrong in a way that costs anything -- silently
+        # doing nothing until the user first visited this section and
+        # picked a layer by hand.
+        #
+        # This only ever fills in a combo that's still "None". Once the
+        # user has picked something themselves (here, or by hand for a
+        # different fish/purpose), a later refresh never overrides it --
+        # these stay ordinary, freely-editable selectors; this just
+        # saves the first click in the common case.
+        _bg_anchor_suffixes = ("_brain_only_ExtRm", "_brain_only_NoBG", "_brain_only_RndFill", "_brain_only")
+
+        def _is_bg_anchor(lyr):
+            return isinstance(lyr, napari.layers.Image) and any(
+                lyr.name.endswith(s) for s in _bg_anchor_suffixes
+            )
+
+        anchor_name = self._edit_signal_combo.currentData()
+        if anchor_name is None:
+            active = self._viewer.layers.selection.active
+            if _is_bg_anchor(active):
+                anchor_name = active.name
+            else:
+                for lyr in reversed(self._viewer.layers):
+                    if _is_bg_anchor(lyr):
+                        anchor_name = lyr.name
+                        break
+            if anchor_name is not None:
+                idx = self._edit_signal_combo.findData(anchor_name)
+                if idx >= 0:
+                    self._edit_signal_combo.setCurrentIndex(idx)
+
+        if anchor_name is not None:
+            anchor_suffix = next(s for s in _bg_anchor_suffixes if anchor_name.endswith(s))
+            stem = anchor_name[: -len(anchor_suffix)]
+
+            if self._edit_mask_combo.currentData() is None:
+                idx = self._edit_mask_combo.findData(f"{stem}_brain_mask")
+                if idx >= 0:
+                    self._edit_mask_combo.setCurrentIndex(idx)
+
+            if self._edit_labels_combo.currentData() is None:
+                # Both routes' own naming convention, tried against the
+                # FULL signal layer name (suffix included) -- that's
+                # what _on_create_labels()/_on_run_cellpose_seg()
+                # actually name their own output as (see each one's own
+                # `lname` construction: "<signal layer name>_labels" for
+                # the Pixel Classifier, "<signal layer name>_cellpose_
+                # labels" for Cellpose-SAM) -- NOT the stripped `stem`,
+                # which only applies to the brain_mask guess above.
+                for guess in (f"{anchor_name}_cellpose_labels", f"{anchor_name}_labels"):
+                    idx = self._edit_labels_combo.findData(guess)
+                    if idx >= 0:
+                        self._edit_labels_combo.setCurrentIndex(idx)
+                        break
+
+        # Fallback for the Labels combo specifically, when nothing
+        # matching the naming convention above was found (e.g. a
+        # renamed layer, or one loaded via "Load Labels layer" under a
+        # custom name) -- same priority as the old implicit
+        # _active_labels_layer() fallback (active selection, else the
+        # most recently added Labels layer), except a "*_brain_mask"
+        # layer is never guessed here -- that's a different role (the
+        # Brain-mask combo above), and guessing it as "the labels being
+        # edited" would be actively wrong, not just less convenient.
+        if self._edit_labels_combo.currentData() is None:
+            def _is_cell_labels(lyr):
+                return isinstance(lyr, napari.layers.Labels) and not lyr.name.endswith("_brain_mask")
+
+            active = self._viewer.layers.selection.active
+            guess = active.name if _is_cell_labels(active) else None
+            if guess is None:
+                for lyr in reversed(self._viewer.layers):
+                    if _is_cell_labels(lyr):
+                        guess = lyr.name
+                        break
+            if guess is not None:
+                idx = self._edit_labels_combo.findData(guess)
+                if idx >= 0:
+                    self._edit_labels_combo.setCurrentIndex(idx)
+
     def _refresh_layer_info(self, *_):
         lyr = self._active_layer()
         if lyr is None:
@@ -6126,15 +6273,77 @@ class ZFMicrogliaAIWidget(QWidget):
             f"tif', or keep the raw '{raw_name}' layer open)"
         )
 
-    def _start_recovery_timer(self, interval_ms: int = 10 * 60 * 1000):
-        """
-        Safety net, independent of whatever else might go wrong: every
-        10 minutes, saves every Labels layer currently in the viewer to
-        <output_dir>/<layer_name>_recovery.tif, overwriting the previous
-        recovery save each time -- so a crash loses at most ~10 minutes
-        of manual label editing (Correct Label, Correct Adjacent Labels,
-        Split/Join, etc.), not the whole session.
+    def _current_recovery_interval_ms(self) -> int:
+        """Reads Sweeps & Utilities -> General -> Autosave Labels Layer's
+        own Every:/Minutes-Hours fields and converts to milliseconds for
+        QTimer. Minimum 1 minute regardless of what's typed (a spinbox
+        floor of 1 already prevents 0, but not a stray fractional/typo
+        value reaching the timer as something absurdly small)."""
+        value = max(1, self._as_interval_spin.value())
+        unit = self._as_interval_unit_combo.currentData()
+        seconds = value * 3600 if unit == "hr" else value * 60
+        return seconds * 1000
 
+    def _on_autosave_settings_changed(self, *_):
+        """Fires on any change to the Autosave Labels Layer checkbox or
+        interval fields -- persists the new setting and re-arms the
+        timer at the (possibly new) interval. The timer itself keeps
+        running even while unchecked (see _do_recovery_save()'s own
+        early-return) rather than being stopped/started here too --
+        one fewer state to keep in sync, and restarting a QTimer with
+        stop()+start() is the only way to make a NEW interval value
+        take effect immediately rather than only after the current
+        (possibly much longer) countdown finishes."""
+        self._save_cfg(
+            autosave_labels_enabled=self._as_enable_cb.isChecked(),
+            autosave_labels_interval_value=self._as_interval_spin.value(),
+            autosave_labels_interval_unit=self._as_interval_unit_combo.currentData(),
+        )
+        if getattr(self, "_recovery_timer", None) is not None:
+            self._recovery_timer.stop()
+            self._recovery_timer.start(self._current_recovery_interval_ms())
+
+    def _do_recovery_save(self):
+        """Safety net for manual label editing (Correct Label, Correct
+        Adjacent Labels, Split/Join, ...), independent of whatever else
+        might go wrong -- saves ONLY the one Labels layer currently
+        picked in Edit MG Labels' own shared "Layers and label(s) being
+        edited" selector (_edit_labels_layer()) to <output_dir>/
+        <layer_name>_recovery.tif, overwriting the previous recovery
+        save each time. Scoped to that ONE layer, not every Labels
+        layer in the viewer (an earlier version saved all of them,
+        brain_mask layers included -- cheap to regenerate via Tab 1,
+        never what a crash would actually cost you) -- and user-
+        controlled: no-ops entirely while the checkbox is unchecked, or
+        if no Labels layer is currently selected there.
+
+        The save itself runs in a background thread (writing a large
+        TIFF can take a few seconds) -- fire-and-forget; a failure is
+        printed but never interrupts the session or the timer.
+        """
+        if not self._as_enable_cb.isChecked():
+            return
+        lyr = self._edit_labels_layer()
+        if lyr is None:
+            return
+        out_dir = self._output_dir()
+        # Snapshot (name, data) on the main thread -- cheap, no copy,
+        # just grabs the layer's current array reference -- so the
+        # background thread never touches napari's own layer object.
+        name, data = lyr.name, lyr.data
+
+        def _worker():
+            try:
+                path = out_dir / f"{name}_recovery.tif"
+                tifffile.imwrite(str(path), np.asarray(data).astype(np.int32))
+                print(f"[recovery] saved {path}")
+            except Exception as exc:
+                print(f"[recovery] FAILED to save {name}_recovery.tif: {exc}")
+
+        threading.Thread(target=_worker, daemon=True).start()
+
+    def _start_recovery_timer(self):
+        """
         This is the one QTimer in this plugin that's SUPPOSED to live
         for the entire session, unlike every other background-worker
         QTimer here (see the 2026-09-04 fix: every other one-shot
@@ -6148,35 +6357,14 @@ class ZFMicrogliaAIWidget(QWidget):
         session's worth of button clicks, is what actually OOM-killed
         napari that day, not any single operation on its own).
 
-        The save itself runs in a background thread (writing a large
-        TIFF can take a few seconds) -- fire-and-forget; a failure is
-        printed but never interrupts the session or the timer.
+        Kept running at all times, even while the Autosave checkbox is
+        unchecked -- see _do_recovery_save()'s own early-return and
+        _on_autosave_settings_changed()'s own docstring for why toggling
+        the checkbox doesn't stop/start this timer directly.
         """
         self._recovery_timer = QTimer(self)
-
-        def _do_recovery_save():
-            layers = [lyr for lyr in self._viewer.layers if isinstance(lyr, napari.layers.Labels)]
-            if not layers:
-                return
-            out_dir = self._output_dir()
-            # Snapshot (name, data) on the main thread -- cheap, no copy,
-            # just grabs each layer's current array reference -- so the
-            # background thread never touches napari's own layer objects.
-            layers_data = [(lyr.name, lyr.data) for lyr in layers]
-
-            def _worker():
-                for name, data in layers_data:
-                    try:
-                        path = out_dir / f"{name}_recovery.tif"
-                        tifffile.imwrite(str(path), np.asarray(data).astype(np.int32))
-                        print(f"[recovery] saved {path}")
-                    except Exception as exc:
-                        print(f"[recovery] FAILED to save {name}_recovery.tif: {exc}")
-
-            threading.Thread(target=_worker, daemon=True).start()
-
-        self._recovery_timer.timeout.connect(_do_recovery_save)
-        self._recovery_timer.start(interval_ms)
+        self._recovery_timer.timeout.connect(self._do_recovery_save)
+        self._recovery_timer.start(self._current_recovery_interval_ms())
 
     def _get_notify_creds(self):
         """Read the shared Email notification fields (Tab 5 -- Sweeps &

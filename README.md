@@ -4,7 +4,7 @@ A [napari](https://napari.org) plugin for automated 3D brain extraction and AI-a
 
 Developed at **FH Technikum Wien** — Artificial Intelligence & Data Science.
 
-**Documentation:** this README (quick reference) · [GUIDE.md](GUIDE.md) (full user guide, GUIDE.pdf also available) · [STATISTICS_GUIDE.md](STATISTICS_GUIDE.md) (Tab 4 statistics — the algorithm/formula behind every CSV column, STATISTICS_GUIDE.pdf also available)
+**Documentation:** this README (quick reference) · [GUIDE.md](GUIDE.md) (full user guide, GUIDE.pdf also available) · [STATISTICS_GUIDE.md](STATISTICS_GUIDE.md) (Tab 4 statistics — the algorithm/formula behind every CSV column, STATISTICS_GUIDE.pdf also available) · [SOFTWARE_GUIDE.md](SOFTWARE_GUIDE.md) (developer reference — every module and function explained in pseudocode, SOFTWARE_GUIDE.pdf also available)
 
 ---
 
