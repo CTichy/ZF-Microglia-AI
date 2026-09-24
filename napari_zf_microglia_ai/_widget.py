@@ -2443,7 +2443,7 @@ class ZFMicrogliaAIWidget(QWidget):
             "for every tool below. Split, Correct Label, and Copy Label "
             "to Adjacent Slice act on Label A only. Join Labels and "
             "Correct Adjacent Labels act on Label A and Label B together. "
-            "Resort Labels, Remove Debris, Auto-correct Existing Labels, "
+            "Resort Labels, Remove Debris, Auto-correct Labels, "
             "and Save Labels act on the whole Labels layer -- no label ID "
             "needed. Protect/Remove/Hide Skin Label always act on label "
             "-1, not on Label A/B."
@@ -4506,7 +4506,7 @@ class ZFMicrogliaAIWidget(QWidget):
             "layer's intensity -- no ground truth needed. On success, "
             "sets the Signal layer's contrast limits to [best lo, "
             "best lo + 20]. Every other best_lo-driven tool (Protect "
-            "Skin as Label, Auto-correct Existing Labels, the "
+            "Skin as Label, Auto-correct Labels, the "
             "Cellpose-SAM auto-correct pipeline, via Edit MG Labels' "
             "own \"Contrast low (best_lo) calibration\" section) runs "
             "this exact sweep using the Cells / Slices-per-cell / Edge "
@@ -5683,7 +5683,7 @@ class ZFMicrogliaAIWidget(QWidget):
         # Reads Edit MG Labels' shared Signal/Labels selector, not its
         # own combos -- one place to pick the layers, same as every
         # other tool this sweep now feeds (Protect Skin as Label,
-        # Auto-correct Existing Labels, the chained pipeline stage).
+        # Auto-correct Labels, the chained pipeline stage).
         labels_name = self._edit_labels_combo.currentData()
         if not labels_name or labels_name not in self._viewer.layers:
             self._ccal_status_lbl.setText(
@@ -5775,7 +5775,7 @@ class ZFMicrogliaAIWidget(QWidget):
             # contrast came in as, e.g. from the IMS load) rather than
             # computed from an arbitrary offset off best_lo.
             best_hi = float(signal_lyr.contrast_limits[1])
-            # Guarded for the same reason as Auto-correct Existing Labels'
+            # Guarded for the same reason as Auto-correct Labels'
             # own contrast assignment -- see its own comment.
             try:
                 signal_lyr.contrast_limits = (best_lo, best_hi)
@@ -8362,7 +8362,7 @@ class ZFMicrogliaAIWidget(QWidget):
         scale = tuple(float(sv) for sv in lyr.scale)
 
         # Same shared autosweep checkbox / reduction slider every other
-        # lo-driven tool on this tab reads (Auto-correct Existing Labels,
+        # lo-driven tool on this tab reads (Auto-correct Labels,
         # the Cellpose-SAM-chained pipeline stage): autosweep on -> sweep
         # for best_lo, then subtract the reduction below; autosweep off
         # -> skip the sweep entirely and protect at the signal layer's
@@ -8753,7 +8753,7 @@ class ZFMicrogliaAIWidget(QWidget):
 
         skin_image, skin_note = self._resolve_skin_signal_image(signal_name, self._output_dir())
         if skin_note:
-            print(f"Auto-correct Existing Labels: {skin_note}")
+            print(f"Auto-correct Labels: {skin_note}")
 
         self._ac_labels_btn.setEnabled(False)
         self._ac_log_view.hide()
@@ -8790,7 +8790,7 @@ class ZFMicrogliaAIWidget(QWidget):
         # same per-slice trim, now genuinely slower whenever autosweep's
         # reduction lowers lo, so a longer legitimate run is the norm
         # now, not the rare exception the 10 min default assumed.
-        self._hang_watch_start("Auto-correct Existing Labels", after_s=1800)
+        self._hang_watch_start("Auto-correct Labels", after_s=1800)
 
         timer = QTimer(self)
 
@@ -10074,7 +10074,7 @@ class ZFMicrogliaAIWidget(QWidget):
         final_min_fraction = self._finalfrac_spin.value()
 
         # Same shared autosweep checkbox / reduction slider the Edit MG
-        # Labels tab's own Auto-correct Existing Labels tool reads --
+        # Labels tab's own Auto-correct Labels tool reads --
         # Qt doesn't care which tab a widget is visually in when its
         # .value()/.isChecked() is read from Python, so this chained
         # pipeline stage and that standalone tool always agree.
