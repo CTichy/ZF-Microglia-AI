@@ -5873,6 +5873,24 @@ class ZFMicrogliaAIWidget(QWidget):
         # different fish/purpose), a later refresh never overrides it --
         # these stay ordinary, freely-editable selectors; this just
         # saves the first click in the common case.
+        #
+        # The Signal combo is auto-filled with the RAW, un-processed
+        # channel layer (named exactly `stem`, below) -- NEVER the
+        # _brain_only_ExtRm/_NoBG anchor layer itself, even though
+        # that's the layer this whole block is anchored on. This same
+        # combo is read as BOTH the "image" argument for cell
+        # correction (Correct Label, Correct Adjacent Labels) AND the
+        # "skin_image" argument for skin protection (Protect Skin as
+        # Label, Auto-correct) -- and _ExtRm/_NoBG have already zeroed
+        # every pixel outside the brain mask by design (see
+        # _background.py), which leaves nothing for skin's own trim to
+        # threshold no matter what lo is (exactly the failure mode
+        # auto_contrast_correct_stack()'s own skin_image parameter
+        # docstring warns about). The raw channel loses nothing for
+        # real (in-brain) cells either way -- brain_only only ever
+        # ZEROES pixels OUTSIDE the mask, an in-brain pixel's own value
+        # is identical in both -- so this is strictly safer for both
+        # roles this one combo serves, never just a preference.
         _bg_anchor_suffixes = ("_brain_only_ExtRm", "_brain_only_NoBG", "_brain_only_RndFill", "_brain_only")
 
         def _is_bg_anchor(lyr):
@@ -5880,24 +5898,30 @@ class ZFMicrogliaAIWidget(QWidget):
                 lyr.name.endswith(s) for s in _bg_anchor_suffixes
             )
 
-        anchor_name = self._edit_signal_combo.currentData()
-        if anchor_name is None:
-            active = self._viewer.layers.selection.active
-            if _is_bg_anchor(active):
-                anchor_name = active.name
-            else:
-                for lyr in reversed(self._viewer.layers):
-                    if _is_bg_anchor(lyr):
-                        anchor_name = lyr.name
-                        break
-            if anchor_name is not None:
-                idx = self._edit_signal_combo.findData(anchor_name)
-                if idx >= 0:
-                    self._edit_signal_combo.setCurrentIndex(idx)
+        anchor_name = None
+        active = self._viewer.layers.selection.active
+        if _is_bg_anchor(active):
+            anchor_name = active.name
+        else:
+            for lyr in reversed(self._viewer.layers):
+                if _is_bg_anchor(lyr):
+                    anchor_name = lyr.name
+                    break
 
         if anchor_name is not None:
             anchor_suffix = next(s for s in _bg_anchor_suffixes if anchor_name.endswith(s))
             stem = anchor_name[: -len(anchor_suffix)]
+
+            if self._edit_signal_combo.currentData() is None:
+                idx = self._edit_signal_combo.findData(stem)
+                if idx >= 0:
+                    self._edit_signal_combo.setCurrentIndex(idx)
+                # No fallback to the anchor layer itself if the raw
+                # `stem` layer isn't present (e.g. it was closed after
+                # Tab 1 ran) -- leaving Signal on "None" for a manual
+                # pick is correct here; auto-selecting the wrong
+                # (background-zeroed) layer would silently break skin
+                # protection with no indication anything was wrong.
 
             if self._edit_mask_combo.currentData() is None:
                 idx = self._edit_mask_combo.findData(f"{stem}_brain_mask")
