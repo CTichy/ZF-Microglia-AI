@@ -34,7 +34,7 @@ from ._labeling import (
     correct_label_from_intensity, correct_label_from_intensity_3d,
     correct_adjacent_labels_2d,
     copy_label_to_adjacent_slice,
-    sand_label,
+    sand_label, fill_label_holes,
     seed_skin_label, trim_skin_label, remove_label, skin_voxel_count,
 )
 from ._statistics import compute_stats
@@ -46,7 +46,7 @@ from ._cellpose_seg import run_full_pipeline as _run_cellpose_pipeline
 from ._cellpose_seg import rerun_single_cell as _rerun_single_cell
 from ._cellpose_seg import masks_from_flows as _masks_from_flows
 from ._auto_correction import auto_contrast_correct_stack, format_auto_correction_report
-from ._sanding import sand_labels_stack, format_sanding_report, sanding_pad
+from ._sanding import sand_labels_stack, format_sanding_report, sanding_pad, fill_holes_pad
 from ._grow_correct import grow_correct_label_2d, grow_correct_label_3d, format_grow_report
 from . import _pixel_sweep as _psw
 from . import _brain_sweep as _bsw
@@ -1289,6 +1289,29 @@ class ZFMicrogliaAIWidget(QWidget):
         sanding_sigma_note.setWordWrap(True)
         sanding_sigma_note.setStyleSheet("color: #888; font-size: 10px;")
         common_layout.addWidget(sanding_sigma_note)
+
+        self._fillholes_cb = QCheckBox("Fill interior cavities (vesicles) before sanding")
+        self._fillholes_cb.setChecked(True)
+        common_layout.addWidget(self._fillholes_cb)
+        fillholes_note = QLabel(
+            "  Applies at the same points as sanding, right before it: a real "
+            "intracellular vesicle/vacuole (lipid-processing organelle) shows "
+            "up dark in the fluorescence channel, so a plain intensity "
+            "threshold correctly excludes it from the label as \"not signal\" "
+            "even though it's genuine cell material -- leaving a literal "
+            "3D-enclosed cavity in the middle of the cell. This fills any "
+            "such cavity back in, fully in 3D (not per Z/Y/X slice), so the "
+            "cell is solid from every viewing direction. Never touches the "
+            "cell's own outer contour, concave or not -- only background "
+            "voxels fully enclosed by the label itself; a real open branch, "
+            "or a different label genuinely sitting inside what looks like a "
+            "cavity, is left untouched. Cells only -- never applied to the "
+            "skin sentinel label, whose own \"cavities\" are real cells "
+            "sitting inside the brain, not vesicles."
+        )
+        fillholes_note.setWordWrap(True)
+        fillholes_note.setStyleSheet("color: #888; font-size: 10px;")
+        common_layout.addWidget(fillholes_note)
 
         common_group.setLayout(common_layout)
         t2.addWidget(common_group)
@@ -7846,6 +7869,8 @@ class ZFMicrogliaAIWidget(QWidget):
         sand_sigma_xy = self._sanding_sigxy_slider.value()
         sand_sigma_z = self._sanding_sigz_slider.value()
         sand_pad = sanding_pad(sand_sigma_xy, sand_sigma_z)
+        fillholes_on = self._fillholes_cb.isChecked()
+        fh_pad = fill_holes_pad()
 
         grow_on = self._correct_grow_cb.isChecked()
         growth_step = self._correct_growstep_spin.value()
@@ -7854,11 +7879,15 @@ class ZFMicrogliaAIWidget(QWidget):
         max_stability_passes = self._correct_maxstable_spin.value()
 
         def _sand_group(new_labels, group_ids):
-            """Sand every label in group_ids (1+), skipping already-
+            """Fills each label's own interior cavities (if enabled),
+            then sands every label in group_ids (1+), skipping already-
             sanded/failed ones gracefully -- mirrors Correct Adjacent
-            Labels' own multi-label sanding loop."""
+            Labels' own multi-label sanding loop. Cavity-fill runs
+            first -- see _sanding.py's own module docstring for why."""
             sand_infos = {}
             for lid in group_ids:
+                if fillholes_on:
+                    new_labels, _ = fill_label_holes(new_labels, lid, pad=fh_pad)
                 new_labels, sand_infos[lid] = sand_label(
                     new_labels, lid, sand_sigma_xy, sand_sigma_z, pad=sand_pad
                 )
@@ -7892,10 +7921,7 @@ class ZFMicrogliaAIWidget(QWidget):
                             labels, image, label_id, z, lo, hi, pad=pad
                         )
                         if sanding_on:
-                            new_labels, si = sand_label(
-                                new_labels, label_id, sand_sigma_xy, sand_sigma_z, pad=sand_pad
-                            )
-                            result["sanding_info"] = {label_id: si}
+                            new_labels, result["sanding_info"] = _sand_group(new_labels, [label_id])
                     result["labels"] = new_labels
                 except Exception as exc:
                     traceback.print_exc()
@@ -7931,10 +7957,7 @@ class ZFMicrogliaAIWidget(QWidget):
                             min_volume=min_volume, final_min_fraction=final_min_fraction,
                         )
                         if sanding_on:
-                            new_labels, si = sand_label(
-                                new_labels, label_id, sand_sigma_xy, sand_sigma_z, pad=sand_pad
-                            )
-                            result["sanding_info"] = {label_id: si}
+                            new_labels, result["sanding_info"] = _sand_group(new_labels, [label_id])
                     result["labels"] = new_labels
                 except Exception as exc:
                     traceback.print_exc()
@@ -8149,6 +8172,8 @@ class ZFMicrogliaAIWidget(QWidget):
         sand_sigma_xy = self._sanding_sigxy_slider.value()
         sand_sigma_z = self._sanding_sigz_slider.value()
         sand_pad = sanding_pad(sand_sigma_xy, sand_sigma_z)
+        fillholes_on = self._fillholes_cb.isChecked()
+        fh_pad = fill_holes_pad()
 
         grow_on = self._adjcorr_grow_cb.isChecked()
         growth_step = self._adjcorr_growstep_spin.value()
@@ -8187,6 +8212,8 @@ class ZFMicrogliaAIWidget(QWidget):
                 if sanding_on:
                     sand_infos = {}
                     for lid in group_ids:
+                        if fillholes_on:
+                            new_labels, _ = fill_label_holes(new_labels, lid, pad=fh_pad)
                         new_labels, sand_infos[lid] = sand_label(
                             new_labels, lid, sand_sigma_xy, sand_sigma_z, pad=sand_pad
                         )
@@ -8846,17 +8873,118 @@ class ZFMicrogliaAIWidget(QWidget):
                 "design; use its raw source instead)."
                 if n_skin_final == 0 else f" Skin: {n_skin_final:,} voxels."
             )
-            self._ac_status_lbl.setText(
+            done_status = (
                 f"Done — lo={best_lo:.4g}, skin protected as label {report['skin_label_id']}, "
                 f"{report['n_cells_corrected']}/{report['n_cells_total']} cells corrected "
                 f"({len(report.get('touching_skin_cell_ids', []))} touching skin, in 2D; "
                 f"the rest in 3D), {report['n_debris_fragments_removed']} debris fragment(s) "
                 f"removed.{skin_warn} Full report below."
             )
-            self._ac_labels_btn.setEnabled(True)
+            # Chain the same sanding + hole-fill stage the Cellpose-SAM ->
+            # auto-correct pipeline already chains (_run_sanding_stage) --
+            # this button had never been wired to it at all, so a label
+            # corrected here stayed jagged/cavity-holed even with sanding
+            # enabled elsewhere. Own variant (_run_sanding_stage_ac) since
+            # this tool's own status/log/button widgets differ from the
+            # Cellpose-SAM Segmentation section's, and it never saves a
+            # file on its own (before or after this stage) -- it only
+            # ever mutates the live layer in place.
+            if self._sanding_cb.isChecked():
+                self._ac_status_lbl.setText(done_status + " Sanding label contours...")
+                self._run_sanding_stage_ac(lyr, new_labels, report["skin_label_id"])
+            else:
+                self._ac_status_lbl.setText(done_status)
+                self._ac_labels_btn.setEnabled(True)
 
         timer.timeout.connect(_poll)
         timer.start(200)
+
+    def _run_sanding_stage_ac(self, lyr, labels, skin_label_id):
+        """
+        Chained onto "Auto-correct Labels" (_on_autocorrect_labels),
+        gated by self._sanding_cb -- the same sand_labels_stack()
+        sanding + hole-fill pass _run_sanding_stage() chains onto the
+        Cellpose-SAM Segmentation -> auto-correct pipeline, wired to
+        THIS button's own status/log/button widgets instead. Unlike
+        that pipeline, "Auto-correct Labels" never saves a file on its
+        own (before or after this stage) -- it only ever mutates the
+        live Labels layer in place -- so this stage doesn't either.
+
+        skin_label_id : forwarded to sand_labels_stack()'s own final
+                       debris pass only -- sanding/hole-filling
+                       themselves never touch skin's own contour.
+        """
+        sigma_xy = self._sanding_sigxy_slider.value()
+        sigma_z = self._sanding_sigz_slider.value()
+        min_volume = self._current_min_volume()
+        final_min_fraction = self._finalfrac_spin.value()
+        fillholes_on = self._fillholes_cb.isChecked()
+
+        result5 = {}
+
+        def _worker5():
+            try:
+                def _progress5(msg):
+                    result5["_progress"] = msg
+                new_labels, report = sand_labels_stack(
+                    labels, sigma_xy=sigma_xy, sigma_z=sigma_z, fill_holes=fillholes_on,
+                    min_volume=min_volume, final_min_fraction=final_min_fraction,
+                    skin_label_id=skin_label_id,
+                    progress_cb=_progress5,
+                )
+                result5["labels"] = new_labels
+                result5["report"] = report
+            except Exception as exc:
+                traceback.print_exc()
+                result5["error"] = str(exc)
+
+        thread5 = threading.Thread(target=_worker5, daemon=True)
+        thread5.start()
+
+        timer5 = QTimer(self)
+
+        def _poll5():
+            if thread5.is_alive():
+                if "_progress" in result5:
+                    self._ac_status_lbl.setText(result5["_progress"])
+                return
+            timer5.stop()
+            timer5.deleteLater()
+
+            if "error" in result5:
+                self._ac_status_lbl.setText(
+                    f"Auto-correct done; Sanding FAILED: {result5['error']} "
+                    f"(the auto-corrected result above is unaffected)."
+                )
+                self._ac_labels_btn.setEnabled(True)
+                return
+
+            new_labels = result5["labels"]
+            report = result5["report"]
+
+            # In-place, not `.data =` -- same napari-thumbnail-race reason
+            # as every other label-editing tool in this plugin.
+            lyr.data[:] = new_labels
+            lyr.refresh()
+
+            report_text = format_sanding_report(report)
+            self._ac_status_lbl.setText(
+                f"Done — Sanding: {report['n_cells_sanded']}/{report['n_cells_total']} "
+                f"cell(s) softened, {report['n_debris_fragments_removed']} debris "
+                f"fragment(s) removed. Full report below."
+            )
+            self._ac_log_view.append("\n" + report_text)
+            sb = self._ac_log_view.verticalScrollBar()
+            sb.setValue(sb.maximum())
+            self._ac_labels_btn.setEnabled(True)
+
+            print(f"{'='*70}")
+            print(f"SANDING COMPLETE (Auto-correct Labels)")
+            print(report_text)
+            print(f"{'='*70}\n")
+
+        timer5.timeout.connect(_poll5)
+        timer5.start(500)
 
     def _on_save_labels(self):
         lyr = self._edit_labels_layer()
@@ -10163,6 +10291,7 @@ class ZFMicrogliaAIWidget(QWidget):
         sigma_z = self._sanding_sigz_slider.value()
         min_volume = self._current_min_volume()
         final_min_fraction = self._finalfrac_spin.value()
+        fillholes_on = self._fillholes_cb.isChecked()
 
         result4 = {}
 
@@ -10171,7 +10300,7 @@ class ZFMicrogliaAIWidget(QWidget):
                 def _progress4(msg):
                     result4["_progress"] = msg
                 new_labels, report = sand_labels_stack(
-                    labels, sigma_xy=sigma_xy, sigma_z=sigma_z,
+                    labels, sigma_xy=sigma_xy, sigma_z=sigma_z, fill_holes=fillholes_on,
                     min_volume=min_volume, final_min_fraction=final_min_fraction,
                     skin_label_id=skin_label_id,
                     progress_cb=_progress4,

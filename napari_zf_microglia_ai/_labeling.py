@@ -1559,6 +1559,79 @@ def correct_label_from_intensity_3d(
     return new_labels.astype(np.int32, copy=False), report
 
 
+def fill_label_holes(labels: np.ndarray, label_id: int, pad: int = 10) -> "tuple[np.ndarray, dict]":
+    """
+    Fills every 3D-enclosed cavity inside ONE label's own volume --
+    e.g. a real intracellular vesicle/vacuole (lipid-processing
+    organelle) that shows up dark/hollow in the fluorescence channel,
+    so a plain intensity threshold correctly excludes it from the
+    label even though it's genuine cell material, not background.
+    Genuinely 3D (scipy.ndimage.binary_fill_holes on the label's own
+    3D binary mask), not a per-2D-slice pass: a true cavity, fully
+    surrounded by the cell on every side, is found this way regardless
+    of which axis (Z, Y, or X) it's later viewed from -- a per-slice
+    fill along only one axis can miss a cavity that happens to look
+    like two separate blobs on that particular axis's own slices (e.g.
+    a donut-shaped cavity oriented across that axis). A real OPEN
+    channel or a loop that still connects to genuine exterior
+    background somewhere is correctly left alone -- it isn't a cavity,
+    the same distinction a convex-hull-based fill can't make (a real
+    cell's own concave lobes/branches must stay exactly as concave as
+    they are; this never touches the outer contour at all, only
+    interior background fully enclosed by the label itself).
+
+    Foreign-label protected like every other Correct Label tool in
+    this plugin: only pixels that are CURRENTLY PURE BACKGROUND (0)
+    are ever converted to label_id -- a different real label that
+    happens to sit inside what topologically looks like an enclosed
+    region (e.g. a cell genuinely wrapped by a neighbor) is left
+    completely untouched, never absorbed.
+
+    labels    : (Z, Y, X) label volume
+    label_id  : the label to fill cavities inside
+    pad       : bbox padding (voxels, all 3 axes) around the label's
+                own extent -- just needs to be large enough that the
+                padded crop's own outer border sits clearly outside
+                the cell everywhere, so binary_fill_holes' own
+                "connects to the array border" test correctly stands
+                in for "connects to real exterior" (a real open
+                channel/branch still reaches real background well
+                before the crop edge, at any reasonable pad); no
+                Gaussian blur here, so it needs far less room than
+                sanding's own pad.
+
+    Returns (new_labels, info). info = {
+        "applied": bool, "n_filled": int,
+    } -- applied=False (labels returned unchanged) if there was
+    nothing to fill (no enclosed cavity, or every enclosed voxel was
+    already claimed by a different label).
+
+    Raises ValueError if label_id isn't found anywhere in the volume.
+    """
+    mask3d = labels == label_id
+    if not np.any(mask3d):
+        raise ValueError(f"label {label_id} not found anywhere in the volume")
+
+    zs, ys, xs = np.nonzero(mask3d)
+    Z, Y, X = labels.shape
+    z0, z1 = max(0, int(zs.min()) - pad), min(Z, int(zs.max()) + pad + 1)
+    y0, y1 = max(0, int(ys.min()) - pad), min(Y, int(ys.max()) + pad + 1)
+    x0, x1 = max(0, int(xs.min()) - pad), min(X, int(xs.max()) + pad + 1)
+
+    crop = labels[z0:z1, y0:y1, x0:x1]
+    own = crop == label_id
+    filled = cpu_fill_holes(own)
+    new_fill = filled & ~own & (crop == 0)
+    n_filled = int(new_fill.sum())
+
+    if n_filled == 0:
+        return labels, {"applied": False, "n_filled": 0}
+
+    new_labels = labels.copy()
+    new_labels[z0:z1, y0:y1, x0:x1][new_fill] = label_id
+    return new_labels.astype(np.int32), {"applied": True, "n_filled": n_filled}
+
+
 def sand_label(
     labels: np.ndarray,
     label_id: int,
