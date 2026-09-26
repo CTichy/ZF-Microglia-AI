@@ -8968,9 +8968,14 @@ class ZFMicrogliaAIWidget(QWidget):
             lyr.refresh()
 
             report_text = format_sanding_report(report)
+            holes_note = (
+                f", {report['n_cells_holes_filled']}/{report['n_cells_total']} had "
+                f"interior cavities filled ({report['n_cavity_voxels_filled']:,} vox)"
+                if report.get("n_cells_holes_filled") else ""
+            )
             self._ac_status_lbl.setText(
                 f"Done — Sanding: {report['n_cells_sanded']}/{report['n_cells_total']} "
-                f"cell(s) softened, {report['n_debris_fragments_removed']} debris "
+                f"cell(s) softened{holes_note}, {report['n_debris_fragments_removed']} debris "
                 f"fragment(s) removed. Full report below."
             )
             self._ac_log_view.append("\n" + report_text)
@@ -10354,11 +10359,16 @@ class ZFMicrogliaAIWidget(QWidget):
             tifffile.imwrite(str(sanded_path), new_labels.astype(np.int32))
 
             report_text = format_sanding_report(report)
+            holes_note = (
+                f", {report['n_cells_holes_filled']}/{report['n_cells_total']} had "
+                f"interior cavities filled ({report['n_cavity_voxels_filled']:,} vox)"
+                if report.get("n_cells_holes_filled") else ""
+            )
             self._cp_status_lbl.setText(
                 f"{base_status} Sanding done — "
-                f"{report['n_cells_sanded']}/{report['n_cells_total']} cells softened, "
+                f"{report['n_cells_sanded']}/{report['n_cells_total']} cells softened{holes_note}, "
                 f"{report['n_debris_fragments_removed']} debris fragment(s) removed. "
-                f"Saved {sanded_path.name}."
+                f"Saved {sanded_path.name}. Full report below."
             )
             self._cp_log_view.append("\n" + report_text)
             sb = self._cp_log_view.verticalScrollBar()

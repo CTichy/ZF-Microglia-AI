@@ -105,6 +105,13 @@ def sand_labels_stack(
         n_cells_holes_filled    -- how many had at least one cavity filled
         n_cavity_voxels_filled  -- total voxels reclaimed as real cell
                                    material across every label
+        holes_filled_detail     -- {label_id: {"n_filled": int, "slices":
+                                   [z, ...]}} for every label that actually
+                                   had a cavity filled -- "slices" are the
+                                   absolute Z indices that received at
+                                   least one filled voxel, for pointing a
+                                   viewer straight at the affected
+                                   cross-section(s)
         skipped_cells            -- {label_id: reason} for every label
                                    sanding left untouched (never crashes
                                    the whole run)
@@ -131,6 +138,7 @@ def sand_labels_stack(
     n_sanded = 0
     n_holes_filled = 0
     n_cavity_voxels = 0
+    holes_filled_detail: "dict[int, dict]" = {}
     skipped_cells: "dict[int, str]" = {}
     n_total = int(unique_ids.size)
     for idx, lid in enumerate(unique_ids.tolist()):
@@ -140,6 +148,9 @@ def sand_labels_stack(
             if hole_info["applied"]:
                 n_holes_filled += 1
                 n_cavity_voxels += hole_info["n_filled"]
+                holes_filled_detail[lid] = {
+                    "n_filled": hole_info["n_filled"], "slices": hole_info["slices"],
+                }
         new_labels, info = sand_label(new_labels, lid, sigma_xy, sigma_z, pad=pad)
         if info["applied"]:
             n_sanded += 1
@@ -165,6 +176,7 @@ def sand_labels_stack(
         "n_cells_sanded": n_sanded,
         "n_cells_holes_filled": n_holes_filled,
         "n_cavity_voxels_filled": n_cavity_voxels,
+        "holes_filled_detail": holes_filled_detail,
         "skipped_cells": skipped_cells,
         "n_debris_fragments_removed": n_debris_removed,
     }
@@ -182,6 +194,11 @@ def format_sanding_report(report: dict) -> str:
             f"interior cavities filled ({report['n_cavity_voxels_filled']:,} voxel(s) "
             f"reclaimed as real cell material)"
         )
+        for lid, detail in report.get("holes_filled_detail", {}).items():
+            slice_txt = ", ".join(str(z) for z in detail["slices"])
+            lines.append(
+                f"    label {lid}: {detail['n_filled']} vox on slice(s) [{slice_txt}]"
+            )
     lines.append(
         f"  {report['n_cells_sanded']}/{report['n_cells_total']} cell(s) softened"
         + (f", {len(report['skipped_cells'])} skipped" if report["skipped_cells"] else "")

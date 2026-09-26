@@ -1601,10 +1601,14 @@ def fill_label_holes(labels: np.ndarray, label_id: int, pad: int = 10) -> "tuple
                 sanding's own pad.
 
     Returns (new_labels, info). info = {
-        "applied": bool, "n_filled": int,
-    } -- applied=False (labels returned unchanged) if there was
-    nothing to fill (no enclosed cavity, or every enclosed voxel was
-    already claimed by a different label).
+        "applied": bool, "n_filled": int, "slices": [z, ...],
+    } -- "slices" is the sorted list of absolute (full-volume) Z
+    indices that actually received at least one filled voxel, e.g. for
+    pointing a viewer straight at the affected cross-section(s) instead
+    of hunting through the whole cell; empty when applied=False.
+    applied=False (labels returned unchanged) if there was nothing to
+    fill (no enclosed cavity, or every enclosed voxel was already
+    claimed by a different label).
 
     Raises ValueError if label_id isn't found anywhere in the volume.
     """
@@ -1625,11 +1629,15 @@ def fill_label_holes(labels: np.ndarray, label_id: int, pad: int = 10) -> "tuple
     n_filled = int(new_fill.sum())
 
     if n_filled == 0:
-        return labels, {"applied": False, "n_filled": 0}
+        return labels, {"applied": False, "n_filled": 0, "slices": []}
+
+    filled_slices = [z0 + int(z) for z in np.nonzero(new_fill.any(axis=(1, 2)))[0]]
 
     new_labels = labels.copy()
     new_labels[z0:z1, y0:y1, x0:x1][new_fill] = label_id
-    return new_labels.astype(np.int32), {"applied": True, "n_filled": n_filled}
+    return new_labels.astype(np.int32), {
+        "applied": True, "n_filled": n_filled, "slices": sorted(filled_slices),
+    }
 
 
 def sand_label(
