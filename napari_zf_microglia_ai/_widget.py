@@ -2501,127 +2501,10 @@ class ZFMicrogliaAIWidget(QWidget):
         edit_sel_group.setLayout(esl)
         dlt.addWidget(edit_sel_group)
 
-        sanding_group = QGroupBox("Sanding (soften label contours)")
-        sdg = QVBoxLayout()
-        sdg.setSpacing(4)
-        sanding_group_note = QLabel(
-            "  Enable or disable sanding with the \"Soften label contours "
-            "(sanding) after any label correction\" checkbox in Create MG "
-            "Labels. Sigma XY and Sigma Z below set how strongly Correct "
-            "Label, Correct Adjacent Labels, and the Cellpose-SAM "
-            "auto-correct pipeline smooth each corrected label's edges, "
-            "in voxels."
-        )
-        sanding_group_note.setWordWrap(True)
-        sanding_group_note.setStyleSheet("color: #888; font-size: 10px;")
-        sdg.addWidget(sanding_group_note)
-        sandxy_row = QHBoxLayout()
-        sandxy_row.addWidget(QLabel("Sanding sigma XY (vox):"))
-        self._sanding_sigxy_slider = QLabeledDoubleSlider(Qt.Horizontal)
-        self._sanding_sigxy_slider.setDecimals(2)
-        self._sanding_sigxy_slider.setMinimum(0.0)
-        self._sanding_sigxy_slider.setMaximum(3.0)
-        self._sanding_sigxy_slider.setSingleStep(0.1)
-        self._sanding_sigxy_slider.setValue(_root_cfg.get("sanding_sigma_xy", 0.7))
-        sandxy_row.addWidget(self._sanding_sigxy_slider)
-        self._sanding_sigxy_spin = _add_reliable_spinbox(
-            sandxy_row, self._sanding_sigxy_slider, 0.0, 3.0, 0.1, decimals=2
-        )
-        sdg.addLayout(sandxy_row)
-        sandz_row = QHBoxLayout()
-        sandz_row.addWidget(QLabel("Sanding sigma Z (vox):"))
-        self._sanding_sigz_slider = QLabeledDoubleSlider(Qt.Horizontal)
-        self._sanding_sigz_slider.setDecimals(2)
-        self._sanding_sigz_slider.setMinimum(0.0)
-        self._sanding_sigz_slider.setMaximum(3.0)
-        self._sanding_sigz_slider.setSingleStep(0.1)
-        self._sanding_sigz_slider.setValue(_root_cfg.get("sanding_sigma_z", 0.7))
-        sandz_row.addWidget(self._sanding_sigz_slider)
-        self._sanding_sigz_spin = _add_reliable_spinbox(
-            sandz_row, self._sanding_sigz_slider, 0.0, 3.0, 0.1, decimals=2
-        )
-        sdg.addLayout(sandz_row)
-        sanding_group.setLayout(sdg)
-        dlt.addWidget(sanding_group)
-
-        lo_calib_group = QGroupBox("Contrast low (best_lo) calibration")
-        lcg = QVBoxLayout()
-        lcg.setSpacing(4)
-        lo_calib_note = QLabel(
-            "  Used by Protect Skin as Label and Auto-correct Existing "
-            "Labels to pick their contrast-low threshold (best_lo). Check "
-            "Auto-sweep to calculate best_lo from the active labels; set "
-            "Reduce best_lo by (0-6) to subtract that amount from the "
-            "swept value and capture slightly more signal (e.g. "
-            "best_lo=107 minus 3 corrects at 104). Uncheck Auto-sweep to skip the "
-            "sweep and use the Signal layer's own current contrast low "
-            "limit instead -- Reduce best_lo by is then ignored. To "
-            "change how many cells/slices the sweep samples, the edge "
-            "margin, or the number of sweep steps, use Sweeps & "
-            "Utilities' \"Calibrate Correct-Label Contrast\" tool -- both "
-            "read the same settings from there."
-        )
-        lo_calib_note.setWordWrap(True)
-        lo_calib_note.setStyleSheet("color: #888; font-size: 10px;")
-        lcg.addWidget(lo_calib_note)
-
-        self._ac_autosweep_cb = QCheckBox("Auto-sweep for best contrast low (best_lo)")
-        self._ac_autosweep_cb.setChecked(True)
-        lcg.addWidget(self._ac_autosweep_cb)
-
-        ac_reduce_row = QHBoxLayout()
-        ac_reduce_row.addWidget(QLabel("Reduce best_lo by:"))
-        self._ac_reduce_slider = QLabeledSlider(Qt.Horizontal)
-        self._ac_reduce_slider.setMinimum(0)
-        self._ac_reduce_slider.setMaximum(6)
-        self._ac_reduce_slider.setValue(3)
-        ac_reduce_row.addWidget(self._ac_reduce_slider)
-        lcg.addLayout(ac_reduce_row)
-
-        lo_calib_group.setLayout(lcg)
-        dlt.addWidget(lo_calib_group)
-
-        dlt.addWidget(_sep())
-
-        sort_row = QHBoxLayout()
-        sort_row.addWidget(QLabel("Sort by:"))
-        self._sort_combo = QComboBox()
-        self._sort_combo.addItem("Size",       "size")
-        self._sort_combo.addItem("Centroid Z", "centroid_z")
-        self._sort_combo.addItem("Centroid Y", "centroid_y")
-        self._sort_combo.addItem("Centroid X", "centroid_x")
-        self._sort_combo.addItem("Complexity", "complexity")
-        sort_row.addWidget(self._sort_combo)
-        dlt.addLayout(sort_row)
-
-        self._sort_reverse_cb = QCheckBox("Reverse order")
-        dlt.addWidget(self._sort_reverse_cb)
-
-        self._resort_btn = QPushButton("Resort Labels")
-        self._resort_btn.setStyleSheet("QPushButton { padding: 5px; }")
-        dlt.addWidget(self._resort_btn)
-
-        self._resort_status_lbl = QLabel("")
-        self._resort_status_lbl.setWordWrap(True)
-        dlt.addWidget(self._resort_status_lbl)
-
-        dlt.addWidget(_sep())
-
-        self._debris_btn = QPushButton("Remove Debris")
-        self._debris_btn.setStyleSheet("QPushButton { padding: 5px; }")
-        dlt.addWidget(self._debris_btn)
-        debris_note = QLabel(
-            "  Removes every object smaller than Final min-size fraction "
-            "x Min volume (set in Create MG Labels' Common Settings) "
-            "from the Labels layer selected above."
-        )
-        debris_note.setWordWrap(True)
-        debris_note.setStyleSheet("color: #888; font-size: 10px;")
-        dlt.addWidget(debris_note)
-        self._debris_status_lbl = QLabel("")
-        self._debris_status_lbl.setWordWrap(True)
-        dlt.addWidget(self._debris_status_lbl)
-
+        # ── Tools that act on Label A / Label A+B directly, with no
+        #    settings of their own beyond what's already above -- placed
+        #    immediately under the selector so the natural reading order
+        #    is "pick your layers/labels, then act on them." ── #
         dlt.addWidget(_sep())
 
         split_mode_row = QHBoxLayout()
@@ -2719,6 +2602,250 @@ class ZFMicrogliaAIWidget(QWidget):
 
         dlt.addWidget(_sep())
 
+        copyslice_note = QLabel(
+            "  Copies Label A's shape from the current slice onto the "
+            "next or previous slice, replacing its own old shape there. "
+            "Never overwrites a different label's pixels. Use it to "
+            "patch a slice where the cross-section is missing or broken."
+        )
+        copyslice_note.setWordWrap(True)
+        copyslice_note.setStyleSheet("color: #888; font-size: 10px;")
+        dlt.addWidget(copyslice_note)
+
+        copyslice_dir_row = QHBoxLayout()
+        copyslice_dir_row.addWidget(QLabel("Copy to:"))
+        self._copyslice_dir_combo = QComboBox()
+        self._copyslice_dir_combo.addItem("Next slice (Z+1)", 1)
+        self._copyslice_dir_combo.addItem("Previous slice (Z-1)", -1)
+        copyslice_dir_row.addWidget(self._copyslice_dir_combo)
+        dlt.addLayout(copyslice_dir_row)
+
+        self._copyslice_btn = QPushButton("Copy Label to Adjacent Slice")
+        self._copyslice_btn.setStyleSheet("QPushButton { padding: 5px; }")
+        dlt.addWidget(self._copyslice_btn)
+
+        self._copyslice_status_lbl = QLabel("")
+        self._copyslice_status_lbl.setWordWrap(True)
+        dlt.addWidget(self._copyslice_status_lbl)
+
+        # ── Tools that act on the whole Labels layer, no Label A/B and
+        #    no correction settings needed. ── #
+        dlt.addWidget(_sep())
+
+        sort_row = QHBoxLayout()
+        sort_row.addWidget(QLabel("Sort by:"))
+        self._sort_combo = QComboBox()
+        self._sort_combo.addItem("Size",       "size")
+        self._sort_combo.addItem("Centroid Z", "centroid_z")
+        self._sort_combo.addItem("Centroid Y", "centroid_y")
+        self._sort_combo.addItem("Centroid X", "centroid_x")
+        self._sort_combo.addItem("Complexity", "complexity")
+        sort_row.addWidget(self._sort_combo)
+        dlt.addLayout(sort_row)
+
+        self._sort_reverse_cb = QCheckBox("Reverse order")
+        dlt.addWidget(self._sort_reverse_cb)
+
+        self._resort_btn = QPushButton("Resort Labels")
+        self._resort_btn.setStyleSheet("QPushButton { padding: 5px; }")
+        dlt.addWidget(self._resort_btn)
+
+        self._resort_status_lbl = QLabel("")
+        self._resort_status_lbl.setWordWrap(True)
+        dlt.addWidget(self._resort_status_lbl)
+
+        dlt.addWidget(_sep())
+
+        self._debris_btn = QPushButton("Remove Debris")
+        self._debris_btn.setStyleSheet("QPushButton { padding: 5px; }")
+        dlt.addWidget(self._debris_btn)
+        debris_note = QLabel(
+            "  Removes every object smaller than Final min-size fraction "
+            "x Min volume (set in Create MG Labels' Common Settings) "
+            "from the Labels layer selected above."
+        )
+        debris_note.setWordWrap(True)
+        debris_note.setStyleSheet("color: #888; font-size: 10px;")
+        dlt.addWidget(debris_note)
+        self._debris_status_lbl = QLabel("")
+        self._debris_status_lbl.setWordWrap(True)
+        dlt.addWidget(self._debris_status_lbl)
+
+        dlt.addWidget(_sep())
+
+        # ── Shared settings for Correct Label / Correct Adjacent Labels /
+        #    Auto-correct Labels (standalone or chained onto Cellpose-SAM
+        #    Segmentation) -- one Bbox/Auto-grow/step/repetitions/
+        #    stability panel instead of each tool carrying its own copy,
+        #    so all three (and the Cellpose-SAM-chained stage) always
+        #    agree on how a correction grows/stabilizes. ── #
+        corrset_group = QGroupBox("Correction Settings (Bbox / Auto-grow / Stability)")
+        crs = QVBoxLayout()
+        crs.setSpacing(4)
+        corrset_note = QLabel(
+            "  Used by Correct Label, Correct Adjacent Labels, and "
+            "Auto-correct Labels -- standalone or chained onto Cellpose-"
+            "SAM Segmentation's own auto-correct step. All three always "
+            "read these same values, so a manual correction and an "
+            "unattended pipeline run behave identically."
+        )
+        corrset_note.setWordWrap(True)
+        corrset_note.setStyleSheet("color: #888; font-size: 10px;")
+        crs.addWidget(corrset_note)
+
+        corrset_pad_row = QHBoxLayout()
+        corrset_pad_row.addWidget(QLabel("Bbox padding (px):"))
+        self._corrset_pad_spin = QSpinBox()
+        self._corrset_pad_spin.setMinimum(0)
+        self._corrset_pad_spin.setMaximum(500)
+        self._corrset_pad_spin.setValue(15)
+        corrset_pad_row.addWidget(self._corrset_pad_spin)
+        crs.addLayout(corrset_pad_row)
+
+        self._corrset_grow_cb = QCheckBox("Auto-grow until signal clears the border")
+        self._corrset_grow_cb.setChecked(True)
+        crs.addWidget(self._corrset_grow_cb)
+        corrset_grow_note = QLabel(
+            "  Enlarges the working area by Growth step (px), up to Max "
+            "growth iterations times, whenever the corrected label still "
+            "touches its own edge -- catches real signal a too-small pad "
+            "would otherwise cut off. In 3D mode (Correct Label, and "
+            "every real cell in Auto-correct Labels) each slice grows on "
+            "its own, independently of the others. In 2D mode, or "
+            "Correct Adjacent Labels, a neighboring label the growth "
+            "reaches is corrected jointly instead of being overwritten."
+        )
+        corrset_grow_note.setWordWrap(True)
+        corrset_grow_note.setStyleSheet("color: #888; font-size: 10px;")
+        crs.addWidget(corrset_grow_note)
+
+        corrset_growstep_row = QHBoxLayout()
+        corrset_growstep_row.addWidget(QLabel("Growth step (px):"))
+        self._corrset_growstep_spin = QSpinBox()
+        self._corrset_growstep_spin.setMinimum(1)
+        self._corrset_growstep_spin.setMaximum(200)
+        self._corrset_growstep_spin.setValue(5)
+        corrset_growstep_row.addWidget(self._corrset_growstep_spin)
+        crs.addLayout(corrset_growstep_row)
+
+        corrset_maxiter_row = QHBoxLayout()
+        corrset_maxiter_row.addWidget(QLabel("Max growth iterations:"))
+        self._corrset_maxiter_spin = QSpinBox()
+        self._corrset_maxiter_spin.setMinimum(1)
+        self._corrset_maxiter_spin.setMaximum(50)
+        self._corrset_maxiter_spin.setValue(20)
+        corrset_maxiter_row.addWidget(self._corrset_maxiter_spin)
+        crs.addLayout(corrset_maxiter_row)
+
+        self._corrset_stable_cb = QCheckBox("Keep re-running until the shape stabilizes")
+        self._corrset_stable_cb.setChecked(True)
+        crs.addWidget(self._corrset_stable_cb)
+        corrset_stable_note = QLabel(
+            "  Re-runs the correction, using each pass's result as the "
+            "next pass's starting shape, until the shape stops changing "
+            "or Max stability passes is reached. A genuinely adjacent "
+            "label (e.g. skin, or Label B in Correct Adjacent Labels) "
+            "has its own boundary updated on every pass too. Independent "
+            "of Auto-grow above."
+        )
+        corrset_stable_note.setWordWrap(True)
+        corrset_stable_note.setStyleSheet("color: #888; font-size: 10px;")
+        crs.addWidget(corrset_stable_note)
+
+        corrset_maxstable_row = QHBoxLayout()
+        corrset_maxstable_row.addWidget(QLabel("Max stability passes:"))
+        self._corrset_maxstable_spin = QSpinBox()
+        self._corrset_maxstable_spin.setMinimum(2)
+        self._corrset_maxstable_spin.setMaximum(200)
+        self._corrset_maxstable_spin.setValue(50)
+        corrset_maxstable_row.addWidget(self._corrset_maxstable_spin)
+        crs.addLayout(corrset_maxstable_row)
+
+        corrset_group.setLayout(crs)
+        dlt.addWidget(corrset_group)
+
+        sanding_group = QGroupBox("Sanding (soften label contours)")
+        sdg = QVBoxLayout()
+        sdg.setSpacing(4)
+        sanding_group_note = QLabel(
+            "  Enable or disable sanding with the \"Soften label contours "
+            "(sanding) after any label correction\" checkbox in Create MG "
+            "Labels. Sigma XY and Sigma Z below set how strongly Correct "
+            "Label, Correct Adjacent Labels, and the Cellpose-SAM "
+            "auto-correct pipeline smooth each corrected label's edges, "
+            "in voxels."
+        )
+        sanding_group_note.setWordWrap(True)
+        sanding_group_note.setStyleSheet("color: #888; font-size: 10px;")
+        sdg.addWidget(sanding_group_note)
+        sandxy_row = QHBoxLayout()
+        sandxy_row.addWidget(QLabel("Sanding sigma XY (vox):"))
+        self._sanding_sigxy_slider = QLabeledDoubleSlider(Qt.Horizontal)
+        self._sanding_sigxy_slider.setDecimals(2)
+        self._sanding_sigxy_slider.setMinimum(0.0)
+        self._sanding_sigxy_slider.setMaximum(3.0)
+        self._sanding_sigxy_slider.setSingleStep(0.1)
+        self._sanding_sigxy_slider.setValue(_root_cfg.get("sanding_sigma_xy", 0.7))
+        sandxy_row.addWidget(self._sanding_sigxy_slider)
+        self._sanding_sigxy_spin = _add_reliable_spinbox(
+            sandxy_row, self._sanding_sigxy_slider, 0.0, 3.0, 0.1, decimals=2
+        )
+        sdg.addLayout(sandxy_row)
+        sandz_row = QHBoxLayout()
+        sandz_row.addWidget(QLabel("Sanding sigma Z (vox):"))
+        self._sanding_sigz_slider = QLabeledDoubleSlider(Qt.Horizontal)
+        self._sanding_sigz_slider.setDecimals(2)
+        self._sanding_sigz_slider.setMinimum(0.0)
+        self._sanding_sigz_slider.setMaximum(3.0)
+        self._sanding_sigz_slider.setSingleStep(0.1)
+        self._sanding_sigz_slider.setValue(_root_cfg.get("sanding_sigma_z", 0.7))
+        sandz_row.addWidget(self._sanding_sigz_slider)
+        self._sanding_sigz_spin = _add_reliable_spinbox(
+            sandz_row, self._sanding_sigz_slider, 0.0, 3.0, 0.1, decimals=2
+        )
+        sdg.addLayout(sandz_row)
+        sanding_group.setLayout(sdg)
+        dlt.addWidget(sanding_group)
+
+        lo_calib_group = QGroupBox("Contrast low (best_lo) calibration")
+        lcg = QVBoxLayout()
+        lcg.setSpacing(4)
+        lo_calib_note = QLabel(
+            "  Used by Protect Skin as Label and Auto-correct Existing "
+            "Labels to pick their contrast-low threshold (best_lo). Check "
+            "Auto-sweep to calculate best_lo from the active labels; set "
+            "Reduce best_lo by (0-6) to subtract that amount from the "
+            "swept value and capture slightly more signal (e.g. "
+            "best_lo=107 minus 3 corrects at 104). Uncheck Auto-sweep to skip the "
+            "sweep and use the Signal layer's own current contrast low "
+            "limit instead -- Reduce best_lo by is then ignored. To "
+            "change how many cells/slices the sweep samples, the edge "
+            "margin, or the number of sweep steps, use Sweeps & "
+            "Utilities' \"Calibrate Correct-Label Contrast\" tool -- both "
+            "read the same settings from there."
+        )
+        lo_calib_note.setWordWrap(True)
+        lo_calib_note.setStyleSheet("color: #888; font-size: 10px;")
+        lcg.addWidget(lo_calib_note)
+
+        self._ac_autosweep_cb = QCheckBox("Auto-sweep for best contrast low (best_lo)")
+        self._ac_autosweep_cb.setChecked(True)
+        lcg.addWidget(self._ac_autosweep_cb)
+
+        ac_reduce_row = QHBoxLayout()
+        ac_reduce_row.addWidget(QLabel("Reduce best_lo by:"))
+        self._ac_reduce_slider = QLabeledSlider(Qt.Horizontal)
+        self._ac_reduce_slider.setMinimum(0)
+        self._ac_reduce_slider.setMaximum(6)
+        self._ac_reduce_slider.setValue(3)
+        ac_reduce_row.addWidget(self._ac_reduce_slider)
+        lcg.addLayout(ac_reduce_row)
+
+        lo_calib_group.setLayout(lcg)
+        dlt.addWidget(lo_calib_group)
+
+        dlt.addWidget(_sep())
+
         correct_note = QLabel(
             "  Regenerates Label A's shape from the Signal layer's "
             "current contrast limits -- the intensity window it's "
@@ -2761,70 +2888,14 @@ class ZFMicrogliaAIWidget(QWidget):
         self._correct_skin3d_note.hide()
         dlt.addWidget(self._correct_skin3d_note)
 
-        correct_pad_row = QHBoxLayout()
-        correct_pad_row.addWidget(QLabel("Bbox padding (px):"))
-        self._correct_pad_spin = QSpinBox()
-        self._correct_pad_spin.setMinimum(0)
-        self._correct_pad_spin.setMaximum(500)
-        self._correct_pad_spin.setValue(15)
-        correct_pad_row.addWidget(self._correct_pad_spin)
-        dlt.addLayout(correct_pad_row)
-
-        self._correct_grow_cb = QCheckBox("Auto-grow until signal clears the border")
-        dlt.addWidget(self._correct_grow_cb)
-        correct_grow_note = QLabel(
-            "  Enlarges the working area by Growth step (px), up to Max "
-            "growth iterations times, whenever the corrected label still "
-            "touches its own edge -- catches real signal a too-small pad "
-            "would otherwise cut off. In 3D mode each slice grows on its "
-            "own, independently of the others. In 2D mode, a neighboring "
-            "label the growth reaches is corrected jointly instead of "
-            "being overwritten. Stops and reports which slice(s) are "
-            "still touching the edge if the iteration limit is reached."
+        correct_settings_note = QLabel(
+            "  Bbox padding, Auto-grow, Growth step, Max growth "
+            "iterations, Keep-until-stable, and Max stability passes are "
+            "all set in Correction Settings above."
         )
-        correct_grow_note.setWordWrap(True)
-        correct_grow_note.setStyleSheet("color: #888; font-size: 10px;")
-        dlt.addWidget(correct_grow_note)
-
-        correct_growstep_row = QHBoxLayout()
-        correct_growstep_row.addWidget(QLabel("Growth step (px):"))
-        self._correct_growstep_spin = QSpinBox()
-        self._correct_growstep_spin.setMinimum(1)
-        self._correct_growstep_spin.setMaximum(200)
-        self._correct_growstep_spin.setValue(15)
-        correct_growstep_row.addWidget(self._correct_growstep_spin)
-        dlt.addLayout(correct_growstep_row)
-
-        correct_maxiter_row = QHBoxLayout()
-        correct_maxiter_row.addWidget(QLabel("Max growth iterations:"))
-        self._correct_maxiter_spin = QSpinBox()
-        self._correct_maxiter_spin.setMinimum(1)
-        self._correct_maxiter_spin.setMaximum(50)
-        self._correct_maxiter_spin.setValue(5)
-        correct_maxiter_row.addWidget(self._correct_maxiter_spin)
-        dlt.addLayout(correct_maxiter_row)
-
-        self._correct_stable_cb = QCheckBox("Keep re-running until the shape stabilizes (3D only)")
-        dlt.addWidget(self._correct_stable_cb)
-        correct_stable_note = QLabel(
-            "  Re-runs the 3D correction, using each pass's result as "
-            "the next pass's starting shape, until this label's shape "
-            "stops changing or Max stability passes is reached. A "
-            "genuinely adjacent label (e.g. skin) has its own boundary "
-            "updated on every pass too. Independent of Auto-grow above."
-        )
-        correct_stable_note.setWordWrap(True)
-        correct_stable_note.setStyleSheet("color: #888; font-size: 10px;")
-        dlt.addWidget(correct_stable_note)
-
-        correct_maxstable_row = QHBoxLayout()
-        correct_maxstable_row.addWidget(QLabel("Max stability passes:"))
-        self._correct_maxstable_spin = QSpinBox()
-        self._correct_maxstable_spin.setMinimum(2)
-        self._correct_maxstable_spin.setMaximum(100)
-        self._correct_maxstable_spin.setValue(10)
-        correct_maxstable_row.addWidget(self._correct_maxstable_spin)
-        dlt.addLayout(correct_maxstable_row)
+        correct_settings_note.setWordWrap(True)
+        correct_settings_note.setStyleSheet("color: #888; font-size: 10px;")
+        dlt.addWidget(correct_settings_note)
 
         self._correct_btn = QPushButton("Correct Label")
         self._correct_btn.setStyleSheet("QPushButton { padding: 5px; }")
@@ -2843,104 +2914,22 @@ class ZFMicrogliaAIWidget(QWidget):
 
         dlt.addWidget(_sep())
 
-        copyslice_note = QLabel(
-            "  Copies Label A's shape from the current slice onto the "
-            "next or previous slice, replacing its own old shape there. "
-            "Never overwrites a different label's pixels. Use it to "
-            "patch a slice where the cross-section is missing or broken."
-        )
-        copyslice_note.setWordWrap(True)
-        copyslice_note.setStyleSheet("color: #888; font-size: 10px;")
-        dlt.addWidget(copyslice_note)
-
-        copyslice_dir_row = QHBoxLayout()
-        copyslice_dir_row.addWidget(QLabel("Copy to:"))
-        self._copyslice_dir_combo = QComboBox()
-        self._copyslice_dir_combo.addItem("Next slice (Z+1)", 1)
-        self._copyslice_dir_combo.addItem("Previous slice (Z-1)", -1)
-        copyslice_dir_row.addWidget(self._copyslice_dir_combo)
-        dlt.addLayout(copyslice_dir_row)
-
-        self._copyslice_btn = QPushButton("Copy Label to Adjacent Slice")
-        self._copyslice_btn.setStyleSheet("QPushButton { padding: 5px; }")
-        dlt.addWidget(self._copyslice_btn)
-
-        self._copyslice_status_lbl = QLabel("")
-        self._copyslice_status_lbl.setWordWrap(True)
-        dlt.addWidget(self._copyslice_status_lbl)
-
-        dlt.addWidget(_sep())
-
         adjcorr_note = QLabel(
             "  Regenerates Label A and Label B together, on the current "
             "slice only, from the Signal layer's current contrast "
             "limits, then splits the combined shape at the dimmest "
             "point between them. Use it for two labels that touch or "
             "merge on one slice, where correcting each with Correct "
-            "Label separately would let them fuse."
+            "Label separately would let them fuse. Bbox padding, Auto-"
+            "grow, Growth step, Max growth iterations, Keep-until-"
+            "stable, and Max stability passes are all set in Correction "
+            "Settings above -- seeded with Label A and Label B together, "
+            "and a third label the growth reaches is corrected jointly "
+            "too."
         )
         adjcorr_note.setWordWrap(True)
         adjcorr_note.setStyleSheet("color: #888; font-size: 10px;")
         dlt.addWidget(adjcorr_note)
-
-        adjcorr_pad_row = QHBoxLayout()
-        adjcorr_pad_row.addWidget(QLabel("Bbox padding (px):"))
-        self._adjcorr_pad_spin = QSpinBox()
-        self._adjcorr_pad_spin.setMinimum(0)
-        self._adjcorr_pad_spin.setMaximum(500)
-        self._adjcorr_pad_spin.setValue(15)
-        adjcorr_pad_row.addWidget(self._adjcorr_pad_spin)
-        dlt.addLayout(adjcorr_pad_row)
-
-        self._adjcorr_grow_cb = QCheckBox("Auto-grow until signal clears the border")
-        dlt.addWidget(self._adjcorr_grow_cb)
-        adjcorr_grow_note = QLabel(
-            "  Same as Correct Label's Auto-grow, seeded with Label A "
-            "and Label B together. A third label the growth reaches is "
-            "corrected jointly too."
-        )
-        adjcorr_grow_note.setWordWrap(True)
-        adjcorr_grow_note.setStyleSheet("color: #888; font-size: 10px;")
-        dlt.addWidget(adjcorr_grow_note)
-
-        adjcorr_growstep_row = QHBoxLayout()
-        adjcorr_growstep_row.addWidget(QLabel("Growth step (px):"))
-        self._adjcorr_growstep_spin = QSpinBox()
-        self._adjcorr_growstep_spin.setMinimum(1)
-        self._adjcorr_growstep_spin.setMaximum(200)
-        self._adjcorr_growstep_spin.setValue(15)
-        adjcorr_growstep_row.addWidget(self._adjcorr_growstep_spin)
-        dlt.addLayout(adjcorr_growstep_row)
-
-        adjcorr_maxiter_row = QHBoxLayout()
-        adjcorr_maxiter_row.addWidget(QLabel("Max growth iterations:"))
-        self._adjcorr_maxiter_spin = QSpinBox()
-        self._adjcorr_maxiter_spin.setMinimum(1)
-        self._adjcorr_maxiter_spin.setMaximum(50)
-        self._adjcorr_maxiter_spin.setValue(5)
-        adjcorr_maxiter_row.addWidget(self._adjcorr_maxiter_spin)
-        dlt.addLayout(adjcorr_maxiter_row)
-
-        self._adjcorr_stable_cb = QCheckBox("Keep re-running until the boundary stabilizes")
-        dlt.addWidget(self._adjcorr_stable_cb)
-        adjcorr_stable_note = QLabel(
-            "  Re-runs the joint correction, using each pass's result "
-            "as the next pass's starting shape, until every label in "
-            "the group stops changing or Max stability passes is "
-            "reached. Independent of Auto-grow above."
-        )
-        adjcorr_stable_note.setWordWrap(True)
-        adjcorr_stable_note.setStyleSheet("color: #888; font-size: 10px;")
-        dlt.addWidget(adjcorr_stable_note)
-
-        adjcorr_maxstable_row = QHBoxLayout()
-        adjcorr_maxstable_row.addWidget(QLabel("Max stability passes:"))
-        self._adjcorr_maxstable_spin = QSpinBox()
-        self._adjcorr_maxstable_spin.setMinimum(2)
-        self._adjcorr_maxstable_spin.setMaximum(100)
-        self._adjcorr_maxstable_spin.setValue(10)
-        adjcorr_maxstable_row.addWidget(self._adjcorr_maxstable_spin)
-        dlt.addLayout(adjcorr_maxstable_row)
 
         self._adjcorr_btn = QPushButton("Correct Adjacent Labels")
         self._adjcorr_btn.setStyleSheet("QPushButton { padding: 5px; }")
@@ -2958,22 +2947,16 @@ class ZFMicrogliaAIWidget(QWidget):
             "Protects a real cell's own correction from bleeding into "
             "skin, the same way it's already protected from any other "
             "label. Always uses label -1, not Label A/B. Uses the "
-            "Signal / Labels / Brain mask layers selected above, and "
-            "the threshold set by Contrast low (best_lo) calibration "
-            "above."
+            "Signal / Labels / Brain mask layers selected above, the "
+            "threshold set by Contrast low (best_lo) calibration above, "
+            "and Bbox padding/Auto-grow/Growth step/Max growth "
+            "iterations/Keep-until-stable/Max stability passes from "
+            "Correction Settings above -- the same settings Correct "
+            "Label, Correct Adjacent Labels, and Auto-correct Labels use."
         )
         skin_note.setWordWrap(True)
         skin_note.setStyleSheet("color: #888; font-size: 10px;")
         dlt.addWidget(skin_note)
-
-        skin_pad_row = QHBoxLayout()
-        skin_pad_row.addWidget(QLabel("Bbox padding (px):"))
-        self._skin_pad_spin = QSpinBox()
-        self._skin_pad_spin.setMinimum(0)
-        self._skin_pad_spin.setMaximum(500)
-        self._skin_pad_spin.setValue(25)
-        skin_pad_row.addWidget(self._skin_pad_spin)
-        dlt.addLayout(skin_pad_row)
 
         self._skin_protect_btn = QPushButton("Protect Skin as Label")
         self._skin_protect_btn.setStyleSheet("QPushButton { padding: 5px; }")
@@ -3020,11 +3003,15 @@ class ZFMicrogliaAIWidget(QWidget):
             "cell on the Labels layer selected above (2D against skin "
             "for a touching cell, 3D otherwise), then removes leftover "
             "debris -- usable on any existing Labels layer, not only a "
-            "layer fresh from Cellpose-SAM Segmentation. Always protects "
-            "skin as label -1. Uses the Signal / Labels / Brain mask "
-            "layers selected above, the threshold set by Contrast low "
-            "(best_lo) calibration above, and Protect Skin as Label's "
-            "Bbox padding."
+            "layer fresh from Cellpose-SAM Segmentation, and shared with "
+            "the Cellpose-SAM-chained auto-correct stage (Create MG "
+            "Labels' checkbox). Always protects skin as label -1. Uses "
+            "the Signal / Labels / Brain mask layers selected above, the "
+            "threshold set by Contrast low (best_lo) calibration above, "
+            "and Bbox padding/Auto-grow/Growth step/Max growth "
+            "iterations/Keep-until-stable/Max stability passes from "
+            "Correction Settings above -- for skin's own trim too, same "
+            "as Protect Skin as Label."
         )
         ac_note.setWordWrap(True)
         ac_note.setStyleSheet("color: #888; font-size: 10px;")
@@ -7842,7 +7829,7 @@ class ZFMicrogliaAIWidget(QWidget):
             return
 
         label_id = self._edit_label_a_spin.value()
-        pad = self._correct_pad_spin.value()
+        pad = self._corrset_pad_spin.value()
         mode = self._correct_mode_combo.currentData()
         if mode == "3d" and label_id == -1:
             self._correct_status_lbl.setText(
@@ -7872,11 +7859,11 @@ class ZFMicrogliaAIWidget(QWidget):
         fillholes_on = self._fillholes_cb.isChecked()
         fh_pad = fill_holes_pad()
 
-        grow_on = self._correct_grow_cb.isChecked()
-        growth_step = self._correct_growstep_spin.value()
-        max_iterations = self._correct_maxiter_spin.value()
-        until_stable = self._correct_stable_cb.isChecked()
-        max_stability_passes = self._correct_maxstable_spin.value()
+        grow_on = self._corrset_grow_cb.isChecked()
+        growth_step = self._corrset_growstep_spin.value()
+        max_iterations = self._corrset_maxiter_spin.value()
+        until_stable = self._corrset_stable_cb.isChecked()
+        max_stability_passes = self._corrset_maxstable_spin.value()
 
         def _sand_group(new_labels, group_ids):
             """Fills each label's own interior cavities (if enabled),
@@ -8164,7 +8151,7 @@ class ZFMicrogliaAIWidget(QWidget):
         if label_a == label_b:
             self._adjcorr_status_lbl.setText("ERROR: Label A and Label B must be different.")
             return
-        pad = self._adjcorr_pad_spin.value()
+        pad = self._corrset_pad_spin.value()
         lo, _hi = (float(v) for v in signal_lyr.contrast_limits)
         z = int(self._viewer.dims.current_step[0])
 
@@ -8175,11 +8162,11 @@ class ZFMicrogliaAIWidget(QWidget):
         fillholes_on = self._fillholes_cb.isChecked()
         fh_pad = fill_holes_pad()
 
-        grow_on = self._adjcorr_grow_cb.isChecked()
-        growth_step = self._adjcorr_growstep_spin.value()
-        max_iterations = self._adjcorr_maxiter_spin.value()
-        until_stable = self._adjcorr_stable_cb.isChecked()
-        max_stability_passes = self._adjcorr_maxstable_spin.value()
+        grow_on = self._corrset_grow_cb.isChecked()
+        growth_step = self._corrset_growstep_spin.value()
+        max_iterations = self._corrset_maxiter_spin.value()
+        until_stable = self._corrset_stable_cb.isChecked()
+        max_stability_passes = self._corrset_maxstable_spin.value()
 
         self._adjcorr_btn.setEnabled(False)
         self._adjcorr_status_lbl.setText(
@@ -8351,7 +8338,12 @@ class ZFMicrogliaAIWidget(QWidget):
             )
             return
 
-        pad = self._skin_pad_spin.value()
+        pad = self._corrset_pad_spin.value()
+        auto_grow = self._corrset_grow_cb.isChecked()
+        growth_step = self._corrset_growstep_spin.value()
+        max_iterations = self._corrset_maxiter_spin.value()
+        until_stable = self._corrset_stable_cb.isChecked()
+        max_stability_passes = self._corrset_maxstable_spin.value()
         # Only the FALLBACK now -- `lo` itself comes from a contrast sweep
         # against THESE labels (see _worker below), exactly like the
         # auto-correct pipeline's own step 1. The signal layer's current
@@ -8473,8 +8465,9 @@ class ZFMicrogliaAIWidget(QWidget):
                 seeded, skin_id = seed_skin_label(labels, brain_mask)
                 new_labels, rep = trim_skin_label(
                     seeded, skin_src, skin_id, lo, pad=pad,
-                    growth_step=5, max_iterations=10,
-                    until_stable=True, max_stability_passes=100,
+                    auto_grow=auto_grow, growth_step=growth_step,
+                    max_iterations=max_iterations, until_stable=until_stable,
+                    max_stability_passes=max_stability_passes,
                 )
                 # No brain-mask clamp any more (see trim_skin_label()'s own
                 # docstring) -- sweep up whatever small stray blob skin
@@ -8687,9 +8680,11 @@ class ZFMicrogliaAIWidget(QWidget):
         Uses the shared Signal / Labels / Brain mask layers from the
         "Layers and label(s) being edited" section at the top of this
         tab (this pipeline's own skin-protection step needs exactly
-        those same layers), plus Protect Skin as Label's own Bbox
-        padding field, rather than duplicating a second, identical set
-        of combos right below it.
+        those same layers) and the shared Correction Settings group
+        (pad/auto_grow/growth_step/max_iterations/until_stable/
+        max_stability_passes -- for skin's own trim too, same as
+        Protect Skin as Label), rather than duplicating a second,
+        identical set of controls right below it.
         """
         # Explicit combo, not _active_labels_layer()'s "active selection,
         # or topmost Labels layer" guessing fallback -- same reasoning
@@ -8729,7 +8724,12 @@ class ZFMicrogliaAIWidget(QWidget):
             return
 
         scale = tuple(float(s) for s in lyr.scale)
-        skin_pad = self._skin_pad_spin.value()
+        pad = self._corrset_pad_spin.value()
+        auto_grow = self._corrset_grow_cb.isChecked()
+        growth_step = self._corrset_growstep_spin.value()
+        max_iterations = self._corrset_maxiter_spin.value()
+        until_stable = self._corrset_stable_cb.isChecked()
+        max_stability_passes = self._corrset_maxstable_spin.value()
         min_volume = self._current_min_volume()
         final_min_fraction = self._finalfrac_spin.value()
 
@@ -8768,8 +8768,9 @@ class ZFMicrogliaAIWidget(QWidget):
                 new_labels, report = auto_contrast_correct_stack(
                     labels, image, scale, brain_mask, skin_image=skin_image,
                     min_volume=min_volume, final_min_fraction=final_min_fraction,
-                    skin_pad=skin_pad, growth_step=5, max_iterations=10,
-                    until_stable=True, max_stability_passes=100,
+                    pad=pad, skin_pad=pad, auto_grow=auto_grow,
+                    growth_step=growth_step, max_iterations=max_iterations,
+                    until_stable=until_stable, max_stability_passes=max_stability_passes,
                     lo_override=lo_override, lo_adjustment=lo_adjustment,
                     n_cells_calib=sweep_params["n_cells"],
                     slices_per_cell_calib=sweep_params["slices_per_cell"],
@@ -10056,13 +10057,16 @@ class ZFMicrogliaAIWidget(QWidget):
         itself, chained after it rather than run in parallel, since it
         corrects THIS run's own fresh labels.
 
-        growth_step/max_iterations/until_stable/max_stability_passes/
-        pad/skin_pad are fixed for this pipeline (not read from Tab 3's
-        own Correct Label controls) -- explicit values given for this
-        specific chained, unattended use: growth step 5px up to 10
-        attempts/slice, until stable up to 100 passes/slice (pad and
-        skin_pad use auto_contrast_correct_stack()'s own defaults, 15
-        and 25 respectively).
+        pad/auto_grow/growth_step/max_iterations/until_stable/
+        max_stability_passes are read from Edit MG Labels' shared
+        Correction Settings group -- the same values Correct Label,
+        Correct Adjacent Labels, Protect Skin as Label, and the
+        standalone Auto-correct Labels button all use, so a manual
+        correction and this unattended, chained pipeline stage always
+        agree. skin_pad is set equal to pad too (Protect Skin as Label
+        no longer has a Bbox padding of its own -- see Correction
+        Settings' own note), not auto_contrast_correct_stack()'s
+        separate 25px default.
 
         signal_layer : the actual napari Image layer (not just its raw
                        array, already captured as `volume` above) -- on
@@ -10077,6 +10081,12 @@ class ZFMicrogliaAIWidget(QWidget):
         """
         min_volume = self._current_min_volume()
         final_min_fraction = self._finalfrac_spin.value()
+        pad = self._corrset_pad_spin.value()
+        auto_grow = self._corrset_grow_cb.isChecked()
+        growth_step = self._corrset_growstep_spin.value()
+        max_iterations = self._corrset_maxiter_spin.value()
+        until_stable = self._corrset_stable_cb.isChecked()
+        max_stability_passes = self._corrset_maxstable_spin.value()
 
         # Same shared autosweep checkbox / reduction slider the Edit MG
         # Labels tab's own Auto-correct Labels tool reads --
@@ -10109,8 +10119,9 @@ class ZFMicrogliaAIWidget(QWidget):
                 new_labels, report = auto_contrast_correct_stack(
                     labels, volume, scale, brain_mask, skin_image=skin_image,
                     min_volume=min_volume, final_min_fraction=final_min_fraction,
-                    growth_step=5, max_iterations=10,
-                    until_stable=True, max_stability_passes=100,
+                    pad=pad, skin_pad=pad, auto_grow=auto_grow, growth_step=growth_step,
+                    max_iterations=max_iterations, until_stable=until_stable,
+                    max_stability_passes=max_stability_passes,
                     n_cells_calib=sweep_params["n_cells"],
                     slices_per_cell_calib=sweep_params["slices_per_cell"],
                     edge_margin_um=sweep_params["edge_margin_um"],

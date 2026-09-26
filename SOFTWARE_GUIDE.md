@@ -307,7 +307,7 @@ else:
 brain_only ← volume × eroded_mask       # zero everything the (possibly eroded) mask excludes
 return brain_mask, brain_only, eroded_mask
 ```
-`eroded_mask` is the one downstream background-removal steps must use as "the brain boundary" — using `brain_mask` there instead would silently discard the Erosion slider (a real bug fixed earlier in this project's history).
+`eroded_mask` is the one downstream background-removal steps must use as "the brain boundary" — using `brain_mask` there instead would silently discard the Erosion slider.
 
 ### `_background.py` — background estimation and removal, 3 modes
 
@@ -483,8 +483,7 @@ repeat up to 200 passes:
               NOT plain voxel-index distance: this project's voxels are
               anisotropic (Z=1.0µm, XY=0.174µm typical), so an unscaled EDT
               would treat a "2 voxel" gap as 2.0µm along Z but only 0.35µm
-              in-plane, a ~5.7x orientation-dependent inconsistency (a real
-              bug found and fixed in this project's history)
+              in-plane, a ~5.7x orientation-dependent inconsistency
         do_merge ← gap <= max_gap (µm)
         if not do_merge: fall back to contact-area check
             (dilate f by 1 voxel, count overlap with t) >= min_contact
@@ -552,7 +551,7 @@ Deliberately kept as its own small default (0.7/0.7 voxels), much smaller than t
 
 **Route auto-detection**: the Pixel Classifier and Cellpose-SAM sections (plus downstream tools — Resort/Split/Save) show or hide based on whether a `_NoBG` or `_ExtRm`-suffixed layer exists anywhere in the viewer, not just whichever layer is currently active — both can be shown together (e.g. comparing routes on the same fish).
 
-**`_on_create_labels()`** (Pixel Classifier): background-thread wrapper reading Smooth σXY/σZ, Min overlap (historical UI label — no longer used by the current connected-components algorithm, kept for compatibility), Min volume, Min hole size sliders, calling `create_labels()`, adding the result as a new `Labels` layer named `<image>_labels`.
+**`_on_create_labels()`** (Pixel Classifier): background-thread wrapper reading Smooth σXY/σZ, Min volume, Min hole size sliders, calling `create_labels()` (3D Gaussian smooth → re-threshold → per-slice hole-fill → true 3D connected components → volume filter → renumber — no per-slice overlap-linking step), adding the result as a new `Labels` layer named `<image>_labels`.
 
 **`_on_run_cellpose_seg()`** (Cellpose-SAM Segmentation): validates the checkpoint file (`_is_valid_cellpose_checkpoint()` — checks it's a zip archive, the format `torch.save()` uses, to catch a wrongly-selected non-checkpoint file before a multi-hour run rather than deep inside `torch.load()`), auto-selects the matching `<stem>_brain_mask` layer if the "Auto-correct" checkbox needs skin protection, then runs `run_full_pipeline()` in a background thread wrapped in `capture_live_output` (surfaces Cellpose's own otherwise-silent flow-following/hole-fill/small-object-removal step into the GUI log). On completion: adds the result as a `Labels` layer, **unconditionally** (no checkbox) writes `<stem>_cp_masks.tif` (`raw_masks`) and `<stem>_cp_masks_corrected.tif` (post-safe-merge) alongside the fish's other outputs, and — if "Auto-correct labels via contrast sweep after segmentation" is ticked — chains into the Stage 3 auto-correction pipeline (see §5) as a further background stage.
 
@@ -568,13 +567,13 @@ Deliberately kept as its own small default (0.7/0.7 voxels), much smaller than t
 
 ### Shared building blocks
 
-Every tool in this section that regenerates a shape from intensity shares one convention: **`candidate = image >= lo`** — a one-sided threshold, not a band. An earlier band version (`lo <= image <= hi`) got this backwards for exactly the narrow contrast window that makes the tool useful: a window like `[100, 101]` chosen to make the display saturate into a clean silhouette excludes the cell's true bright interior (well above `hi`, just shown as saturated white) while pulling in unrelated background pixels that happen to fall inside the narrow band. `hi` (the signal layer's own display ceiling) is shown for context only, never used to restrict the mask.
+Every tool in this section that regenerates a shape from intensity shares one convention: **`candidate = image >= lo`** — a one-sided threshold, not a band. `hi` (the signal layer's own display ceiling) is shown for context only, never used to restrict the mask — a narrow contrast window like `[100, 101]`, chosen to make the display saturate into a clean silhouette, would otherwise exclude the cell's true bright interior (well above `hi`, just shown as saturated white) if `hi` bounded the mask.
 
 Every tool also shares **foreign-label protection**: any pixel already claimed by a *different* existing label is excluded from the candidate mask before anything (connected components, watershed) runs — a foreign label can never be grown into, merged into, or even appear in a corrected shape, regardless of how the threshold or connectivity falls.
 
 ### `_labeling.py` — editing primitives
 
-**`resort_labels(labels, sort_by, reverse)`**: renumber every label 1..N by a chosen key — `"size"` (voxel count via `bincount`, natural = descending, largest→1), `"centroid_z/y/x"` (via `label_centroids_zyx`, natural = ascending), or `"complexity"` (skeleton branch count via `_statistics._skeleton_stats`, natural = descending, computed per-label in a thread pool). Only positive labels are ever touched by the final LUT remap — a sentinel like skin's `-1` would otherwise corrupt via numpy's negative-index wraparound (`lut[-1]` = last element), a real bug found and fixed in this project's history.
+**`resort_labels(labels, sort_by, reverse)`**: renumber every label 1..N by a chosen key — `"size"` (voxel count via `bincount`, natural = descending, largest→1), `"centroid_z/y/x"` (via `label_centroids_zyx`, natural = ascending), or `"complexity"` (skeleton branch count via `_statistics._skeleton_stats`, natural = descending, computed per-label in a thread pool). Only positive labels are ever touched by the final LUT remap — a sentinel like skin's `-1` would otherwise corrupt via numpy's negative-index wraparound (`lut[-1]` = last element).
 
 **`label_centroids_zyx(labels, label_ids)`**: bit-identical to `scipy.ndimage.center_of_mass`, but computed from each label's own bounding box (`find_objects` + a per-label crop) instead of one whole-volume call — ~10-100x faster when a large negative sentinel (skin) is present, since scipy's own implementation takes a much slower path for negative-containing arrays.
 
@@ -640,7 +639,7 @@ extend outward past the original [zmin, zmax] one slice at a time (up to
     — the true edge has been found
 remove_debris_for_label() cleans up any small disconnected leftover
 ```
-Every slice's own correction is *locally anchored* — re-derived fresh from wherever the label actually sits one slice ago, so it can only ever reach `pad` beyond its own verified position, never balloon into unrelated distant signal the way one whole-cell-sized window would (a real design flaw an earlier version had). `resolve_adjacent=False` treats every other label as purely excluded territory instead of jointly resolving against it — used for skin's own sentinel, which borders essentially every real cell and shouldn't be watershed-split against each one.
+Every slice's own correction is *locally anchored* — re-derived fresh from wherever the label actually sits one slice ago, so it can only ever reach `pad` beyond its own verified position, never balloon into unrelated distant signal the way one whole-cell-sized window would. `resolve_adjacent=False` treats every other label as purely excluded territory instead of jointly resolving against it — used for skin's own sentinel, which borders essentially every real cell and shouldn't be watershed-split against each one.
 
 **`sand_label(labels, label_id, sigma_xy, sigma_z, pad)`** — the per-label engine behind §4's sanding pass: 3D Gaussian-blur the label's own binary mask, re-threshold at 0.5, foreign-excluded; skips (reports why) if the result collapses to nothing or loses contact with the original footprint.
 
@@ -654,9 +653,9 @@ Every slice's own correction is *locally anchored* — re-derived fresh from whe
 
 **`copy_label_to_adjacent_slice(labels, label_id, z_src, direction)`**: copies one label's 2D footprint onto the next/previous slice, clearing its own old footprint there first, foreign-excluded (reports how many pixels were dropped to foreign territory rather than pretending an exact copy).
 
-**Skin protection**: `skin_voxel_count(labels, skin_label_id=-1)` — the single, array-content-only definition of "is skin already protected" every path checks (never widget state). `seed_skin_label(labels, brain_mask, skin_label_id=-1)` — bulk-fills every background voxel outside the brain mask with the sentinel `-1` (never overwrites a real label, never touches inside the brain); this is only a coarse seed. `trim_skin_label(...)` — a thin wrapper around `correct_label_2d_stack` (below) trimming that bulk seed down to real signal-supported territory, per-slice only (skin has no cross-slice-continuity problem to solve and spans nearly the whole Z range, so the 3D walk's machinery would be pure waste — the same reason 3D correction of an *existing* skin label is structurally blocked in the interactive UI). No brain-mask clamp (an earlier version had one; removed per the user's own root-cause diagnosis that it blocked legitimate inner-boundary correction — the debris problem it existed to prevent is instead handled by a `remove_debris(..., skin_label_id=...)` pass run right after). `remove_label(labels, label_id)` — plain bulk clear, not connectivity-restricted, used to drop skin's sentinel when no longer needed.
+**Skin protection**: `skin_voxel_count(labels, skin_label_id=-1)` — the single, array-content-only definition of "is skin already protected" every path checks (never widget state). `seed_skin_label(labels, brain_mask, skin_label_id=-1)` — bulk-fills every background voxel outside the brain mask with the sentinel `-1` (never overwrites a real label, never touches inside the brain); this is only a coarse seed. `trim_skin_label(...)` — a thin wrapper around `correct_label_2d_stack` (below) trimming that bulk seed down to real signal-supported territory, per-slice only (skin has no cross-slice-continuity problem to solve and spans nearly the whole Z range, so the 3D walk's machinery would be pure waste — the same reason 3D correction of an *existing* skin label is structurally blocked in the interactive UI). No brain-mask clamp — a legitimate inward correction along skin's real inner boundary is never blocked; a `remove_debris(..., skin_label_id=...)` pass run right after sweeps up any small stray blob skin absorbed instead. `remove_label(labels, label_id)` — plain bulk clear, not connectivity-restricted, used to drop skin's sentinel when no longer needed.
 
-**`correct_label_2d_stack(labels, image, label_id, lo, pad, ..., n_workers)`** — corrects one label across its *whole* Z range, slice by slice, **independently and in parallel** (`ThreadPoolExecutor`, 75% of cores by default, `n_workers` overridable so a caller already parallel across cells — the auto-correct waves — doesn't multiply thread pools), each slice via `grow_correct_label_2d()` (the exact function the interactive Correct Label 2D button calls) on a one-slice *view*, not a full-volume copy per slice (a real fix for a 2026-09-18 OOM: the old version's `labels.copy()` per slice attempt, times 36 concurrent slice threads, exhausted 119 GB RAM). Wherever another real label is present, the boundary is jointly resolved via the same marker-seeded watershed, but only `label_id`'s own resulting side is ever painted back — guaranteed by watershed's own marker semantics (a label's own existing pixels are always its own marker, which watershed can never reassign), not a separately-enforced rule. `trim_skin_label()` is a thin wrapper calling this with `label_id = skin_label_id`.
+**`correct_label_2d_stack(labels, image, label_id, lo, pad, ..., n_workers)`** — corrects one label across its *whole* Z range, slice by slice, **independently and in parallel** (`ThreadPoolExecutor`, 75% of cores by default, `n_workers` overridable so a caller already parallel across cells — the auto-correct waves — doesn't multiply thread pools), each slice via `grow_correct_label_2d()` (the exact function the interactive Correct Label 2D button calls) on a one-slice *view*, not a full-volume copy per slice — keeping RAM bounded regardless of how many slice threads run concurrently. Wherever another real label is present, the boundary is jointly resolved via the same marker-seeded watershed, but only `label_id`'s own resulting side is ever painted back — guaranteed by watershed's own marker semantics (a label's own existing pixels are always its own marker, which watershed can never reassign), not a separately-enforced rule. `trim_skin_label()` is a thin wrapper calling this with `label_id = skin_label_id`.
 
 ### `_grow_correct.py` — auto-grow/until-stable orchestration
 
@@ -681,7 +680,7 @@ for each stability pass (1 if until_stable=False, else up to max_stability_passe
 ```
 Neighbor discovery is deliberately narrow: only the *originally requested* label's own genuine touching-adjacency counts (never "merely present in the box," which would keep finding something as the box grows; never an already-folded-in neighbor's own further touches, which could cascade the group outward indefinitely).
 
-**`grow_correct_label_3d(labels, image, label_ids, lo, ...)`** — now just a thin pass-through to `correct_label_from_intensity_3d(auto_grow=True, ...)`: all growth and stability happens *inside* that function's own per-slice walk (an earlier version redid the whole cell at a bigger global pad on every retry; removed once the per-slice engine made that redundant and much more expensive).
+**`grow_correct_label_3d(labels, image, label_ids, lo, ...)`** — a thin pass-through to `correct_label_from_intensity_3d(auto_grow=True, ...)`: all growth and stability happens *inside* that function's own per-slice walk, never as a whole-cell retry at a bigger global pad.
 
 **`format_grow_report(report, mode)`**: renders either shape into the same human-readable style (which slices grew, which took multiple stability passes, whether it converged) used throughout the plugin's status/report boxes.
 
@@ -723,9 +722,8 @@ Any non-positive label (skin `-1`) is treated as plain background during this sw
        seeded ← seed_skin_label(labels, brain_mask)
        labels_with_skin, skin_report ← trim_skin_label(seeded, skin_image
            or image, -1, best_lo, pad=skin_pad, ...)
-       # same best_lo real cells get — no longer offset, since skin's
-       # own joint-resolution against a touching cell (§ above) made the
-       # old +1 margin unnecessary
+       # same best_lo real cells get -- skin's own joint-resolution
+       # against a touching cell (§ above) needs no separate margin
 
 3. remove_debris(labels_with_skin, threshold, skin_label_id=-1)
    # sweeps whatever small stray blob skin's own unclamped trim absorbed
@@ -916,7 +914,7 @@ All three network backends catch their own request errors and return an inline `
 
 ### `_gt_annotation.py` — polygon-based GT annotation
 
-Ported from an earlier standalone tool (`polygon_annotation_tool.py`) into plain viewer-taking functions on the plugin's own shared viewer, rather than a second `napari.Viewer()` — three deliberate deviations from the original noted in the module docstring: the target Image layer is passed explicitly (not "first Image layer in the list," a real risk once Tabs 1–3 have added other layers); the `brain_polygons` Shapes layer is auto-created on demand; `generate_masks()` no longer hides every other layer in the viewer.
+Plain viewer-taking functions on the plugin's own shared viewer, rather than a second `napari.Viewer()`: the target Image layer is passed explicitly (not "first Image layer in the list," a real risk once Tabs 1–3 have added other layers); the `brain_polygons` Shapes layer is auto-created on demand; `generate_masks()` leaves every other layer in the viewer untouched.
 
 ```
 resample_polygon_preserve_order(pts, n_points=96):
@@ -1116,7 +1114,7 @@ Pure argument-list construction (`build_prepare_data_argv` / `build_monai_train_
 
 **Calibrate branch_radius (from GT)**: background-thread wrapper around `recommend_branch_radius()`, with the same one-shot "This is verified ground truth" gating pattern (§2/§5/§8) before it's allowed to update the shared `branch_radius` config value.
 
-**Train MONAI U-Net / Train Cellpose-SAM** buttons: build the argv via `_ai_tools.py`, call `launch_detached()`; poll `is_running`/`tail_log`/`patience_exceeded` on a `QTimer` while napari stays open, and **reconnect automatically on napari reopen** by reading the persisted PID + log path from config — a dead PID found on reopen finalizes immediately (best checkpoint reported, pointer written, stale PID cleared), closing a real gap where a job that finished while napari was closed previously showed nothing until manually reopened and re-triggered. "Stop Training" calls `kill_process_tree`. An optional Email-notification panel (SMTP fields, password via `_secrets.py`) threads a `notify` dict through to `launch_detached`.
+**Train MONAI U-Net / Train Cellpose-SAM** buttons: build the argv via `_ai_tools.py`, call `launch_detached()`; poll `is_running`/`tail_log`/`patience_exceeded` on a `QTimer` while napari stays open, and **reconnect automatically on napari reopen** by reading the persisted PID + log path from config — a dead PID found on reopen finalizes immediately (best checkpoint reported, pointer written, stale PID cleared), so a job that finished while napari was closed is reported the moment napari reopens. "Stop Training" calls `kill_process_tree`. An optional Email-notification panel (SMTP fields, password via `_secrets.py`) threads a `notify` dict through to `launch_detached`.
 
 ---
 
@@ -1186,7 +1184,7 @@ best_point ← highest average IoU
 
 **`run_sigma_sweep(...)`** — the Smooth σXY/σZ counterpart, roles reversed: BG Threshold/Signal Erosion held fixed, σXY/σZ swept. Cheaper per point than `run_pixel_sweep`, since σ only affects `create_labels()`, not the background-threshold crop-building step (computed once per cell, reused across every σ combination).
 
-**`min_volume_from_gt(gt_labels)`**: the smallest true voxel volume among GT-labeled cells — replaces a single hardcoded constant that used to be shared across every fish regardless of whether its real microglia ran smaller/larger. **`min_hole_size_from_gt(gt_labels, min_hole_size_to_trust=5)`**: the smallest *real* internal hole any hand-corrected GT cell actually has (a human deliberately left it unlabeled) — holes below a trust threshold are discarded first, since real GT showed a sharp bimodal split (1–2 voxel annotation slips vs. a cluster of 400+ voxel real structural gaps, nothing in between); trusting every reported hole collapsed the recommendation to 0. **`min_intercell_gap_um(gt_labels, scale_zyx, pad_um=15)`**: smallest real physical surface-to-surface gap between any two distinct GT cells — a safety ceiling for Krendl safe-merge's `max_gap` (never bridge a gap that could be two real cells), computed per-cell-bbox rather than one full-volume distance transform (which timed out past 100s on a real fish).
+**`min_volume_from_gt(gt_labels)`**: the smallest true voxel volume among GT-labeled cells, measured per fish rather than one constant shared across every fish regardless of how its real microglia actually run. **`min_hole_size_from_gt(gt_labels, min_hole_size_to_trust=5)`**: the smallest *real* internal hole any hand-corrected GT cell actually has (a human deliberately left it unlabeled) — holes below a trust threshold are discarded first, since real GT showed a sharp bimodal split (1–2 voxel annotation slips vs. a cluster of 400+ voxel real structural gaps, nothing in between); trusting every reported hole collapsed the recommendation to 0. **`min_intercell_gap_um(gt_labels, scale_zyx, pad_um=15)`**: smallest real physical surface-to-surface gap between any two distinct GT cells — a safety ceiling for Krendl safe-merge's `max_gap` (never bridge a gap that could be two real cells), computed per-cell-bbox rather than one full-volume distance transform (which timed out past 100s on a real fish).
 
 ### `_epoch_sweep.py` — GT-verified Cellpose-SAM checkpoint sweep
 
@@ -1214,7 +1212,7 @@ best_epoch ← highest average IoU
 
 ### `_krendl_sweep.py` — Cellprob x Large-contact + real-data merge-parameter calibration
 
-The most involved sweep module — three related but distinct calibration tools, reflecting a real methodological evolution documented in the module's own history (see `skin_segmentation.md`'s 2026-08-17/18 entries).
+The most involved sweep module — three related but distinct calibration tools.
 
 **`run_krendl_sweep(volume, gt_labels, model_path, cellprobs, large_contacts, ...)`** — the original instance-matched sweep, scored via `score_against_gt()` on the *fully corrected* result:
 ```
@@ -1355,9 +1353,8 @@ cfg ← _secrets.migrate_plaintext_secrets(cfg)   # one-time upgrade, see §2
 model_path ← saved config path, else the bundled default checkpoint, else
              None — resolved via is_file(), not exists(): Path("") silently
              normalizes to Path(".") under pathlib, and exists() is True
-             for a directory too, so an unconfigured path used to be
-             wrongly treated as "a valid model is loaded" (a real bug,
-             surfacing much later as a confusing torch.load() permission error)
+             for a directory too, which would otherwise let an unconfigured
+             path pass as "a valid model is loaded"
 cellpose_model_path ← saved config only — no bundled default (project-specific,
              not shipped with the plugin)
 self._state ← {model_path, cellpose_model_path, last_file_path, metadata, config}

@@ -154,7 +154,7 @@ From that branch table:
 | `endpoint_density` | same normalisation, for `n_endpoints` |
 | `process_complexity` | `n_endpoints × mean_branch_len_um / volume_um3` — a single combined index: more endpoints *and* longer branches *and* smaller cell body all push this up |
 
-**A real gotcha, already found and fixed in this project once** (see the branch-radius calibration work): `skan`'s `source_image=` parameter does **not** feed `summarize()`'s per-branch intensity/"mean-pixel-value" columns the way its name suggests — that requires baking the values into the skeleton array itself before constructing `skan.Skeleton`, not passing them as `source_image`. This module doesn't currently use any `source_image`-derived column (only geometry columns), so it isn't affected, but it's a real API trap worth knowing if this module is ever extended to pull intensity-along-skeleton statistics.
+`skan`'s `source_image=` parameter does **not** feed `summarize()`'s per-branch intensity/"mean-pixel-value" columns the way its name suggests — that requires baking the values into the skeleton array itself before constructing `skan.Skeleton`, not passing them as `source_image`. This module doesn't currently use any `source_image`-derived column (only geometry columns), so it isn't affected, but it's a real API trap worth knowing if this module is ever extended to pull intensity-along-skeleton statistics.
 
 **Failure mode:** if `skan` isn't installed, or skeletonization produces an empty skeleton (can happen for a 1-2 voxel label), `_skeleton_stats` returns `(0, 0, 0.0, 0.0, 1.0)` rather than raising — all branch-derived columns read as zero/neutral for that label instead of aborting the batch.
 
