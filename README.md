@@ -149,7 +149,7 @@ All numeric sliders in this plugin are directly editable — click the number bo
 | MONAI Threshold | 0.25 | Sigmoid cutoff. Keep low — post-processing cleans the rest. |
 | Erosion | 0 vox | Strips skin rim from `brain_only`. `brain_mask` always saved un-eroded. Composes correctly with every Background mode. |
 | Background mode | Off | 1 for Cellpose-SAM, 2 for Pixel Classifier (see Tab 2) |
-| BG Threshold | 1.40 | Validated for microglia stacks |
+| BG Threshold | 1.40 | Only active in Background mode 2. Current recommended value for microglia stacks: **1.05** |
 
 **Verify MONAI Threshold / Erosion (GT Sweep)** — moved to **Tab 6 — Sweeps & Utilities**; recalibrates the Threshold/Erosion sliders above directly from a hand-corrected GT brain mask.
 
@@ -197,13 +197,15 @@ Runs `do_3D` inference with a Cellpose-SAM checkpoint, then 3-component-GMM clea
 
 Requires a **Cellpose-SAM checkpoint** — this is a project-specific fine-tuned model, not shipped with the plugin or downloadable from a fixed URL; browse to your own trained checkpoint. The path is remembered across sessions (like the MONAI model path).
 
-| Parameter | Default |
-|-----------|---------|
-| Cellprob threshold | -2.5 |
-| Flow threshold | 0.4 |
-| Safe-merge max gap (µm) | 1.0 |
-| Safe-merge min contact (vox) | 10 |
-| Large-contact merge (vox) | 20 |
+| Parameter | Default | Current recommended |
+|-----------|---------|----------------------|
+| Cellprob threshold | -2.5 | -1.15 |
+| Flow iterations (niter) | 200 | 400 |
+| Safe-merge max gap (µm) | 1.0 | 5.0 |
+| Safe-merge min contact (vox) | 10 | 1 |
+| Large-contact merge (vox) | 20 | 10 |
+
+Flow threshold is not a field in this plugin — Cellpose only applies its flow-error filter outside `do_3D` mode, which this plugin always uses, so the parameter has no effect here and isn't exposed.
 
 **Auto-correct labels via contrast sweep after segmentation** (checkbox, on by default) — after a run finishes: calibrates the contrast threshold using the same **Auto-sweep**/**Reduce best_lo by** controls as Tab 3 — Edit MG Labels' own Contrast low (best_lo) calibration section (physically in Tab 3, read directly regardless of which tab is visible), then protects skin as its own label — always ID **-1** — at that threshold (or **reuses it if the labels already carry skin** — it never re-protects, and it stops with an error rather than correct any cell without skin) (Protect Skin as Label, using the **Brain mask layer** field below the checkbox only to *seed* skin, never to clamp its result — auto-filled from `<stem>_brain_mask`, since Tab 1 already creates and loads it alongside every `_ExtRm`/`_NoBG`/`_RndFill` layer — with the same Bbox padding/auto-grow/until-stable and joint-adjacent-resolution behavior Protect Skin as Label itself has, adapting to whatever the still-raw cells currently look like without ever modifying them), **removes debris skin just absorbed** right there (this sweeps up any small stray blob by size alone before any real cell's own turn), then resorts every cell by Centroid Z and figures out which cells **touch skin**, measured from skin's final geometry (a cell counts if, on any slice, it is within **3 px** of skin). Each cell is then corrected at that threshold, mode chosen by whether it touches skin: a **touching** cell is corrected in **2D, slice by slice, jointly against skin** (skin's own per-slice engine, writing back the cell's own side this time — skin can only ever be corrected in 2D, so a cell meeting it has to do so on skin's own terms); every other cell gets the same auto-grow + until-stable **3D** engine as Correct Label, reading Tab 3's shared **Correction Settings** (Bbox padding/Auto-grow/Growth step/Max growth iterations/Keep-until-stable/Max stability passes — the same values Correct Label, Correct Adjacent Labels, and Protect Skin as Label use, read live at the moment this stage actually starts, not when the segmentation run was launched) — both modes batched into the same parallel-safe waves (up to 75% of CPU cores) instead of strictly one cell at a time, since two cells whose maximum-possible working areas can never overlap can't interact and are corrected concurrently regardless of mode. Then runs Remove Debris once more over the whole result and screens for **possible non-microglia blobs** (≥ 40% of a cell's volume outside the brain mask, or of its surface within 3 px of skin — macrophages or leftover skin; **report only**, nothing is removed). Calibration and Centroid-Z resorting count microglia only (skin is ignored), and the CPU budget is shared between cells and slices, never multiplied. Produces one consolidated report covering every cell (not one report per cell). Required brain mask field means the run refuses to start if it's missing, checked before the segmentation itself begins. On completion, the signal layer's own contrast lower limit moves to the calibrated threshold (upper limit left exactly as it already was) and Tab 3's Protect Skin as Label section (touching/nearby-labels report, status) is filled in as if that button had been clicked directly. If **Soften label contours (sanding)** (Tab 2 Common Settings) is also on, a further stage chains onto this one afterward: every corrected cell first has any interior cavity/vesicle filled in (if that checkbox is also on), then its contour is softened — saved as `<stem>_cp_krendl_ac_snd.tif` on top of this stage's own `<stem>_cp_krendl_ac.tif`.
 

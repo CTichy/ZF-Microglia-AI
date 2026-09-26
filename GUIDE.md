@@ -288,10 +288,11 @@ pixels  > threshold → kept (treated as signal)
 | Value | Effect |
 |-------|--------|
 | 0.00 | Threshold = exactly the mode — removes only confirmed background |
-| **1.40** | **Default — recommended for microglia labelling, validated best results** |
+| 1.40 | Default |
+| **1.05** | **Current recommended value for microglia labelling** |
 | 2.00 (max) | Aggressive — may remove dim signal from thin cell protrusions |
 
-> For microglia labelling, **1.40** typically produces the cleanest isolated blobs with good gaps between cells. If microglia are losing thin protrusions, lower the value.
+> For microglia labelling, **1.05** currently produces the cleanest isolated blobs with good gaps between cells. If microglia are losing thin protrusions, lower the value.
 
 A read-only **Recommended BG Threshold** line sits underneath — updated only by a GT-verified **Verify BG Threshold / Erosion (GT Sweep)** run (Tab 6, [9b](#10b-verify-bg-threshold--erosion-gt-sweep)).
 
@@ -528,6 +529,12 @@ A read-only **Recommended Cellprob threshold** line sits underneath — updated 
 #### Flow threshold
 
 There is no Flow threshold field anywhere in this plugin, deliberately. In Cellpose generally, this parameter rejects predicted objects whose internal flow field doesn't self-consistently point back to a single centre — but Cellpose only applies that flow-error QC filter in 2D/stitch mode. Reading `cellpose/dynamics.py`'s `compute_masks()` shows the filter call sits inside `if not do_3D:`, and this plugin always runs `do_3D=True`, so the parameter has zero effect on any result this plugin produces. Internally, `do_3D`'s function signature still requires a value, fixed at 0.4 and never exposed to the user.
+
+#### Flow iterations (niter)
+
+**Range:** 50 to 2000, step 50 — **Default: 200**
+
+Euler-integration steps each voxel's flow trajectory gets before instances are formed. If a cell comes out looking porous ("pumice stone" — parallel banding per 2D slice) in 3D, try raising **Cellprob threshold** first (e.g. toward -0.3) rather than this field — a faint cell's raw probability map is noisy near a permissive threshold, letting marginal voxels flicker in and out slice by slice before flow-following even starts, which is the more common cause; raising Flow iterations alone rarely fixes it by itself, though the two together on a **Re-run This Cell Only** pass can help.
 
 #### Safe-merge max gap (µm)
 
@@ -1197,7 +1204,7 @@ The report is a 2D grid (rows = Erosion, columns = BG Threshold, cells = average
 
 ### 10c. Verify Cellprob / Large-contact (GT Sweep)
 
-Sweeps **Cellprob** × **Large-contact merge** (both Tab 2, Cellpose-SAM Segmentation) against a full-fish GT labels volume, scored with the exact same whole-fish Hungarian-matched methodology as **Score Against GT** (9e below) — this is how the current defaults were actually found historically (e.g. the cellprob=-2.5/large_contact=20 combination), now automated instead of requiring a CLI sweep script.
+Sweeps **Cellprob** × **Large-contact merge** (both Tab 2, Cellpose-SAM Segmentation) against a full-fish GT labels volume, scored with the exact same whole-fish Hungarian-matched methodology as **Score Against GT** (9e below).
 
 1. **Image** / **GT labels** — a full-fish `brain_only` image + its corresponding GT labels volume.
 2. **Voxel scale Z/XY** — drives the do_3D `anisotropy` parameter (Z/XY ratio); independent of whatever's open in the viewer.
@@ -1206,7 +1213,7 @@ Sweeps **Cellprob** × **Large-contact merge** (both Tab 2, Cellpose-SAM Segment
 5. Tick **"This is verified ground truth"** if the GT labels above are genuinely hand-verified (off by default — see Section 10's intro for the one-shot rule shared by every sweep tool here). Only then will this run's findings move Cellprob threshold, Large-contact merge, the Min volume floor, or the Min hole size floor.
 6. Click **Run Cellprob/LC Sweep**. Uses Tab 2's current **Safe-merge max gap** and **Safe-merge min contact** values — only Cellprob and Large-contact vary.
 
-**Cellprob is now cheap to sweep, not just Large-contact.** Cellpose's own `CellposeModel.eval()` internally splits into two independent steps: the network forward pass that predicts a flow field (the one genuinely expensive, GPU-bound part — completely unrelated to Cellprob or any other threshold) and a separate, cheap mask-formation step that Cellprob threshold feeds into. This sweep now runs the network pass **exactly once** for the whole grid, then re-thresholds cheaply for every Cellprob value, then runs GMM cleanup + Krendl safe-merge per Cellprob value, with **Large-contact** varying freely on top of that as before. Total sweep time is now roughly **one `do_3D` network pass, period** — not one per Cellprob value.
+**Cellprob is cheap to sweep, same as Large-contact.** Cellpose's own `CellposeModel.eval()` internally splits into two independent steps: the network forward pass that predicts a flow field (the one genuinely expensive, GPU-bound part — completely unrelated to Cellprob or any other threshold) and a separate, cheap mask-formation step that Cellprob threshold feeds into. This sweep runs the network pass **exactly once** for the whole grid, then re-thresholds cheaply for every Cellprob value, then runs GMM cleanup + Krendl safe-merge per Cellprob value, with **Large-contact** varying freely on top of that. Total sweep time is roughly **one `do_3D` network pass, period** — not one per Cellprob value.
 
 **Flow is not swept, and has no user control anywhere in this plugin**: reading `cellpose/dynamics.py` shows its flow-error QC filter only runs when `do_3D=False` (2D/stitch mode) — under `do_3D=True`, which this plugin always uses, changing Flow threshold changes nothing about the result. It's fixed internally purely because `do_3D`'s call signature still accepts it — see [Flow threshold](#flow-threshold) in Section 6c.
 
@@ -1724,7 +1731,7 @@ Set these values in Tab 1:
 | MONAI Threshold | **0.25** |
 | Erosion | 0 (default) |
 | Background | **Option 1** if you plan to use Cellpose-SAM in Step 3, **Option 2** if you plan to use the Pixel Classifier |
-| BG Threshold | **1.40** |
+| BG Threshold (Option 2 only) | **1.05** |
 
 Click **Run Skin-Remover** and wait.
 
@@ -1763,7 +1770,7 @@ Click **Create Labels**.
 #### Option B — Cellpose-SAM Segmentation (active layer ends in `_ExtRm`)
 
 1. Browse to your Cellpose-SAM checkpoint (Section 3) if not already set.
-2. Leave the defaults (Cellprob -2.5, Flow 0.4, Safe-merge max gap 2, Safe-merge min contact 10, Large-contact merge 20) unless you know you need to adjust them — see [Section 6c](#6c-cellpose-sam-segmentation) for what each one does.
+2. Set **Cellprob threshold** to **-1.15**, **Flow iterations (niter)** to **400**, **Safe-merge max gap** to **5.0 µm**, **Safe-merge min contact** to **1 vox**, and **Large-contact merge** to **10 vox** — see [Section 6c](#6c-cellpose-sam-segmentation) for what each one does.
 3. Click **Run Cellpose-SAM Segmentation** and wait — this can take hours for a full-size fish. Progress is shown in the status bar; napari stays usable while it runs.
 
 **What you should see:** A labels layer where each cell is a different colour, exactly as with the Pixel Classifier.
@@ -1987,7 +1994,7 @@ Replace `cuda12x`/`cu12` with your actual CUDA version if different (e.g. `cuda1
 
 ### `brain_only` layer looks mostly empty (all black)
 
-BG Threshold is too high — lower it (e.g. from 1.40 toward 0.50-0.60).
+BG Threshold is too high — lower it (e.g. from 1.05 toward 0.50-0.60).
 
 ---
 
@@ -2061,7 +2068,7 @@ The active layer's name must end in `_ExtRm` (Cellpose-SAM) or `_NoBG` (Pixel Cl
 | MONAI Threshold | 0.25 | AI confidence cutoff |
 | Erosion | 0 | Strips voxels from mask edge |
 | Background | Option 2 | Removes background globally (best for labels) |
-| BG Threshold | 1.40 | Fine-tunes background removal level |
+| BG Threshold | 1.05 | Fine-tunes background removal level (Background mode 2 only) |
 | Email me when done | Unchecked | Uses Tab 6's shared Email notification credentials (Section 10h) — useful on CPU/MPS, where this can run 30-60 min |
 
 ### Tab 2 — Create MG Labels
@@ -2092,10 +2099,11 @@ Shown automatically based on active layer suffix — `_ExtRm` → Cellpose-SAM, 
 | Control | Recommended | What it does |
 |---------|-------------|--------------|
 | Min size | 15 vox | Cellpose-SAM only, not shared with Common Settings' Min volume — tiny early noise filter |
-| Cellprob threshold | -2.5 | Confidence cutoff for foreground vs. background |
-| Safe-merge max gap | 2 vox | Max gap allowed when merging fragments |
-| Safe-merge min contact | 10 vox | Min touching surface required to merge |
-| Large-contact merge | 20 vox | Second merge pass for thick-junction splits |
+| Cellprob threshold | -1.15 | Confidence cutoff for foreground vs. background |
+| Flow iterations (niter) | 400 | Euler-integration steps for flow-following before instances are formed |
+| Safe-merge max gap | 5.0 µm | Max physical gap allowed when merging fragments |
+| Safe-merge min contact | 1 vox | Min touching surface required to merge |
+| Large-contact merge | 10 vox | Second merge pass for thick-junction splits |
 | Email me when done | Unchecked | Uses Tab 6's shared Email notification credentials (Section 10h) — do_3D can run hours on a full-size fish |
 | Re-run This Cell Only | — | Fixes one label without redoing the whole fish — crops, re-runs do_3D + cleanup on just that label, splices the result back in Works on the selected labels layer (any name), or finds `<image>_cellpose_labels` / `<image>_labels` for the selected volume |
 
