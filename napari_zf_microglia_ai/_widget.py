@@ -8557,12 +8557,12 @@ class ZFMicrogliaAIWidget(QWidget):
             # HIGH limit moves to an adaptive percentile of this fish's own
             # real signal (see _adaptive_contrast_high()'s own comment) so
             # the display shows real signal's own dynamic range.
+            contrast_note = ""
             if result.get("calibrated"):
+                contrast_hi = _adaptive_contrast_high(image, result["labels"], result["lo"])
                 try:
-                    signal_lyr.contrast_limits = (
-                        result["lo"],
-                        _adaptive_contrast_high(image, result["labels"], result["lo"]),
-                    )
+                    signal_lyr.contrast_limits = (result["lo"], contrast_hi)
+                    contrast_note = f" Contrast set to [{result['lo']:.3g}, {contrast_hi:.3g}]."
                 except Exception as exc:
                     print(f"Protect Skin: could not set the signal layer's contrast limits: {exc}")
             skin_id = result["skin_id"]
@@ -8603,7 +8603,7 @@ class ZFMicrogliaAIWidget(QWidget):
             self._skin_status_lbl.setText(
                 f"Done — skin protected as label {skin_id}, {n_px:,} px, "
                 f"lo={result['lo']:.3g} ({result['lo_note']}) "
-                f"(real signal only, outside the brain mask). Every other "
+                f"(real signal only, outside the brain mask).{contrast_note} Every other "
                 f"Correct Label / auto-correct call now treats it as "
                 f"ordinary protected territory. Use 'Remove Skin Label' "
                 f"below whenever you no longer need it.{touch_note}{debris_note}"
@@ -8885,8 +8885,9 @@ class ZFMicrogliaAIWidget(QWidget):
             # the status text frozen on this line forever, looking exactly
             # like a hang. Same fix as Protect Skin's own contrast
             # assignment below.
+            contrast_hi = _adaptive_contrast_high(image, new_labels, best_lo)
             try:
-                signal_lyr.contrast_limits = (best_lo, _adaptive_contrast_high(image, new_labels, best_lo))
+                signal_lyr.contrast_limits = (best_lo, contrast_hi)
             except Exception as exc:
                 print(f"[Auto-correct] could not set the signal layer's contrast limits: {exc}")
             else:
@@ -8917,7 +8918,8 @@ class ZFMicrogliaAIWidget(QWidget):
                 if n_skin_final == 0 else f" Skin: {n_skin_final:,} voxels."
             )
             done_status = (
-                f"Done — lo={best_lo:.4g}, skin protected as label {report['skin_label_id']}, "
+                f"Done — lo={best_lo:.4g}, contrast set to [{best_lo:.4g}, {contrast_hi:.4g}], "
+                f"skin protected as label {report['skin_label_id']}, "
                 f"{report['n_cells_corrected']}/{report['n_cells_total']} cells corrected "
                 f"({len(report.get('touching_skin_cell_ids', []))} touching skin, in 2D; "
                 f"the rest in 3D), {report['n_debris_fragments_removed']} debris fragment(s) "
@@ -8934,7 +8936,7 @@ class ZFMicrogliaAIWidget(QWidget):
             # ever mutates the live layer in place.
             if self._sanding_cb.isChecked():
                 self._ac_status_lbl.setText(done_status + " Sanding label contours...")
-                self._run_sanding_stage_ac(lyr, new_labels, report["skin_label_id"])
+                self._run_sanding_stage_ac(lyr, new_labels, report["skin_label_id"], done_status)
             else:
                 self._ac_status_lbl.setText(done_status)
                 self._ac_labels_btn.setEnabled(True)
@@ -8942,7 +8944,7 @@ class ZFMicrogliaAIWidget(QWidget):
         timer.timeout.connect(_poll)
         timer.start(200)
 
-    def _run_sanding_stage_ac(self, lyr, labels, skin_label_id):
+    def _run_sanding_stage_ac(self, lyr, labels, skin_label_id, done_status):
         """
         Chained onto "Auto-correct Labels" (_on_autocorrect_labels),
         gated by self._sanding_cb -- the same sand_labels_stack()
@@ -8956,6 +8958,12 @@ class ZFMicrogliaAIWidget(QWidget):
         skin_label_id : forwarded to sand_labels_stack()'s own final
                        debris pass only -- sanding/hole-filling
                        themselves never touch skin's own contour.
+        done_status   : the auto-correct stage's own final status text
+                       (lo/contrast/cell-count summary) -- prefixed onto
+                       this stage's own final status, the same way the
+                       Cellpose-SAM-chained _run_sanding_stage() prefixes
+                       with base_status, so that summary survives once
+                       sanding's own status replaces the status line.
         """
         sigma_xy = self._sanding_sigxy_slider.value()
         sigma_z = self._sanding_sigz_slider.value()
@@ -9017,7 +9025,7 @@ class ZFMicrogliaAIWidget(QWidget):
                 if report.get("n_cells_holes_filled") else ""
             )
             self._ac_status_lbl.setText(
-                f"Done — Sanding: {report['n_cells_sanded']}/{report['n_cells_total']} "
+                f"{done_status} Sanding: {report['n_cells_sanded']}/{report['n_cells_total']} "
                 f"cell(s) softened{holes_note}, {report['n_debris_fragments_removed']} debris "
                 f"fragment(s) removed. Full report below."
             )
@@ -10245,8 +10253,9 @@ class ZFMicrogliaAIWidget(QWidget):
             # this project -- see the identical guard on Auto-correct
             # Existing Labels' own contrast assignment for the real
             # traceback and why an unguarded crash here looks like a hang.
+            contrast_hi = _adaptive_contrast_high(volume, new_labels, best_lo)
             try:
-                signal_layer.contrast_limits = (best_lo, _adaptive_contrast_high(volume, new_labels, best_lo))
+                signal_layer.contrast_limits = (best_lo, contrast_hi)
             except Exception as exc:
                 print(f"Cellpose-SAM auto-correct: could not set the signal layer's contrast limits: {exc}")
 
@@ -10288,7 +10297,8 @@ class ZFMicrogliaAIWidget(QWidget):
                 self._skin_status_lbl.setText(
                     f"Done (via auto-correct) — skin protected as label "
                     f"{report['skin_label_id']} ({n_skin_final:,} voxels, "
-                    f"lo={best_lo:.4g}, real signal only, outside the brain "
+                    f"lo={best_lo:.4g}, contrast set to [{best_lo:.4g}, {contrast_hi:.4g}], "
+                    f"real signal only, outside the brain "
                     f"mask). Use 'Remove Skin Label' below whenever you no "
                     f"longer need it.{debris_note}"
                 )
@@ -10296,6 +10306,7 @@ class ZFMicrogliaAIWidget(QWidget):
             report_text = format_auto_correction_report(report)
             autocorrect_status = (
                 f"{base_status} Auto-correct done — lo={report['best_lo']:.4g}, "
+                f"contrast set to [{best_lo:.4g}, {contrast_hi:.4g}], "
                 f"skin protected as label {report['skin_label_id']}, "
                 f"{report['n_cells_corrected']}/{report['n_cells_total']} cells corrected "
                 f"(Centroid-Z order), {report['n_debris_fragments_removed']} debris "
