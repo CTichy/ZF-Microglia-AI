@@ -76,22 +76,41 @@ _CONFIG_PATH = Path.home() / ".config" / "napari-zf-microglia-ai" / "config.json
 # still accepts a flow_threshold argument.
 _FLOW_THRESHOLD_FIXED = 0.4
 
-# Every best_lo-driven tool sets the signal layer's contrast HIGH limit to
-# best_lo + this margin, not just the LOW limit. best_lo (real background
-# tops out ~100-110 on a typical fish's raw uint16 channel) sits well below
-# where real cell signal actually lives (median ~110-115, but a bright soma
-# core routinely reaches 150-350+) -- leaving the high limit at whatever a
-# file load happened to set it to (often thousands, from the sensor's full
-# dynamic range) squeezes that whole real-signal band into a near-black
-# sliver, so the display looks flat/empty even though the correction itself
-# (image >= lo, computed on raw values, never on the display-mapped ones)
-# is working correctly. 200 is sized from real fish intensity distributions
-# to comfortably cover typical bright cell signal (~95th percentile of
-# real cell voxels) without being swamped by the rare much-brighter outlier
-# voxel a bulk seed or debris can carry -- that voxel just saturates white,
-# same as any other display ceiling choice would do to something brighter
-# than it.
+# Fallback only -- see _adaptive_contrast_high() below, which is what every
+# best_lo-driven tool actually calls. Used only in the degenerate case where
+# no real foreground voxel exists yet to measure a percentile from.
 _CONTRAST_HIGH_MARGIN = 200.0
+_CONTRAST_HIGH_PERCENTILE = 99.0
+_CONTRAST_HIGH_MIN_MARGIN = 50.0
+
+
+def _adaptive_contrast_high(image, labels, lo):
+    """
+    Every best_lo-driven tool sets the signal layer's contrast HIGH limit
+    from this, not just the LOW limit (best_lo). The correction itself only
+    ever reads the low limit (candidate = image >= lo, on raw values, never
+    on the display-mapped ones) -- the high limit is a pure napari display
+    setting with zero effect on any correction result. But leaving it at
+    whatever unrelated value the layer's own load happened to set (often
+    the sensor's full dynamic range, thousands of counts) squeezes real
+    cell signal -- which typically sits in a narrow band just above
+    background -- into a near-black sliver, so the display looks flat/empty
+    even though the correction underneath it is correct.
+
+    Measures the _CONTRAST_HIGH_PERCENTILE-th percentile of raw intensity
+    among voxels `labels` currently calls real (any nonzero label -- a real
+    cell, or skin) -- self-adjusting to THIS fish's own actual signal scale
+    rather than a fixed guess that could be wrong for a differently-acquired
+    fish. Floored at lo + _CONTRAST_HIGH_MIN_MARGIN so a pathologically
+    small or uniform foreground can't collapse the window to near-zero
+    width; falls back to lo + _CONTRAST_HIGH_MARGIN if there's no labeled
+    foreground at all yet to measure.
+    """
+    fg = np.asarray(image)[np.asarray(labels) != 0]
+    if fg.size == 0:
+        return lo + _CONTRAST_HIGH_MARGIN
+    hi = float(np.percentile(fg, _CONTRAST_HIGH_PERCENTILE))
+    return max(hi, lo + _CONTRAST_HIGH_MIN_MARGIN)
 
 
 class _FastDirectLabelColormap(DirectLabelColormap):
@@ -5775,11 +5794,11 @@ class ZFMicrogliaAIWidget(QWidget):
 
             best_lo = sweep["best_lo"]
             # Low end moves to the calibrated threshold; high end moves to
-            # best_lo + _CONTRAST_HIGH_MARGIN, so the display actually shows
-            # real signal's own dynamic range instead of whatever unrelated
-            # ceiling the signal layer's contrast came in with -- see that
-            # constant's own comment.
-            best_hi = best_lo + _CONTRAST_HIGH_MARGIN
+            # an adaptive percentile of this fish's own real signal, so the
+            # display actually shows real signal's own dynamic range instead
+            # of whatever unrelated ceiling the signal layer's contrast came
+            # in with -- see _adaptive_contrast_high()'s own comment.
+            best_hi = _adaptive_contrast_high(image, labels, best_lo)
             # Guarded for the same reason as Auto-correct Labels'
             # own contrast assignment -- see its own comment.
             try:
@@ -8535,11 +8554,15 @@ class ZFMicrogliaAIWidget(QWidget):
             print(f"[Protect Skin] applied the result to the labels layer in {_time.time() - _t:.1f}s")
             # Same visible feedback the auto-correct handlers give: the
             # signal layer's LOW limit moves to the calibrated lo, and the
-            # HIGH limit moves to lo + _CONTRAST_HIGH_MARGIN (see that
-            # constant's own comment) so the display shows real signal.
+            # HIGH limit moves to an adaptive percentile of this fish's own
+            # real signal (see _adaptive_contrast_high()'s own comment) so
+            # the display shows real signal's own dynamic range.
             if result.get("calibrated"):
                 try:
-                    signal_lyr.contrast_limits = (result["lo"], result["lo"] + _CONTRAST_HIGH_MARGIN)
+                    signal_lyr.contrast_limits = (
+                        result["lo"],
+                        _adaptive_contrast_high(image, result["labels"], result["lo"]),
+                    )
                 except Exception as exc:
                     print(f"Protect Skin: could not set the signal layer's contrast limits: {exc}")
             skin_id = result["skin_id"]
@@ -8863,7 +8886,7 @@ class ZFMicrogliaAIWidget(QWidget):
             # like a hang. Same fix as Protect Skin's own contrast
             # assignment below.
             try:
-                signal_lyr.contrast_limits = (best_lo, best_lo + _CONTRAST_HIGH_MARGIN)
+                signal_lyr.contrast_limits = (best_lo, _adaptive_contrast_high(image, new_labels, best_lo))
             except Exception as exc:
                 print(f"[Auto-correct] could not set the signal layer's contrast limits: {exc}")
             else:
@@ -10214,15 +10237,16 @@ class ZFMicrogliaAIWidget(QWidget):
             # directly, so neither would otherwise ever update on its own.
             best_lo = report["best_lo"]
             # Low end moves to the calibrated threshold; high end moves to
-            # best_lo + _CONTRAST_HIGH_MARGIN (see that constant's own
-            # comment) so the display shows real signal's own dynamic range.
+            # an adaptive percentile of this fish's own real signal (see
+            # _adaptive_contrast_high()'s own comment) so the display shows
+            # real signal's own dynamic range.
             # Guarded: napari's own thumbnail update (triggered by this
             # assignment) has a documented history of internal crashes in
             # this project -- see the identical guard on Auto-correct
             # Existing Labels' own contrast assignment for the real
             # traceback and why an unguarded crash here looks like a hang.
             try:
-                signal_layer.contrast_limits = (best_lo, best_lo + _CONTRAST_HIGH_MARGIN)
+                signal_layer.contrast_limits = (best_lo, _adaptive_contrast_high(volume, new_labels, best_lo))
             except Exception as exc:
                 print(f"Cellpose-SAM auto-correct: could not set the signal layer's contrast limits: {exc}")
 
