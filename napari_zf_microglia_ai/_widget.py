@@ -7531,12 +7531,27 @@ class ZFMicrogliaAIWidget(QWidget):
         Every Edit MG Labels tool uses this instead of
         _active_labels_layer()'s implicit "active selection, else
         topmost" fallback -- the whole point of the shared selector is
-        that the layer being edited is always explicit, never guessed."""
+        that the layer being edited is always explicit, never guessed.
+
+        Also forces n_edit_dimensions to 2 on the resolved layer, every
+        call -- none of this plugin's own tools ever go through napari's
+        paint/fill machinery (every one of them replaces `.data` wholesale
+        instead), so this has no effect on anything this plugin itself
+        does. It's a guard against napari's OWN native paint/fill/erase
+        tools instead: with n_edit_dimensions left at 3 (or more), a
+        single manual click/fill meant for the current slice can bleed
+        into neighboring slices too -- forcing 2 here, at the one choke
+        point every Edit MG Labels tool already calls through, keeps the
+        layer safe for manual single-slice edits without needing every
+        caller to remember to set it itself."""
         name = self._edit_labels_combo.currentData()
         if not name or name not in self._viewer.layers:
             return None
         lyr = self._viewer.layers[name]
-        return lyr if isinstance(lyr, napari.layers.Labels) else None
+        if not isinstance(lyr, napari.layers.Labels):
+            return None
+        lyr.n_edit_dimensions = 2
+        return lyr
 
     def _on_resort_labels(self):
         lyr = self._edit_labels_layer()
