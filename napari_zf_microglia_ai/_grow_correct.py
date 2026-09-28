@@ -131,10 +131,24 @@ def grow_correct_label_2d(
                               always 1 when until_stable is False)
         stable             -- True unless until_stable is on and
                               max_stability_passes was exhausted without
-                              two consecutive passes agreeing. Always
+                              two consecutive passes agreeing, OR a later
+                              pass failed and this result was reverted to
+                              the previous pass's own (see
+                              reverted_to_last_good_pass below). Always
                               True when until_stable is False (a single
                               pass has nothing to compare against, so
                               it's trivially "stable").
+        reverted_to_last_good_pass -- True if a stability pass after the
+                              first one raised (e.g. a razor-thin/noisy
+                              candidate region collapsed to nothing on
+                              that particular re-seed) and this result is
+                              the last pass that actually succeeded,
+                              instead of the failing one -- the group's
+                              real signal was already proven present by
+                              that earlier pass, so this is not treated
+                              as "no signal found" the way a first-pass
+                              failure is. Always False when until_stable
+                              is False (only one pass ever runs).
 
     Raises ValueError only if even the first attempt (initial_pad,
     single label) fails outright -- same errors correct_label_group_2d()
@@ -241,10 +255,41 @@ def grow_correct_label_2d(
     new_labels = labels
     info = None
     converged = False
+    # Last-known-good pass -- see the try/except below for why this is
+    # needed: without it, a LATER pass's own failure would propagate
+    # straight out of this function with nothing to fall back on,
+    # discarding every earlier pass's already-good result along with it.
+    last_good = None
+    reverted = False
 
     max_passes = max_stability_passes if until_stable else 1
     for sp in range(1, max_passes + 1):
-        new_labels, info, group, pad, n_it, converged, grew = _grow_pass(work, group, pad)
+        try:
+            new_labels, info, group, pad, n_it, converged, grew = _grow_pass(work, group, pad)
+        except ValueError:
+            # The very first attempt failing outright is still a genuine,
+            # reportable error (correct_label_group_2d()'s own contract:
+            # no signal anywhere, or the correction erased the group --
+            # nothing to fall back on, so let it propagate as documented).
+            # A LATER pass failing is different: pass sp-1 already proved
+            # real signal supports this group here -- reseeding from that
+            # already-correct shape and re-running the joint watershed can
+            # still occasionally land on a degenerate split (e.g. a very
+            # thin/noisy candidate region right at a low, near-background
+            # `lo`), especially against a real neighbor whose own shape
+            # shifted since the seed was taken. That's this ONE pass
+            # failing to improve on an already-good answer, not evidence
+            # the group has no signal here at all -- keep the last good
+            # pass's result instead of letting the caller's own "no
+            # signal found -- clear to background" handling wipe out
+            # every earlier pass's real, correct work.
+            if sp == 1:
+                raise
+            new_labels, info, group, pad, n_it, converged, grew = last_good
+            stability_passes = sp - 1
+            stable = False  # never actually reached a fixed point -- say so
+            reverted = True
+            break
         total_iterations += n_it
         if grew:
             total_group_grew = True
@@ -259,6 +304,7 @@ def grow_correct_label_2d(
             stable = True
             break
         prev_masks = cur_masks
+        last_good = (new_labels, info, group, pad, n_it, converged, grew)
         work = new_labels
         # loop continues without `stable` ever being set True here -- if
         # this was the last allowed pass, it stays False (exhausted
@@ -275,6 +321,7 @@ def grow_correct_label_2d(
         "info": info,
         "stability_passes": stability_passes,
         "stable": stable,
+        "reverted_to_last_good_pass": reverted,
     }
     return new_labels, report
 

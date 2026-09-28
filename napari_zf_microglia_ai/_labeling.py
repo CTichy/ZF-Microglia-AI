@@ -1291,8 +1291,11 @@ def correct_label_from_intensity_3d(
         local neighborhood (sized from use_pad), mutating new_labels in
         place. Returns True if label_id ends up with a non-empty
         footprint there afterward, False if the correction found no
-        real signal to support it there at all (nothing written; the
-        caller decides what that means). Updates foreign_touching/
+        real signal to support it there at all -- new_labels[z] is left
+        EXACTLY as it was before this attempt in that case (see the
+        snapshot/restore below), never partially cleared, so a caller
+        re-trying at a bigger pad or reporting this slice as unchanged
+        is reasoning about the truth. Updates foreign_touching/
         foreign_nearby/border_touching_slices for z to reflect THIS
         attempt -- a later retry at a bigger pad simply overwrites/
         clears the previous attempt's entries for the same z, so only
@@ -1305,6 +1308,14 @@ def correct_label_from_intensity_3d(
             int(i) for i in np.unique(new_labels[z, y0:y1, x0:x1])
             if i not in (0, label_id)
         )
+        # Snapshot the WHOLE slice before mutating anything -- the actual
+        # write region ((cy0:cy1, cx0:cx1) below) isn't known until AFTER
+        # the correction call returns (correct_label_group_2d_core sizes
+        # its own crop from the whole group's extent, not just use_pad),
+        # so a partial/targeted snapshot could miss part of what gets
+        # written. One slice's worth of int32 is a few MB at most --
+        # negligible next to the watershed computation itself.
+        slice_before = new_labels[z].copy()
         try:
             if not foreign_ids or not resolve_adjacent:
                 corrected, crop_existing, (cy0, cy1, cx0, cx1) = _intensity_correct_2d(
@@ -1324,10 +1335,19 @@ def correct_label_from_intensity_3d(
                 for lid in group_ids:
                     crop[finals[lid]] = lid
         except ValueError:
+            new_labels[z] = slice_before
             return False
 
         own_now = new_labels[z] == label_id
         if not np.any(own_now):
+            # The correction ran without raising but still emptied
+            # label_id out on this slice (e.g. a razor-thin/noisy
+            # candidate region at a low lo) -- restore rather than leave
+            # the just-cleared, now-empty state standing: this attempt
+            # failed to IMPROVE on what was already here, it didn't prove
+            # there's no signal at all (an EARLIER attempt/stability pass
+            # may have already shown there is).
+            new_labels[z] = slice_before
             return False
 
         dilated = binary_dilation(own_now, structure=struct2d)
@@ -1363,13 +1383,26 @@ def correct_label_from_intensity_3d(
         area, up to max_iterations attempts. A slice that needs more
         room (a long branch reaching further in Y/X, say) grows on its
         own, without inflating every other slice's own pad too -- see
-        the auto_grow parameter's own docstring for why."""
+        the auto_grow parameter's own docstring for why.
+
+        Only the VERY FIRST attempt (base pad) failing means genuinely
+        no signal supports this slice at all. A LATER (bigger-pad) growth
+        attempt failing is different: the smaller pad already succeeded
+        moments ago, and _correct_one_slice() restores new_labels[z] to
+        exactly that success whenever a later attempt doesn't improve on
+        it -- so this returns True (keep it, just stop growing) instead
+        of reporting the same "nothing here" failure a first attempt
+        would mean."""
         use_pad = pad
         ok = False
         attempts = max_iterations if auto_grow else 1
-        for _attempt in range(attempts):
-            ok = _correct_one_slice(z, use_pad)
-            if not ok or not auto_grow or z not in border_touching_slices:
+        for attempt_idx in range(attempts):
+            attempt_ok = _correct_one_slice(z, use_pad)
+            if not attempt_ok:
+                ok = attempt_idx > 0  # keep the last successful smaller-pad result
+                break
+            ok = True
+            if not auto_grow or z not in border_touching_slices:
                 break
             use_pad += growth_step
         return ok
@@ -1393,7 +1426,18 @@ def correct_label_from_intensity_3d(
         for sp in range(1, max_stability_passes + 1):
             ok = _correct_slice_with_growth(z)
             if not ok:
-                return False
+                if sp == 1:
+                    return False  # first pass found nothing at all -- genuine failure
+                # A later pass failed to improve on an already-good result
+                # (a razor-thin/noisy candidate region at a low lo can
+                # flicker to nothing on a particular re-seed) --
+                # _correct_one_slice() guarantees new_labels[z] was
+                # restored to exactly what pass sp-1 left it as, so keep
+                # that instead of reporting "no signal here at all" the
+                # way a first-pass failure would mean.
+                slices_stability_passes[z] = sp - 1
+                slices_unstable.add(z)
+                return True
             cur_mask_here = new_labels[z] == label_id
             if prev_mask_here is not None and np.array_equal(cur_mask_here, prev_mask_here):
                 if sp > 1:
