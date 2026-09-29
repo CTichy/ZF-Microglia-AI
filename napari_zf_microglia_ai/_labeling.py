@@ -2861,6 +2861,101 @@ def correct_label_2d_stack(
     return new_labels.astype(np.int32, copy=False), report
 
 
+def _repair_missing_skin_slices(
+    labels: np.ndarray,
+    image: np.ndarray,
+    skin_label_id: int,
+    brain_mask: np.ndarray,
+    lo: float,
+    pad: int,
+    sigma: float,
+    auto_grow: bool,
+    growth_step: int,
+    max_iterations: int,
+    until_stable: bool,
+    max_stability_passes: int,
+    max_attempts: int = 2,
+) -> "tuple[np.ndarray, list, list]":
+    """
+    Safety net for a rare, real, not-yet-root-caused failure: a single
+    slice's own correction attempt (grow_correct_label_2d(), called
+    per-slice by correct_label_2d_stack() above) can occasionally come
+    back with zero skin voxels even though the brain mask leaves real
+    outside-brain territory on that slice to protect. Confirmed NOT a
+    case of genuinely missing signal, NOT a first-vs-later-pass failure
+    this module's own revert-to-last-good-pass fix already covers (see
+    grow_correct_label_2d()'s "reverted_to_last_good_pass"): an isolated
+    single-slice re-run of the exact same call, same real fish, same
+    real lo, succeeds cleanly every time, and 4 full-volume re-runs of
+    the exact real pipeline (seed -> trim -> debris) at the exact real
+    settings never reproduced it either -- only one live napari session
+    ever showed it. Rather than keep chasing a cause that won't
+    reproduce standalone, this re-seeds and re-corrects -- fully from
+    scratch, independent of whatever state produced the original
+    failure -- any slice left with none of the brain mask's own real
+    outside-brain territory covered by skin, up to max_attempts times
+    each, and reports whichever slice (if any) still fails after that
+    as a genuine, unresolved gap instead of silently leaving it empty.
+
+    Returns (new_labels, repaired_slices, still_missing_slices).
+    repaired_slices     -- sorted [z, ...] that were missing skin and
+                          are fixed now.
+    still_missing_slices -- sorted [z, ...] that are STILL missing skin
+                          after max_attempts repair tries each -- these
+                          slices genuinely have no signal-supported skin
+                          territory at this lo, or every outside-brain
+                          pixel there is already claimed by a real cell
+                          label -- not a transient glitch.
+    """
+    from ._grow_correct import grow_correct_label_2d
+
+    new_labels = labels.copy()
+    outside_brain = ~np.asarray(brain_mask).astype(bool)
+    repaired: "list[int]" = []
+    still_missing: "list[int]" = []
+    for z in range(new_labels.shape[0]):
+        if (new_labels[z] == skin_label_id).any():
+            continue
+        if not outside_brain[z].any():
+            # Nothing outside the brain mask on this slice at all --
+            # correctly having no skin here isn't a failure.
+            continue
+        fixed = False
+        for _attempt in range(max_attempts):
+            seed_slice = new_labels[z].copy()
+            fill_mask = outside_brain[z] & (seed_slice == 0)
+            if not fill_mask.any():
+                # Every outside-brain pixel here is already claimed by
+                # a real cell label -- genuinely no room left for skin.
+                break
+            seed_slice[fill_mask] = skin_label_id
+            z_win = seed_slice[np.newaxis].astype(np.int32)
+            img_win = image[z:z + 1]
+            try:
+                # grow_correct_label_2d() has no separate auto_grow
+                # toggle -- see correct_label_2d_stack()'s own
+                # _process_slice for the identical convention:
+                # auto_grow=False is expressed as a 1-attempt cap.
+                result, _rep = grow_correct_label_2d(
+                    z_win, img_win, skin_label_id, 0, lo,
+                    initial_pad=pad, sigma=sigma,
+                    growth_step=growth_step,
+                    max_iterations=(max_iterations if auto_grow else 1),
+                    until_stable=until_stable, max_stability_passes=max_stability_passes,
+                )
+            except ValueError:
+                continue
+            if (result[0] == skin_label_id).any():
+                new_labels[z] = result[0]
+                fixed = True
+                break
+        if fixed:
+            repaired.append(z)
+        else:
+            still_missing.append(z)
+    return new_labels, repaired, still_missing
+
+
 def trim_skin_label(
     labels: np.ndarray,
     image: np.ndarray,
@@ -2873,6 +2968,8 @@ def trim_skin_label(
     max_iterations: int = 10,
     until_stable: bool = True,
     max_stability_passes: int = 100,
+    brain_mask: "np.ndarray | None" = None,
+    max_repair_attempts: int = 2,
 ) -> "tuple[np.ndarray, dict]":
     """
     Trims a bulk-seeded skin label (seed_skin_label()) down to its real,
@@ -2908,13 +3005,50 @@ def trim_skin_label(
     forbidding a large, legitimate inward correction the way a hard
     clamp would.
 
+    brain_mask          -- optional. When given, every slice is checked
+                          after the correction above for having skin
+                          (skin_label_id) present wherever the brain
+                          mask leaves real outside-brain territory to
+                          protect on that slice; any slice that ends up
+                          with none is re-seeded from scratch (bulk-
+                          fills its own outside-brain background, same
+                          rule seed_skin_label() itself uses) and
+                          re-corrected independently, up to
+                          max_repair_attempts times, before being
+                          reported as a genuine failure instead of
+                          silently left empty -- see
+                          _repair_missing_skin_slices()'s own docstring
+                          for why this exists. None (default) skips the
+                          check entirely, matching this function's
+                          behavior before the check was added.
+    max_repair_attempts -- how many independent re-seed+re-correct
+                          tries each missing slice gets. Only used when
+                          brain_mask is given.
+
     See correct_label_2d_stack() for the full parameter/report docs.
+    Adds two report keys when brain_mask is given:
+        slices_repaired          -- sorted [z, ...] that came back
+                                   without skin and were fixed by the
+                                   repair pass.
+        slices_missing_after_repair -- sorted [z, ...] still without
+                                   skin after every repair attempt --
+                                   a genuine gap, not a transient one.
     """
-    return correct_label_2d_stack(
+    new_labels, report = correct_label_2d_stack(
         labels, image, skin_label_id, lo, pad=pad, sigma=sigma,
         auto_grow=auto_grow, growth_step=growth_step, max_iterations=max_iterations,
         until_stable=until_stable, max_stability_passes=max_stability_passes,
     )
+    if brain_mask is not None:
+        new_labels, repaired, still_missing = _repair_missing_skin_slices(
+            new_labels, image, skin_label_id, brain_mask, lo, pad=pad, sigma=sigma,
+            auto_grow=auto_grow, growth_step=growth_step, max_iterations=max_iterations,
+            until_stable=until_stable, max_stability_passes=max_stability_passes,
+            max_attempts=max_repair_attempts,
+        )
+        report["slices_repaired"] = repaired
+        report["slices_missing_after_repair"] = still_missing
+    return new_labels, report
 
 
 def remove_label(labels: np.ndarray, label_id: int) -> "tuple[np.ndarray, int]":

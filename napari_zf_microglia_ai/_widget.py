@@ -8520,6 +8520,7 @@ class ZFMicrogliaAIWidget(QWidget):
                     auto_grow=auto_grow, growth_step=growth_step,
                     max_iterations=max_iterations, until_stable=until_stable,
                     max_stability_passes=max_stability_passes,
+                    brain_mask=brain_mask,
                 )
                 # No brain-mask clamp any more (see trim_skin_label()'s own
                 # docstring) -- sweep up whatever small stray blob skin
@@ -8592,11 +8593,26 @@ class ZFMicrogliaAIWidget(QWidget):
             rep = result["report"]
             touching_ids = sorted({i for ids in rep["foreign_touching"].values() for i in ids})
             nearby_ids = sorted({i for ids in rep["foreign_nearby"].values() for i in ids})
+            repaired_slices = rep.get("slices_repaired", [])
+            missing_slices = rep.get("slices_missing_after_repair", [])
             report_lines = []
             if touching_ids:
                 report_lines.append(f"Labels directly touching skin: {touching_ids}")
             if nearby_ids:
                 report_lines.append(f"Labels nearby skin (within its own working area): {nearby_ids}")
+            if repaired_slices:
+                report_lines.append(
+                    f"Slices that initially came back without skin, re-seeded "
+                    f"and re-corrected successfully: {repaired_slices}"
+                )
+            if missing_slices:
+                report_lines.append(
+                    f"WARNING -- slices STILL missing skin after repair "
+                    f"attempts: {missing_slices}. These genuinely have no "
+                    f"signal-supported skin territory at this lo, or every "
+                    f"outside-brain pixel there is already claimed by a real "
+                    f"cell label -- worth a manual look."
+                )
             if report_lines:
                 report_lines.append(
                     "These sit closest to the brain edge -- worth a closer "
@@ -8615,13 +8631,18 @@ class ZFMicrogliaAIWidget(QWidget):
                 f" {n_debris:,} debris fragment(s) of stray skin removed."
                 if n_debris else ""
             )
+            repair_note = ""
+            if repaired_slices:
+                repair_note += f" {len(repaired_slices)} slice(s) auto-repaired (see report below)."
+            if missing_slices:
+                repair_note += f" WARNING: {len(missing_slices)} slice(s) still missing skin -- see report below."
             self._skin_status_lbl.setText(
                 f"Done — skin protected as label {skin_id}, {n_px:,} px, "
                 f"lo={result['lo']:.3g} ({result['lo_note']}) "
                 f"(real signal only, outside the brain mask).{contrast_note} Every other "
                 f"Correct Label / auto-correct call now treats it as "
                 f"ordinary protected territory. Use 'Remove Skin Label' "
-                f"below whenever you no longer need it.{touch_note}{debris_note}"
+                f"below whenever you no longer need it.{touch_note}{debris_note}{repair_note}"
             )
             self._skin_protect_btn.setEnabled(True)
 
@@ -8910,11 +8931,17 @@ class ZFMicrogliaAIWidget(QWidget):
             skin_rep = report["skin_report"]
             touching_ids = sorted({i for ids in skin_rep.get("foreign_touching", {}).values() for i in ids})
             nearby_ids = sorted({i for ids in skin_rep.get("foreign_nearby", {}).values() for i in ids})
+            skin_repaired = skin_rep.get("slices_repaired", [])
+            skin_still_missing = skin_rep.get("slices_missing_after_repair", [])
             skin_report_lines = []
             if touching_ids:
                 skin_report_lines.append(f"Labels directly touching skin: {touching_ids}")
             if nearby_ids:
                 skin_report_lines.append(f"Labels nearby skin (within its own working area): {nearby_ids}")
+            if skin_repaired:
+                skin_report_lines.append(f"Slices re-seeded and repaired: {skin_repaired}")
+            if skin_still_missing:
+                skin_report_lines.append(f"WARNING -- slices STILL missing skin after repair: {skin_still_missing}")
             if skin_report_lines:
                 self._skin_report_view.setPlainText("\n".join(skin_report_lines))
                 self._skin_report_view.show()
@@ -10277,11 +10304,17 @@ class ZFMicrogliaAIWidget(QWidget):
             skin_rep = report["skin_report"]
             touching_ids = sorted({i for ids in skin_rep.get("foreign_touching", {}).values() for i in ids})
             nearby_ids = sorted({i for ids in skin_rep.get("foreign_nearby", {}).values() for i in ids})
+            skin_repaired = skin_rep.get("slices_repaired", [])
+            skin_still_missing = skin_rep.get("slices_missing_after_repair", [])
             skin_report_lines = []
             if touching_ids:
                 skin_report_lines.append(f"Labels directly touching skin: {touching_ids}")
             if nearby_ids:
                 skin_report_lines.append(f"Labels nearby skin (within its own working area): {nearby_ids}")
+            if skin_repaired:
+                skin_report_lines.append(f"Slices re-seeded and repaired: {skin_repaired}")
+            if skin_still_missing:
+                skin_report_lines.append(f"WARNING -- slices STILL missing skin after repair: {skin_still_missing}")
             if skin_report_lines:
                 skin_report_lines.append(
                     "These sit closest to the brain edge -- worth a closer "

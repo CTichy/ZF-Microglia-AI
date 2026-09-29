@@ -634,6 +634,7 @@ def auto_contrast_correct_stack(
             seeded, skin_src, skin_id, best_lo, pad=skin_pad, sigma=sigma,
             auto_grow=auto_grow, growth_step=growth_step, max_iterations=max_iterations,
             until_stable=until_stable, max_stability_passes=max_stability_passes,
+            brain_mask=brain_mask,
         )
         skin_report["already_protected"] = False
 
@@ -912,6 +913,17 @@ def format_auto_correction_report(report: dict) -> str:
         lines.append(
             "  Skin: STILL CHANGING on at least one slice -- hit the stability-pass "
             "cap without settling; a larger cap may let it finish converging."
+        )
+    skin_repaired = skin_report.get("slices_repaired", [])
+    skin_still_missing = skin_report.get("slices_missing_after_repair", [])
+    if skin_repaired:
+        lines.append(f"  Skin: {len(skin_repaired)} slice(s) came back without skin, re-seeded and repaired: {skin_repaired}.")
+    if skin_still_missing:
+        lines.append(
+            f"  Skin: WARNING -- {len(skin_still_missing)} slice(s) STILL missing skin "
+            f"after repair attempts: {skin_still_missing}. Genuinely no signal-supported "
+            f"skin territory there at this lo, or every outside-brain pixel is already "
+            f"claimed by a real cell label -- worth a manual look."
         )
     lines.append(
         f"  Cells resorted by Centroid Z before correction "
