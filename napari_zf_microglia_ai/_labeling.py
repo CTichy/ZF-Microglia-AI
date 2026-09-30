@@ -2609,6 +2609,106 @@ def seed_skin_label(
     return new_labels.astype(np.int32), skin_label_id
 
 
+def _repair_missing_label_slices(
+    new_labels: np.ndarray,
+    orig_labels: np.ndarray,
+    image: np.ndarray,
+    label_id: int,
+    lo: float,
+    pad: int,
+    sigma: float,
+    auto_grow: bool,
+    growth_step: int,
+    max_iterations: int,
+    until_stable: bool,
+    max_stability_passes: int,
+    max_attempts: int = 2,
+) -> "tuple[np.ndarray, list, list]":
+    """
+    Safety net for correct_label_2d_stack()'s own per-slice correction:
+    any slice where label_id existed in the function's ORIGINAL input
+    (orig_labels) but ends up completely absent from the corrected
+    result is given up to max_attempts independent re-seed+re-correct
+    tries -- seeded fresh from label_id's own ORIGINAL footprint at
+    that slice (foreign-protected: a pixel now legitimately claimed by
+    a different real label is never reclaimed), not whatever the
+    failed attempt left behind -- before being reported as a genuine,
+    unresolved gap. Mirrors _repair_missing_skin_slices()'s own
+    reasoning (see its docstring for the full story of why this
+    exists) but keyed off "was present before this call, not after"
+    instead of the brain mask, since a real cell has no external
+    ground truth like skin's brain mask to check against -- its own
+    pre-correction footprint is the only honest reference available.
+
+    Applies to ANY label corrected via correct_label_2d_stack() --
+    skin's own trim (already separately, redundantly protected by
+    trim_skin_label()'s own brain_mask-based check, which runs after
+    this and will simply find nothing left to do in the normal case)
+    and any real cell corrected in 2D against a touching skin label
+    alike. Deliberately NOT applied to the 3D whole-cell engine
+    (correct_label_from_intensity_3d): its own mid-outward OR-seeding
+    (see that function's _or_seed()) already guarantees every slice
+    within a cell's original Z range starts from a non-empty seed
+    whenever either neighbor has real content, and the "keep the last
+    good pass" fix means a later stability pass's own failure can
+    never wipe a slice there either -- confirmed directly by reading
+    both functions, not assumed -- so the 3D engine is structurally far
+    more resistant to this failure mode than this fully-independent-
+    per-slice 2D engine, which has no cross-slice seeding at all.
+
+    Returns (new_labels, repaired_slices, still_missing_slices) -- see
+    _repair_missing_skin_slices()'s own Returns doc for the exact
+    meaning of each.
+    """
+    from ._grow_correct import grow_correct_label_2d
+
+    new_labels = new_labels.copy()
+    repaired: "list[int]" = []
+    still_missing: "list[int]" = []
+    for z in range(new_labels.shape[0]):
+        own_before = orig_labels[z] == label_id
+        if not own_before.any():
+            continue  # label_id didn't exist here before this call at all
+        if (new_labels[z] == label_id).any():
+            continue  # still present -- nothing to repair
+        fixed = False
+        for _attempt in range(max_attempts):
+            seed_slice = new_labels[z].copy()
+            foreign_here = (seed_slice != 0) & (seed_slice != label_id)
+            reclaim = own_before & ~foreign_here
+            if not reclaim.any():
+                # Every pixel label_id originally held here is now
+                # legitimately claimed by a different real label (a
+                # genuinely resolved joint boundary) -- nothing left to
+                # repair, not a bug.
+                break
+            seed_slice[reclaim] = label_id
+            z_win = seed_slice[np.newaxis].astype(np.int32)
+            img_win = image[z:z + 1]
+            try:
+                # Same auto_grow convention as correct_label_2d_stack()'s
+                # own _process_slice: no separate toggle on
+                # grow_correct_label_2d(), auto_grow=False is a 1-attempt cap.
+                result, _rep = grow_correct_label_2d(
+                    z_win, img_win, label_id, 0, lo,
+                    initial_pad=pad, sigma=sigma,
+                    growth_step=growth_step,
+                    max_iterations=(max_iterations if auto_grow else 1),
+                    until_stable=until_stable, max_stability_passes=max_stability_passes,
+                )
+            except ValueError:
+                continue
+            if (result[0] == label_id).any():
+                new_labels[z] = result[0]
+                fixed = True
+                break
+        if fixed:
+            repaired.append(z)
+        else:
+            still_missing.append(z)
+    return new_labels, repaired, still_missing
+
+
 def correct_label_2d_stack(
     labels: np.ndarray,
     image: np.ndarray,
@@ -2622,6 +2722,7 @@ def correct_label_2d_stack(
     until_stable: bool = True,
     max_stability_passes: int = 100,
     n_workers: "int | None" = None,
+    max_repair_attempts: int = 2,
 ) -> "tuple[np.ndarray, dict]":
     """
     Corrects ONE label across its whole Z range, slice by slice,
@@ -2744,6 +2845,26 @@ def correct_label_2d_stack(
         n_debris_removed_px -- always 0 (no cross-slice debris pass;
                               run remove_debris(..., skin_label_id=...)
                               separately to actually sweep debris)
+        slices_repaired      -- sorted [z, ...] where label_id existed
+                              in the ORIGINAL input but came back
+                              completely absent after the per-slice
+                              loop above -- re-seeded from its own
+                              original footprint and re-corrected
+                              independently, and fixed now. See
+                              _repair_missing_label_slices()'s own
+                              docstring for why this exists (this
+                              function's fully independent per-slice
+                              design has no cross-slice seeding to fall
+                              back on, unlike the 3D whole-cell engine).
+        slices_missing_after_repair -- sorted [z, ...] still without
+                              label_id after max_repair_attempts each
+                              -- a genuine gap (no real signal there at
+                              all, or every originally-owned pixel is
+                              now legitimately foreign territory), not
+                              a transient one.
+
+    max_repair_attempts        : how many independent re-seed+re-correct
+                              tries each slice flagged above gets.
     """
     if not np.any(labels == label_id):
         raise ValueError(f"label {label_id} not found anywhere in the volume")
@@ -2847,6 +2968,13 @@ def correct_label_2d_stack(
         with ThreadPoolExecutor(max_workers=n_workers) as pool:
             list(pool.map(_process_slice, range(Z_dim)))
 
+    new_labels, slices_repaired, slices_missing_after_repair = _repair_missing_label_slices(
+        new_labels, labels, image, label_id, lo, pad=pad, sigma=sigma,
+        auto_grow=auto_grow, growth_step=growth_step, max_iterations=max_iterations,
+        until_stable=until_stable, max_stability_passes=max_stability_passes,
+        max_attempts=max_repair_attempts,
+    )
+
     report = {
         "group": sorted({label_id} | all_foreign),
         "foreign_touching": foreign_touching,
@@ -2857,6 +2985,8 @@ def correct_label_2d_stack(
         "converged": not slices_not_converged,
         "slices_not_converged": sorted(slices_not_converged),
         "n_debris_removed_px": 0,
+        "slices_repaired": slices_repaired,
+        "slices_missing_after_repair": slices_missing_after_repair,
     }
     return new_labels.astype(np.int32, copy=False), report
 
@@ -3038,7 +3168,15 @@ def trim_skin_label(
         labels, image, skin_label_id, lo, pad=pad, sigma=sigma,
         auto_grow=auto_grow, growth_step=growth_step, max_iterations=max_iterations,
         until_stable=until_stable, max_stability_passes=max_stability_passes,
+        max_repair_attempts=max_repair_attempts,
     )
+    # correct_label_2d_stack() already ran its own generic "was present
+    # before, absent after" repair (see its own slices_repaired /
+    # slices_missing_after_repair) -- this second, skin-specific pass
+    # is a redundant extra layer keyed off the brain mask directly
+    # (skin's own real ground truth) rather than the seeded input, and
+    # will normally find nothing left to do; MERGE rather than
+    # overwrite so neither layer's own findings are lost.
     if brain_mask is not None:
         new_labels, repaired, still_missing = _repair_missing_skin_slices(
             new_labels, image, skin_label_id, brain_mask, lo, pad=pad, sigma=sigma,
@@ -3046,8 +3184,10 @@ def trim_skin_label(
             until_stable=until_stable, max_stability_passes=max_stability_passes,
             max_attempts=max_repair_attempts,
         )
-        report["slices_repaired"] = repaired
-        report["slices_missing_after_repair"] = still_missing
+        report["slices_repaired"] = sorted(set(report.get("slices_repaired", [])) | set(repaired))
+        report["slices_missing_after_repair"] = sorted(
+            (set(report.get("slices_missing_after_repair", [])) | set(still_missing)) - set(repaired)
+        )
     return new_labels, report
 
 

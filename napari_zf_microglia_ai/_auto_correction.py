@@ -857,6 +857,15 @@ def _format_2d_vs_skin_report(report: dict, skin_id: int) -> str:
             "  STILL CHANGING -- at least one slice hit the stability-pass "
             "cap without settling; a larger cap may let it finish converging."
         )
+    repaired = report.get("slices_repaired", [])
+    still_missing = report.get("slices_missing_after_repair", [])
+    if repaired:
+        lines.append(f"  Slice(s) that came back without this label and were re-seeded/repaired: {repaired}")
+    if still_missing:
+        lines.append(
+            f"  WARNING -- slice(s) STILL missing this label after repair attempts: "
+            f"{still_missing}. Worth a manual look."
+        )
     if report.get("converged", True):
         lines.append("  Converged -- no part of the result touches the padded region's own edge.")
     else:
