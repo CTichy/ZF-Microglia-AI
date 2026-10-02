@@ -154,7 +154,7 @@ def run_cellprob_voxel_sweep(volume, gt_labels, model_path, cellprobs,
         if cancel_event is not None and cancel_event.is_set():
             cancelled = True
             break
-        masks = masks_from_flows(model, dP, cellprob_map, shape, cp, flow=0.4,
+        masks = masks_from_flows(model, dP, cellprob_map, shape, cp, flow_threshold=0.4,
                                   min_size=min_size, min_hole_size=min_hole_size, niter=niter)
         r = _voxel_dice_iou(masks > 0, gt_mask)
         results[cp] = r

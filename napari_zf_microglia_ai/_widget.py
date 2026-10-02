@@ -10856,7 +10856,7 @@ class ZFMicrogliaAIWidget(QWidget):
                         _progress_cb(f"Forming raw cp_masks at the winning cellprob={best_cp} "
                                      f"(reusing cached flows, no re-inference)...")
                         raw_cp_masks = _masks_from_flows(
-                            model, dP, cellprob_map, shape, best_cp, flow=0.4,
+                            model, dP, cellprob_map, shape, best_cp, flow_threshold=0.4,
                             min_size=min_size, min_hole_size=min_hole_size,
                         )
                         _progress_cb("Comparing raw cp_masks against GT to calibrate "
