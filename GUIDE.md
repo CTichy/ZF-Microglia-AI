@@ -203,19 +203,13 @@ This is read-only — it updates automatically when you click a different layer.
 
 ### MONAI Threshold
 
-**Range:** 0.01 to 0.99 — **Default: 0.25**
+**Range:** 0.01 to 0.99 — **Default: 0.38**
 
 The AI model outputs a probability map (0 = definitely not brain, 1 = definitely brain). This slider sets the cutoff: voxels above the threshold are classified as brain.
 
-| Value | Effect |
-|-------|--------|
-| 0.20 | More generous — includes uncertain areas; may keep some skin |
-| **0.25** | **Default — recommended, validated best results** |
-| 0.50 | Stricter — may cut into brain edges |
+> Post-processing (largest connected component + hole filling) cleans up most artefacts regardless of threshold.
 
-> Post-processing (largest connected component + hole filling) cleans up most artefacts regardless of threshold. Keep it at 0.25 unless results look obviously wrong.
-
-A read-only **Recommended MONAI Threshold** line sits underneath the slider — distinct from the slider's own live value, which stays freely editable. It only updates when **Verify MONAI Threshold / Erosion (GT Sweep)** (Tab 6, [9a](#10a-verify-monai-threshold--erosion-gt-sweep)) runs with its **"This is verified ground truth"** box ticked; moving the slider afterward to try something else never touches this line, so the sweep's own finding is never silently lost.
+A read-only **Recommended MONAI Threshold** line sits underneath the slider — distinct from the slider's own live value, which stays freely editable, and distinct from the slider's own default above. It only updates when **Verify MONAI Threshold / Erosion (GT Sweep)** (Tab 6, [9a](#10a-verify-monai-threshold--erosion-gt-sweep)) runs with its **"This is verified ground truth"** box ticked — currently **0.622**, from the first GT-sweep pass across every fish swept so far, deliberately not adopted as the shipped default itself; moving the slider afterward to try something else never touches this line, so the sweep's own finding is never silently lost.
 
 ---
 
@@ -273,7 +267,7 @@ The saved filename gets the suffix `_RndFill` (e.g. `NT54_ch1_brain_only_RndFill
 
 ### BG Threshold
 
-**Range:** 0.00 to 2.00 — **Default: 1.40**
+**Range:** 0.00 to 2.00 — **Default: 1.025**
 
 *(Only active for background mode 2 — no effect in Off, mode 1, or mode 3)*
 
@@ -288,11 +282,10 @@ pixels  > threshold → kept (treated as signal)
 | Value | Effect |
 |-------|--------|
 | 0.00 | Threshold = exactly the mode — removes only confirmed background |
-| 1.40 | Default |
-| **1.05** | **Current recommended value for microglia labelling** |
+| **1.025** | **Default — first GT-sweep pass, averaged across every fish swept so far** |
 | 2.00 (max) | Aggressive — may remove dim signal from thin cell protrusions |
 
-> For microglia labelling, **1.05** currently produces the cleanest isolated blobs with good gaps between cells. If microglia are losing thin protrusions, lower the value.
+> If microglia are losing thin protrusions, lower the value.
 
 A read-only **Recommended BG Threshold** line sits underneath — updated only by a GT-verified **Verify BG Threshold / Erosion (GT Sweep)** run (Tab 6, [9b](#10b-verify-bg-threshold--erosion-gt-sweep)).
 
@@ -377,7 +370,7 @@ Sits in its own box, above the Pixel Classifier/Cellpose-SAM sections and **alwa
 
 #### Min volume (vox) — informative, not editable
 
-Shown as plain text, not a slider — this value can't be typed or dragged directly. It's the smallest real cell volume ever confirmed by GT, shared by the Pixel Classifier's own volume filter and Cellpose-SAM's Safe-merge "already a whole cell" floor (`gt_min_from_labels()`, Krendl's own name for this quantity, and `min_volume_from_gt()` are literally the same computation) — an empirical fact measured from ground truth, not a knob to hand-tune. It only ever moves *down* (a new fish can only prove an even smaller real cell exists, never invalidate one already confirmed), and only from a **Tab 6 GT sweep** or a **GT-verified Generate Statistics run** (Tab 4) — never guessed, and never edited by hand. Starts at 7500 (the old default) until the first such measurement.
+Shown as plain text, not a slider — this value can't be typed or dragged directly. It's the smallest real cell volume ever confirmed by GT, shared by the Pixel Classifier's own volume filter and Cellpose-SAM's Safe-merge "already a whole cell" floor (`gt_min_from_labels()`, Krendl's own name for this quantity, and `min_volume_from_gt()` are literally the same computation) — an empirical fact measured from ground truth, not a knob to hand-tune. It only ever moves *down* (a new fish can only prove an even smaller real cell exists, never invalidate one already confirmed), and only from a **Tab 6 GT sweep** or a **GT-verified Generate Statistics run** (Tab 4) — never guessed, and never edited by hand. Starts at 7069 (the shipped default, itself the first GT-sweep pass's own measurement) until a later sweep proves an even smaller real cell exists.
 
 The actual tunable control for how strictly this floor is enforced is **Final min-size fraction**, below.
 
@@ -385,13 +378,13 @@ The actual tunable control for how strictly this floor is enforced is **Final mi
 
 #### Max volume (vox) — informative, not editable
 
-Shown the same way as Min volume above, right below it — plain text, not a slider. The largest real cell volume ever confirmed by GT, tracked as its never-falling mirror: it only ever moves *up* (a new fish can only prove an even bigger real cell exists, never invalidate one already confirmed), and only from a **GT-verified Generate Statistics run** (Tab 4) — Tab 6 sweeps don't feed it, since none of them score a whole fish's every cell the way Statistics does. Reads "not yet measured" until the first such run.
+Shown the same way as Min volume above, right below it — plain text, not a slider. The largest real cell volume ever confirmed by GT, tracked as its never-falling mirror: it only ever moves *up* (a new fish can only prove an even bigger real cell exists, never invalidate one already confirmed), and only from a **GT-verified Generate Statistics run** (Tab 4) — Tab 6 sweeps don't feed it, since none of them score a whole fish's every cell the way Statistics does. Currently **225996** (the first such measurement so far); reads "not yet measured" until at least one GT-verified run has happened.
 
 Unlike Min volume, this doesn't drive any pipeline stage — nothing in either route deletes an oversized cell. It exists purely so `is_volume_outlier` in the Tab 4 Statistics CSV has something to flag against on the large side, the same way Min volume gives it something to flag against on the small side.
 
 #### Min hole size (vox) — shared
 
-**Range:** 0 upward — **Default: 0 (fill every enclosed gap, no minimum)**
+**Range:** 0 upward — **Default: 5** (the first GT-sweep pass's own measurement — 0 fills every enclosed gap with no minimum)
 
 Unlike Min/Max volume above, this one is a genuinely editable, **shared slider** used by both routes. A background region fully enclosed by signal — a "hole" — survives as real background only if its area is **at or above** this value; anything smaller is filled in as noise. Same idea as Min volume, just applied to gaps instead of whole objects, and named the same way on purpose: both name the size something must clear to be trusted as real, not the size at which it gets discarded.
 
@@ -429,7 +422,7 @@ A shared setting used by every tool that regenerates a label's shape from scratc
 
 **Foreign-protected, same as every Correct Label tool**: a neighboring label's already-claimed voxels can never be grown into, even where the blur would otherwise cross into them — so sanding one cell can never merge it into, or eat into, another. If a label's own shape shrinks to nothing under the blur (rare — usually means it was already tightly boxed in by neighbors) or loses all contact with its pre-sanding footprint, sanding is skipped for that label and the tool's status message says so; the correction itself is unaffected either way.
 
-This is a **separate, independent setting from the Pixel Classifier's own Smooth σ XY/Z** ([6b](#6b-pixel-classifier--3d-connected-component-labels), default 1.5/3.0) — that pair decides whether raw blobs merge into one 3D object in the first place, before any labels exist. Sanding runs after labels already exist, only ever polishes one already-correct label's own edges, and is foreign-protected so it structurally cannot merge cells — which is why its default sigmas (0.7/0.7, Tab 3) are much smaller: this is meant to be a light "sand the edges and spikes down" pass, not a reshape.
+This is a **separate, independent setting from the Pixel Classifier's own Smooth σ XY/Z** ([6b](#6b-pixel-classifier--3d-connected-component-labels), default 2.60/1.00) — that pair decides whether raw blobs merge into one 3D object in the first place, before any labels exist. Sanding runs after labels already exist, only ever polishes one already-correct label's own edges, and is foreign-protected so it structurally cannot merge cells — which is why its default sigmas (0.7/0.7, Tab 3) are much smaller: this is meant to be a light "sand the edges and spikes down" pass, not a reshape.
 
 Uncheck this box to skip sanding entirely and get the older, unsoftened behavior back on all four tools at once.
 
@@ -452,7 +445,7 @@ This rounds jagged pixel edges and fills tiny gaps within a given cross-section.
 | Value | Effect |
 |-------|--------|
 | 0.0 | No smoothing — raw pixel edges |
-| **1.5** | **Default — solid, rounded blobs with preserved shape** |
+| **2.60** | **Default — first GT-sweep pass, averaged across every fish swept so far** |
 | 3.0+ | Heavy — risk of merging nearby cells within the same slice |
 
 > Do not confuse with Smooth σ Z. They serve completely different purposes.
@@ -463,23 +456,19 @@ A read-only **Recommended Smooth σ XY** line sits underneath — updated only b
 
 ### Smooth σ Z
 
-**Range:** 0.0 to 5.0 — **Default: 3.0**
+**Range:** 0.0 to 5.0 — **Default: 1.00**
 
 Controls the Z-axis strength of the same 3D Gaussian blur — how much a thin gap between slices gets smoothed over before the volume is re-thresholded and grouped into 3D objects by true 3D connected components.
 
 A microglia that disappears for 1–2 slices (due to low signal or a thin neck) and reappears will be correctly merged into one 3D object when σ Z is high enough to bridge that gap before thresholding.
 
-> **Why σ Z = 3.0 while σ XY = 1.5?**
->
-> Zebrafish confocal stacks are highly anisotropic: each Z slice is ~1 µm thick while each XY pixel is ~0.17 µm. So σ Z = 3.0 spans ~3 µm physically, while σ XY = 1.5 spans only ~0.26 µm.
->
-> A microglia is typically 10–20 µm in diameter. Two microglia need to be closer than ~3 µm in Z for σ Z = 3.0 to risk merging them — which is uncommon in practice. This has been validated safe for zebrafish 4dpf microglia.
+> Zebrafish confocal stacks are highly anisotropic: each Z slice is ~1 µm thick while each XY pixel is ~0.17 µm, so a given voxel-unit σ spans a very different physical distance depending on axis. Both σ XY and σ Z are freely user-editable and GT-sweepable independently — don't assume one must stay a fixed multiple of the other.
 
 | Value | Effect |
 |-------|--------|
 | 0.0 | No cross-slice smoothing — each slice fully independent |
 | 0.5 | Minimal — only adjacent slices with strong overlap connected |
-| **3.0** | **Default — bridges 1–3 slice gaps for zebrafish microglia** |
+| **1.00** | **Default — first GT-sweep pass, averaged across every fish swept so far** |
 | 5.0+ | Very aggressive — may link cells at different Z depths |
 
 A read-only **Recommended Smooth σ Z** line sits underneath, same as σ XY above.
@@ -520,9 +509,9 @@ Cellpose-SAM's own early noise filter, applied right when raw instance masks are
 
 #### Cellprob threshold
 
-**Range:** -6.0 to 6.0 — **Default: -2.5**
+**Range:** -6.0 to 6.0 — **Default: 2.84**
 
-Cellpose-SAM's own confidence cutoff for what counts as foreground (cell) vs. background. Lower (more negative) values are more permissive — they recover more of a cell's thin, dim protrusions but can also let in more noise.
+Cellpose-SAM's own confidence cutoff for what counts as foreground (cell) vs. background. Lower (more negative) values are more permissive — they recover more of a cell's thin, dim protrusions but can also let in more noise. The current default comes from the first GT-sweep pass across every fish swept so far — a notably strict value; re-run [Verify Cellprob / Large-contact](#10c-verify-cellprob--large-contact-gt-sweep) against more fish before trusting it broadly.
 
 A read-only **Recommended Cellprob threshold** line sits underneath — updated only by a GT-verified **Verify Cellprob / Large-contact (GT Sweep)** run (Tab 6, [9c](#10c-verify-cellprob--large-contact-gt-sweep)).
 
@@ -538,7 +527,7 @@ Euler-integration steps each voxel's flow trajectory gets before instances are f
 
 #### Safe-merge max gap (µm)
 
-**Range:** 0.0 to 5.0 — **Default: 1.0**
+**Range:** 0.0 to 5.0 — **Default: 3.52**
 
 During the Krendl safe-merge pass, two fragments separated by a real physical gap up to this many microns are considered for merging into one cell (in addition to the contact-area check below). Measured in µm, not voxels, so the same value applies consistently regardless of a fish's own Z/XY anisotropy.
 
@@ -546,7 +535,7 @@ A read-only **Recommended Safe-merge max gap** line sits underneath — updated 
 
 #### Safe-merge min contact (vox)
 
-**Range:** 0 to 200 — **Default: 10**
+**Range:** 0 to 200 — **Default: 1**
 
 Minimum shared-boundary voxel count required between two fragments before the safe-merge pass will join them (an OR against the gap check above — either one qualifies a pair for merging). Higher values require a more substantial touching surface before merging.
 
@@ -673,7 +662,7 @@ One shared set of controls for **Correct Label**, **Correct Adjacent Labels**, *
 
 The **Sigma XY** / **Sigma Z** sliders that control sanding strength (see [Soften label contours (sanding)](#soften-label-contours-sanding-after-any-label-correction), Create MG Labels' own Common Settings) live here, not there. Enable/disable sanding itself with that checkbox in Create MG Labels; these two sliders are the single shared source every sanding call reads — Correct Label, Correct Adjacent Labels, Auto-correct Labels, and the Cellpose-SAM auto-correct pipeline's own sanding stage all read these same two values, regardless of which tab is visible when they run.
 
-**Sanding sigma XY (vox)** / **Sanding sigma Z (vox)** — both default **0.7**. Anisotropic 3D Gaussian blur strength (separate XY/Z) applied to a label's own binary mask, re-thresholded at 0.5, to round off blocky/jagged voxel edges without meaningfully changing the cell's real shape or volume. Deliberately much smaller than the Pixel Classifier's own Smooth σ XY/Z (Create MG Labels, default 1.5/3.0) — that pair decides whether raw blobs merge into one 3D object before any labels exist; sanding only polishes an already-correct label's own edges afterward, and is foreign-protected so it structurally cannot merge cells.
+**Sanding sigma XY (vox)** / **Sanding sigma Z (vox)** — both default **0.7**. Anisotropic 3D Gaussian blur strength (separate XY/Z) applied to a label's own binary mask, re-thresholded at 0.5, to round off blocky/jagged voxel edges without meaningfully changing the cell's real shape or volume. Deliberately much smaller than the Pixel Classifier's own Smooth σ XY/Z (Create MG Labels, default 2.60/1.00) — that pair decides whether raw blobs merge into one 3D object before any labels exist; sanding only polishes an already-correct label's own edges afterward, and is foreign-protected so it structurally cannot merge cells.
 
 **Fill interior cavities (vesicles) before sanding** — checkbox, Create MG Labels' own Common Settings, **default on**. Runs immediately before the blur above, at every one of the same call sites: a real intracellular vesicle/vacuole (a lipid-processing organelle) shows up dark in the fluorescence channel, so a plain intensity threshold correctly excludes it from the label as "not signal" even though it's genuine cell material — leaving a literal enclosed cavity in the middle of the cell that would otherwise look like a hole no matter which way you slice the volume (Z, Y, or X). This fills any such cavity back in, fully in 3D — not a convex hull, and not a per-slice fill: a real cell's own concave lobes and branches are left exactly as concave as they are (only background voxels *fully enclosed* by the label are ever touched), and a genuine 3D-enclosed cavity is found regardless of which axis it's later viewed from, unlike filling one axis's slices alone (which can miss a cavity that happens to look like two separate blobs from that particular direction). A real open branch, or a different label genuinely sitting inside what topologically looks like a cavity, is left completely untouched — same foreign-label protection as every other tool here. **Cells only — never applied to the skin sentinel label (-1)**: skin's own apparent "cavities" are real cells sitting inside the brain, not vesicles, and filling them would flood the entire brain interior as skin.
 
@@ -1122,6 +1111,9 @@ Extracts fine-tuning crops and launches Cellpose-SAM training — the model Tab 
 
 - **crop_size** / **crops/slice** / **max/orientation** / **min_gt_pixels** / **seed** — control crop dimensions and how many are sampled; defaults (512 / 5 / 320 / 10 / 42) match what's been used for every real dataset so far.
 - **Clean truncated labels after generation** (checked by default) — a crop framed around one target cell can also graze the corner of a *different* nearby cell purely by chance, sometimes showing only a tiny sliver of it. Left in, that sliver is still a valid-looking label with a wildly wrong flow-center target (Cellpose points flow vectors toward each object's own centroid — a fragment's visible centroid is nowhere near the real cell's center). With this on, any label whose crop-visible pixel count falls below **Minimum visible fraction to keep a label** (default 90%) of its true full-slice cross-section gets zeroed out of that crop — automatically, right after generation, not as a separate step you have to remember. A crop's own intended target cell is essentially never affected (it's already well above this threshold in the crop it was generated for); this specifically catches incidental neighbors. Before writing anything, the whole crop folder is backed up to `<folder>_pretrunc_backup` — skipped on a second run if that backup already exists, so re-running never overwrites an earlier backup with already-cleaned files.
+
+**Combine Crops into Shared Training Folder** pools one fish's own crop folder (from Extract X/Y/Z Patches above) into a single shared folder every fish's crops get pooled into for a multi-fish training run — browse to **Fish crop folder** and **Combined folder**, then click **Combine**. Every file is symlinked in (nothing copied), prefixed with the fish's own full data-folder name (e.g. `NT39-3dpf-Crispr-ctrl-D1F4_2024-09-05_15.38.01`) — never a short Dish/Fish tag like `D1F4` alone, since that shorthand repeats across different experiments and ages in this project and isn't a safe identifier in a shared pool on its own. Safe to run again later for a new fish: an already-linked fish's crops are left untouched. On success, the combined folder is filled into the **Data dir** field below, ready for Train Cellpose-SAM.
+
 **Train Cellpose-SAM** launches fine-tuning — configure `n_epochs`/`batch_size`/`save_every`/`log_every`/`lr`, then click **Launch Training**. The `pretrained` field defaults to whatever checkpoint is already loaded in Tab 2's Cellpose-SAM Segmentation section — i.e. by default this **continues training from where Tab 2 left off**, though you can browse to a different starting checkpoint (or type a builtin name like `cpsam`) if you want to start fresh. `branch_weight`/`branch_radius` control the project's branch-weighted loss (weights thin/branch-tip pixels more heavily during training so the model doesn't under-segment fine processes) — set `branch_weight` to `0` to disable it and use the standard Cellpose loss instead.
 
 **Calibrate branch_radius (from GT)** measures the real branch thickness of actual GT-labeled cells instead of guessing `branch_radius` by hand. Browse to a GT labels volume, set **scale Z**/**scale XY** to match its voxel scale, tick **"This is verified ground truth"** (off by default, same one-shot rule as every other sweep tool — see Section 10's intro), and click **Calibrate branch_radius**. The tool 3D-skeletonizes every labeled cell, decomposes each skeleton into branch segments, measures each segment's mean diameter via an anisotropic distance transform, and takes the **thinnest quartile** (the distal branch tips — the fine processes `branch_weight` exists to protect, as opposed to thick soma-adjacent segments) as the basis for the recommendation, converting that radius from microns to pixels at the given scale. If GT-verified, the result feeds a never-falling ceiling tracked across every fish calibrated so far (a thicker "thin branch" measured in any fish sets a higher bar the field must still meet, the opposite direction from Min volume's never-rising floor) — that ceiling, not just this run's own measurement, is applied to the `branch_radius` field above (and shown in a read-only **Recommended branch_radius** line underneath it) and saved to config, no manual copy-over. Left unticked, the run still reports what it measured but changes nothing. This can take anywhere from several seconds to a couple of minutes depending on how many cells are in the GT volume; it runs in a background thread so napari stays responsive.
@@ -1178,7 +1170,8 @@ The cheapest of the four sweepers here. Checks MONAI's own brain segmentation �
 1. **Image** — the raw volume to run inference on. Must be a **TIFF, not `.ims`** (loaded via `tifffile.imread`, unlike Tab 1 itself which does support `.ims`), and must be the true pre-MONAI raw image — feeding it an already brain-masked image would bias the very segmentation this tool is scoring.
 2. **GT brain mask** — a *hand-corrected* brain_mask.tif, e.g. from **GT Annotation** in Tab 5 (the polygon annotation tool's own rasterized output) — not a MONAI prediction.
 3. **Threshold min/max/step** and **Erosion min/max/step** — define the grid. Defaults (0.15–0.35 step 0.05, 0–4 step 1) span 5×5=25 points centered on the recommended threshold.
-4. Click **Run Threshold/Erosion Sweep**.
+4. **Sieve** (default on) — auto-narrows Threshold coarse → fine across 3 stages instead of running one flat grid: stage 1 is the min/max/step above, stages 2 and 3 each re-center on the previous stage's winner using their own +/- width and step fields. Erosion's own grid stays the single range given above at every stage.
+5. Click **Run Threshold/Erosion Sweep**.
 
 MONAI's sliding-window inference (the only genuinely expensive, GPU-bound step) runs **exactly once**, producing a raw probability map. Every threshold and erosion value in the grid is then just a cheap re-threshold + largest-component/fill-holes + optional erosion on that same probability map — no reloading the model, no repeat sliding-window passes. A full 25-point grid typically finishes in well under a minute on GPU, and still works (just slower) on CPU/MPS since it uses the same device selection as **Run Skin-Remover**.
 
@@ -1194,7 +1187,8 @@ Answers the same kind of question as 9d below, but for the Pixel Classifier path
 2. **brain_mask.tif** — the *raw* (un-eroded) mask Tab 1 saves. MONAI inference itself is **not** re-run by this sweep — it only varies what happens *after* inference (erosion, background thresholding, labelling), so it needs an already-computed mask from a normal Tab 1 run rather than the model checkpoint.
 3. **GT labels** — the corrected ground-truth microglia label volume for that fish.
 4. **BG Threshold min/max/step** and **Erosion min/max/step** — define the grid. Defaults (1.0–1.8 step 0.2, 0–4 step 1) span 5×5=25 points centered loosely on the recommended BG Threshold.
-5. Click **Run BG/Erosion Sweep**. For each grid point, it: finds the N most complex GT cells (same branch-count ranking as the Cellpose-SAM sweep, computed once), applies that erosion + BG Threshold to each cell's cropped region, runs Create Labels (using this section's own σ XY / σ Z above, plus **Min volume** and **Min hole size**, both measured automatically from the GT itself — see below) on the crop, and best-IoU-matches the result against GT.
+5. **Sieve** (default on) — auto-narrows BG Threshold coarse → fine across 3 stages, same idea as the MONAI Threshold sweep above; Erosion's grid stays fixed at every stage.
+6. Click **Run BG/Erosion Sweep**. For each grid point, it: finds the N most complex GT cells (same branch-count ranking as the Cellpose-SAM sweep, computed once), applies that erosion + BG Threshold to each cell's cropped region, runs Create Labels (using this section's own σ XY / σ Z above, plus **Min volume** and **Min hole size**, both measured automatically from the GT itself — see below) on the crop, and best-IoU-matches the result against GT.
 
 **Min volume and Min hole size are both measured from the GT, not read from their sliders.** The small-blob cleanup threshold used during the sweep is the true smallest labeled cell's own voxel volume in the GT labels you provided, not whatever the Min volume slider (Tab 2) happens to show — a fixed guessed number risks discarding a real small cell as noise if it's too high. Min hole size works the same way in reverse: it's the smallest genuinely real internal gap found anywhere in that GT's own cells (scanning each cell's per-slice footprint for background regions a human annotator deliberately left unlabeled), so the sweep never fills in a gap the ground truth itself confirms is real. Single-pixel gaps are treated as annotation noise rather than evidence when measuring this, since real GT checked during development showed those are common and unrelated to genuine structure.
 
@@ -1215,9 +1209,10 @@ Sweeps **Cellprob** × **Large-contact merge** (both Tab 2, Cellpose-SAM Segment
 1. **Image** / **GT labels** — a full-fish `brain_only` image + its corresponding GT labels volume.
 2. **Voxel scale Z/XY** — drives the do_3D `anisotropy` parameter (Z/XY ratio); independent of whatever's open in the viewer.
 3. **Cellprob min/max/step** and **Large-contact min/max/step** — define the grid.
-4. Tick **"Email me when done"** if you want a notification (~3h is well past the point where that's worth it) — see [Section 10h](#10h-email-notification-optional).
-5. Tick **"This is verified ground truth"** if the GT labels above are genuinely hand-verified (off by default — see Section 10's intro for the one-shot rule shared by every sweep tool here). Only then will this run's findings move Cellprob threshold, Large-contact merge, the Min volume floor, or the Min hole size floor.
-6. Click **Run Cellprob/LC Sweep**. Uses Tab 2's current **Safe-merge max gap** and **Safe-merge min contact** values — only Cellprob and Large-contact vary.
+4. **Sieve** (default on) — auto-narrows Cellprob coarse → fine across 3 stages, same idea as the other sweepers; Large-contact's own grid stays fixed at every stage, and the one `do_3D` network pass per sweep described below is still reused across all 3 stages, not repeated.
+5. Tick **"Email me when done"** if you want a notification (~3h is well past the point where that's worth it) — see [Section 10h](#10h-email-notification-optional).
+6. Tick **"This is verified ground truth"** if the GT labels above are genuinely hand-verified (off by default — see Section 10's intro for the one-shot rule shared by every sweep tool here). Only then will this run's findings move Cellprob threshold, Large-contact merge, the Min volume floor, or the Min hole size floor.
+7. Click **Run Cellprob/LC Sweep**. Uses Tab 2's current **Safe-merge max gap** and **Safe-merge min contact** values — only Cellprob and Large-contact vary.
 
 **Cellprob is cheap to sweep, same as Large-contact.** Cellpose's own `CellposeModel.eval()` internally splits into two independent steps: the network forward pass that predicts a flow field (the one genuinely expensive, GPU-bound part — completely unrelated to Cellprob or any other threshold) and a separate, cheap mask-formation step that Cellprob threshold feeds into. This sweep runs the network pass **exactly once** for the whole grid, then re-thresholds cheaply for every Cellprob value, then runs GMM cleanup + Krendl safe-merge per Cellprob value, with **Large-contact** varying freely on top of that. Total sweep time is roughly **one `do_3D` network pass, period** — not one per Cellprob value.
 
@@ -1304,11 +1299,12 @@ The statistics CSV is deliberately minimal (label, volume, centroid, bounding bo
 
 ### 10g. Verify Smooth σ XY / σ Z (GT Sweep) {#10g-verify-smooth-sigma-xy-sigma-z-gt-sweep}
 
-Checks a parameter every other GT-sweep tool in this plugin had already covered except this one: the Pixel Classifier's pre-threshold Gaussian smoothing (**Smooth σ XY** / **Smooth σ Z**, Tab 2). These have defaulted to 1.5/3.0 since Tab 2 was first built, but — unlike BG Threshold, Erosion, Cellprob, Large-contact, and Min volume, all of which now have a dedicated sweep — they had never actually been verified against real ground truth.
+Checks the Pixel Classifier's pre-threshold Gaussian smoothing (**Smooth σ XY** / **Smooth σ Z**, Tab 2 — currently default to 2.60/1.00, from the first GT-sweep pass across every fish swept so far) against real ground truth, the same way every other GT-sweep tool here checks its own parameter(s).
 
 1. **GT image** / **brain_mask.tif** / **GT labels** — same three inputs as [9b](#10b-verify-bg-threshold--erosion-gt-sweep) above (the raw/brain_only image Tab 1 ran on, the raw un-eroded mask, and the corrected GT label volume).
 2. **sigma XY min/max/step** and **sigma Z min/max/step** — define the grid.
-3. Click **Run Sigma Sweep**. **BG Threshold and Erosion are held fixed** at whatever Tab 1's sliders currently show — this sweep isolates sigma specifically, the same way 9c holds Flow/Safe-merge fixed while varying only Cellprob/Large-contact.
+3. **Sieve** (default on) — auto-narrows sigma XY coarse → fine across 3 stages, same idea as the other sweepers; sigma Z's own grid stays fixed at every stage.
+4. Click **Run Sigma Sweep**. **BG Threshold and Erosion are held fixed** at whatever Tab 1's sliders currently show — this sweep isolates sigma specifically, the same way 9c holds Flow/Safe-merge fixed while varying only Cellprob/Large-contact.
 
 Cheaper per grid point than the BG Threshold/Erosion sweep: since BG Threshold and Erosion don't change here, each cell's thresholded `brain_only` crop is computed once and reused across every sigma combination — only the `create_labels()` call itself (the smoothing + union-find step) varies per grid point.
 
@@ -1345,13 +1341,13 @@ Finds the lower-contrast value [Correct Label](#correct-label) (Tab 3 — Edit M
 
 **This is the canonical best_lo sweep — every other autosweep-driven tool correlates to it.** [Protect Skin as Label](#protect-skin-as-label), [Auto-correct Labels](#auto-correct-labels), and the Cellpose-SAM Segmentation route's own chained auto-correct stage all run this exact same sweep (not a second, independently-tunable copy) whenever their own **Contrast low (best_lo) calibration** section (Tab 3 — Edit MG Labels, [7d](#7d-contrast-low-best_lo-calibration)) has Auto-sweep checked. Changing **Cells**, **Slices/cell**, **Edge margin (µm)**, or **Sweep steps** here changes the sweep every one of those tools runs, not just this standalone button — this is the one place to tune how many cells/slices the sweep samples.
 
-**How it works:** picks the **Cells** most morphologically complex cells (same skeleton-branch-count "Complexity" measure Resort Labels uses) whose centroid sits at least **Edge margin (µm)** away from the volume's own outer boundary — a proxy for "not close to skin", since a cell right at the boundary is exactly the one most likely to already carry a skin-residue artifact merged in (the thing this calibration should be scored *against*, not accidentally learn from). For each selected cell it samples up to **Slices/cell** Z-slices (default 5 cells × 10 slices = **50 samples**, not 10 total), spread across the middle of that cell's own Z-extent. It then sweeps **Sweep steps** candidate lower-contrast values, cropped with **Bbox padding (px)** around each sample (auto-scaled to the real intensity range around the samples, not a hardcoded guess) and keeps whichever value best reproduces the most existing 2D footprints, jointly across all samples (mean IoU) — not each sample's own independent best, which would let one outlier pull the result around.
+**How it works:** picks the **Cells** most morphologically complex cells (same skeleton-branch-count "Complexity" measure Resort Labels uses) whose centroid sits at least **Edge margin (µm)** away from the volume's own outer boundary — a proxy for "not close to skin", since a cell right at the boundary is exactly the one most likely to already carry a skin-residue artifact merged in (the thing this calibration should be scored *against*, not accidentally learn from). For each selected cell it samples up to **Slices/cell** Z-slices (default 20 cells × 20 slices = **400 samples**, not 20 total), spread across the middle of that cell's own Z-extent. It then sweeps **Sweep steps** candidate lower-contrast values, cropped with **Bbox padding (px)** around each sample (auto-scaled to the real intensity range around the samples, not a hardcoded guess) and keeps whichever value best reproduces the most existing 2D footprints, jointly across all samples (mean IoU) — not each sample's own independent best, which would let one outlier pull the result around.
 
 Only cell labels count, both as targets and as context: any skin label (-1) present in the layer is treated as plain background during calibration, so the result is the same whether or not skin has been protected.
 
 **Signal layer** / **Labels layer** — read from Tab 3 — Edit MG Labels' shared "Layers and label(s) being edited" selector ([7a](#7a-layers-and-labels-being-edited)), not a separate pair of combos here — pick them once there, and every tool that needs them (this one included) uses the same choice.
 
-**Cells** / **Slices/cell** — default 5 / 10 (50 samples total). **Edge margin (µm)** — default 50.0. **Sweep steps** — default 40 candidate values. **Bbox padding (px)** — default 15, used only for this sweep's own sample crops (not Correct Label's own bbox padding, a separate field).
+**Cells** / **Slices/cell** — default 20 / 20 (400 samples total). **Edge margin (µm)** — default 50.0. **Sweep steps** — default 20 candidate values. **Bbox padding (px)** — default 15, used only for this sweep's own sample crops (not Correct Label's own bbox padding, a separate field).
 
 Click **Run Contrast Calibration Sweep**. On success, the report below shows every candidate tried and its mean IoU, and the winning value is **applied directly** to the selected signal layer's contrast limits — low set to the winning value, high set adaptively from this fish's own real signal (see [7d](#7d-contrast-low-best_lo-calibration)) — no manual step needed afterward.
 
@@ -1734,10 +1730,10 @@ Set these values in Tab 1:
 
 | Setting | Value |
 |---------|-------|
-| MONAI Threshold | **0.25** |
+| MONAI Threshold | **0.38** (default) |
 | Erosion | 0 (default) |
 | Background | **Option 1** if you plan to use Cellpose-SAM in Step 3, **Option 2** if you plan to use the Pixel Classifier |
-| BG Threshold (Option 2 only) | **1.05** |
+| BG Threshold (Option 2 only) | **1.025** (default) |
 
 Click **Run Skin-Remover** and wait.
 
@@ -1759,10 +1755,10 @@ Set these values:
 
 | Setting | Value |
 |---------|-------|
-| Smooth σ XY | **1.5** |
-| Smooth σ Z | **3.0** |
-| Min volume | 7500 (default) |
-| Min hole size | 0 (default — leave unless you have seen real holes disappearing) |
+| Smooth σ XY | **2.60** |
+| Smooth σ Z | **1.00** |
+| Min volume | 7069 (default) |
+| Min hole size | 5 (default — leave unless you have seen real holes disappearing) |
 
 Click **Create Labels**.
 
@@ -1776,7 +1772,7 @@ Click **Create Labels**.
 #### Option B — Cellpose-SAM Segmentation (active layer ends in `_ExtRm`)
 
 1. Browse to your Cellpose-SAM checkpoint (Section 3) if not already set.
-2. Set **Cellprob threshold** to **-1.15**, **Flow iterations (niter)** to **400**, **Safe-merge max gap** to **5.0 µm**, **Safe-merge min contact** to **1 vox**, and **Large-contact merge** to **10 vox** — see [Section 6c](#6c-cellpose-sam-segmentation) for what each one does.
+2. **Cellprob threshold** (default 2.84) and **Safe-merge max gap** (default 3.52 µm) already match the shipped defaults; set **Safe-merge min contact** to **1 vox** and **Large-contact merge** to **10 vox** if they don't already show that — see [Section 6c](#6c-cellpose-sam-segmentation) for what each one does. Set **Flow iterations (niter)** to **400** if you want faster flow-following convergence than the 200-step default.
 3. Click **Run Cellpose-SAM Segmentation** and wait — this can take hours for a full-size fish. Progress is shown in the status bar; napari stays usable while it runs.
 
 **What you should see:** A labels layer where each cell is a different colour, exactly as with the Pixel Classifier.
@@ -2071,10 +2067,10 @@ The active layer's name must end in `_ExtRm` (Cellpose-SAM) or `_NoBG` (Pixel Cl
 
 | Control | Recommended | What it does |
 |---------|-------------|--------------|
-| MONAI Threshold | 0.25 | AI confidence cutoff |
+| MONAI Threshold | 0.38 (GT-sweep recommends 0.622 — see Recommended line below the slider) | AI confidence cutoff |
 | Erosion | 0 | Strips voxels from mask edge |
 | Background | Option 2 | Removes background globally (best for labels) |
-| BG Threshold | 1.05 | Fine-tunes background removal level (Background mode 2 only) |
+| BG Threshold | 1.025 | Fine-tunes background removal level (Background mode 2 only) |
 | Email me when done | Unchecked | Uses Tab 6's shared Email notification credentials (Section 10h) — useful on CPU/MPS, where this can run 30-60 min |
 
 ### Tab 2 — Create MG Labels
@@ -2085,9 +2081,9 @@ Shown automatically based on active layer suffix — `_ExtRm` → Cellpose-SAM, 
 
 | Control | Recommended | What it does |
 |---------|-------------|--------------|
-| Min volume | 7500 (until a Tab 6 sweep or GT-verified Statistics run measures a real recommendation) | **Informative only, not editable** — Pixel Classifier's cutoff **and** Cellpose-SAM's Safe-merge "already a whole cell" floor, one shared value; only moves via a GT sweep/GT-verified Statistics run |
-| Max volume | not yet measured (until a GT-verified Statistics run measures one) | **Informative only, not editable** — largest cell ever confirmed real by GT; drives no pipeline stage, only flags `is_volume_outlier` (Tab 4 CSV) |
-| Min hole size | 0 (until a GT sweep or GT-verified Statistics run measures a real recommendation) | Editable slider — shared by both routes — minimum voxels for an enclosed gap to survive as real background instead of being filled |
+| Min volume | 7069 (first GT-sweep pass; only ever moves lower as a new fish proves an even smaller real cell) | **Informative only, not editable** — Pixel Classifier's cutoff **and** Cellpose-SAM's Safe-merge "already a whole cell" floor, one shared value; only moves via a GT sweep/GT-verified Statistics run |
+| Max volume | 225996 (first GT-verified Statistics measurement; only ever moves higher) | **Informative only, not editable** — largest cell ever confirmed real by GT; drives no pipeline stage, only flags `is_volume_outlier` (Tab 4 CSV) |
+| Min hole size | 5 (first GT-sweep pass; only ever moves lower) | Editable slider — shared by both routes — minimum voxels for an enclosed gap to survive as real background instead of being filled |
 | Final min-size fraction | 0.618 (golden ratio) | Editable slider — both routes — the real deletion cutoff is this fraction of Min volume, not Min volume itself (Cellpose-SAM: last-stage safety net; Pixel Classifier: the volume filter's own cutoff) |
 | Soften label contours (sanding) | Checked | Shared by Correct Label, Correct Adjacent Labels, Auto-correct Labels, and Cellpose-SAM auto-correct — sands the touched label(s) right after each, foreign-protected, purely geometric |
 | Fill interior cavities (vesicles) before sanding | Checked | Same tools, runs right before the blur — fills a real 3D-enclosed vesicle/vacuole cavity the intensity threshold correctly excluded as "not signal", never touches the outer contour (concave or not); cells only, never skin |
@@ -2097,17 +2093,17 @@ Shown automatically based on active layer suffix — `_ExtRm` → Cellpose-SAM, 
 
 | Control | Recommended | What it does |
 |---------|-------------|--------------|
-| Smooth σ XY | 1.5 | XY strength of the 3D Gaussian blur applied before thresholding |
-| Smooth σ Z | 3.0 | Z strength of the same 3D Gaussian blur — bridges small Z gaps before thresholding |
+| Smooth σ XY | 2.60 | XY strength of the 3D Gaussian blur applied before thresholding |
+| Smooth σ Z | 1.00 | Z strength of the same 3D Gaussian blur — bridges small Z gaps before thresholding |
 
 **Cellpose-SAM Segmentation**
 
 | Control | Recommended | What it does |
 |---------|-------------|--------------|
 | Min size | 15 vox | Cellpose-SAM only, not shared with Common Settings' Min volume — tiny early noise filter |
-| Cellprob threshold | -1.15 | Confidence cutoff for foreground vs. background |
-| Flow iterations (niter) | 400 | Euler-integration steps for flow-following before instances are formed |
-| Safe-merge max gap | 5.0 µm | Max physical gap allowed when merging fragments |
+| Cellprob threshold | 2.84 | Confidence cutoff for foreground vs. background |
+| Flow iterations (niter) | 200 | Euler-integration steps for flow-following before instances are formed |
+| Safe-merge max gap | 3.52 µm | Max physical gap allowed when merging fragments |
 | Safe-merge min contact | 1 vox | Min touching surface required to merge |
 | Large-contact merge | 10 vox | Second merge pass for thick-junction splits |
 | Email me when done | Unchecked | Uses Tab 6's shared Email notification credentials (Section 10h) — do_3D can run hours on a full-size fish |
@@ -2189,10 +2185,11 @@ Always shown — a banner at the top warns if your GPU is missing or under the r
 | epochs | 1500 | (MONAI) training length |
 | n_epochs | 200 | (Cellpose-SAM) training length |
 | branch_weight | 0 | (Cellpose-SAM) 0 = standard loss; >0 weights thin/branch pixels more heavily |
-| branch_radius | 3 px | (Cellpose-SAM) erosion-survival distance threshold for the branch-weighted loss — measurable from real GT via Calibrate branch_radius below |
+| branch_radius | 5 px | (Cellpose-SAM) erosion-survival distance threshold for the branch-weighted loss — measurable from real GT via Calibrate branch_radius below |
 | Calibrate branch_radius (from GT) | — | (Cellpose-SAM) measures real branch thickness from a GT labels volume (3D skeleton + distance transform) — **recommendation auto-applied to branch_radius and saved** |
 | pretrained | Tab 2's checkpoint | (Cellpose-SAM) starting point — "continue training" by default |
 | Extract X/Y/Z Patches | crop_size=512 | (Cellpose-SAM) generates training crops in 3 orientations, cleans truncated labels by default |
+| Combine Crops into Shared Training Folder | — | (Cellpose-SAM) symlinks one fish's crop folder into a shared multi-fish pool, prefixed with its own full data-folder name |
 | Patience (checkpoints) | 5 | Both — stop after N checkpoints with no improvement (Dice/test_loss); 0 disables |
 | Launch Training | — | Starts a detached process that survives closing napari; GUI reconnects automatically next time |
 | *(on stop, Cellpose-SAM only)* | — | Writes `<model_name>_best_recommended.txt` in `models/` — a pointer, not a copy, to the best-test_loss checkpoint |
@@ -2204,12 +2201,12 @@ Nine tools consolidated from Tabs 1, 2, 4, and 5, each individually collapsible 
 
 | Control | Scope | What it does |
 |---------|-------|--------------|
-| Verify MONAI Threshold / Erosion (GT Sweep) | 5x5 grid | (Tab 1) Confirms current values against a hand-corrected GT brain mask — MONAI runs once, rest is cheap — **cross-fish average auto-applied to the sliders and saved** |
-| Verify BG Threshold / Erosion (GT Sweep) | 5x5 grid | (Tab 1/2) Confirms current BG Threshold/Erosion against real GT IoU, and measures Min volume + Min hole size as never-rising floors from GT — CPU-OK, doesn't survive closing napari — **cross-fish average + Min volume + Min hole size floors auto-applied and saved** |
-| Verify Smooth σ XY / σ Z (GT Sweep) | grid | (Tab 2) Confirms current Smooth σ XY/Z against real GT IoU, BG Threshold/Erosion held fixed — CPU-OK, doesn't survive closing napari — **cross-fish average + Min volume + Min hole size floors auto-applied and saved** |
-| Verify Cellprob / Large-contact (GT Sweep) | 5x5 grid, full fish, ~3h total | (Tab 2) Confirms against whole-fish GT — do_3D's network pass runs once for the whole grid (~3h on a full-size fish, GPU-preferred), Cellprob + Large-contact both re-thresholded cheaply on top — **cross-fish average + measured GT-min floor auto-applied to the sliders and saved**. Has an "Email me when done" checkbox (~3h is well past the 30-min mark) |
+| Verify MONAI Threshold / Erosion (GT Sweep) | 5x5 grid, Sieve on by default | (Tab 1) Confirms current values against a hand-corrected GT brain mask — MONAI runs once, rest is cheap — **cross-fish average auto-applied to the sliders and saved** |
+| Verify BG Threshold / Erosion (GT Sweep) | 5x5 grid, Sieve on by default | (Tab 1/2) Confirms current BG Threshold/Erosion against real GT IoU, and measures Min volume + Min hole size as never-rising floors from GT — CPU-OK, doesn't survive closing napari — **cross-fish average + Min volume + Min hole size floors auto-applied and saved** |
+| Verify Smooth σ XY / σ Z (GT Sweep) | grid, Sieve on by default | (Tab 2) Confirms current Smooth σ XY/Z against real GT IoU, BG Threshold/Erosion held fixed — CPU-OK, doesn't survive closing napari — **cross-fish average + Min volume + Min hole size floors auto-applied and saved** |
+| Verify Cellprob / Large-contact (GT Sweep) | 5x5 grid, Sieve on by default, full fish, ~3h total | (Tab 2) Confirms against whole-fish GT — do_3D's network pass runs once for the whole grid (~3h on a full-size fish, GPU-preferred), Cellprob + Large-contact both re-thresholded cheaply on top — **cross-fish average + measured GT-min floor auto-applied to the sliders and saved**. Has an "Email me when done" checkbox (~3h is well past the 30-min mark) |
 | Verify Best Epoch (GT Sweep) | 5 cells, ±2 checkpoints | (Tab 5, Cellpose-SAM) confirms the recommendation against real GT IoU/Dice, not just test_loss — doesn't survive closing napari — **if the sweep disagrees, rewrites the pointer to the confirmed epoch and loads it as Tab 2's active model**. Has an "Email me when done" checkbox (can run 30 min to a couple hours) |
-| Calibrate Correct-Label Contrast | 50 samples (5 cells x 10 slices) | (Tab 3, Edit MG Labels) the canonical best_lo sweep every autosweep-driven tool (Protect Skin as Label, Auto-correct Labels) correlates to — finds the lower-contrast value that best reproduces the active Labels layer's own shapes (mean IoU), not independent GT — reads its Signal/Labels layers from Tab 3's shared selector, **auto-applies the winning value to the chosen signal layer's contrast limits (low = winning value, high = an adaptive percentile of this fish's own real signal)** |
+| Calibrate Correct-Label Contrast | 400 samples (20 cells x 20 slices) | (Tab 3, Edit MG Labels) the canonical best_lo sweep every autosweep-driven tool (Protect Skin as Label, Auto-correct Labels) correlates to — finds the lower-contrast value that best reproduces the active Labels layer's own shapes (mean IoU), not independent GT — reads its Signal/Labels layers from Tab 3's shared selector, **auto-applies the winning value to the chosen signal layer's contrast limits (low = winning value, high = an adaptive percentile of this fish's own real signal)** |
 | Score Against GT | any 2 Labels layers | Whole-fish Hungarian-matched TP/FP/FN/Score/MeanIoU/MeanDice between any two Labels layers — synchronous, no GPU needed |
 | Drift View in 3D | — | (Tab 6, General) Start/Stop button + Speed slider — slowly, continuously tumbles the 3D camera around whatever's in view, switching to 3D display automatically; camera-only, never touches layer data |
 | Autosave Labels Layer | Checked, every 30 min | (Tab 6, General) Periodically saves ONLY the Labels layer selected in Tab 3's own shared selector to `<output>/<name>_recovery.tif` — a crash loses at most one interval's worth of manual editing. Interval is minutes/hours, editable; brain_mask layers are never included |

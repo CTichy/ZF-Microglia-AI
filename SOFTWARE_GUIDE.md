@@ -14,7 +14,7 @@ Pseudocode blocks use a plain, language-agnostic notation (not literal Python) �
 4. [Stage 2 — Label creation](#4-stage-2--label-creation) — `_labeling.py` (Pixel Classifier), `_cellpose_seg.py` (Cellpose-SAM), `_sanding.py`
 5. [Stage 3 — Label editing & correction](#5-stage-3--label-editing--correction) — `_labeling.py` (editing tools), `_grow_correct.py`, `_contrast_sweep.py`, `_auto_correction.py`
 6. [Stage 4 — Statistics](#6-stage-4--statistics) — `_statistics.py`
-7. [Stage 5 — AI Tools](#7-stage-5--ai-tools) — `_gt_annotation.py`, `_xzyz_patches.py`, `_crop_truncation.py`, `_branch_calibration.py`, `_training_jobs.py`
+7. [Stage 5 — AI Tools](#7-stage-5--ai-tools) — `_gt_annotation.py`, `_xzyz_patches.py`, `_crop_truncation.py`, `_combine_crops.py`, `_branch_calibration.py`, `_training_jobs.py`
 8. [Stage 6 — Sweeps & Utilities](#8-stage-6--sweeps--utilities) — `_sieve.py`, `_brain_sweep.py`, `_pixel_sweep.py`, `_krendl_sweep.py`, `_epoch_sweep.py`, `_gt_score.py`, `_gt_package.py`, `_gt_toolkit.py`
 9. [`_widget.py` — application shell](#9-_widgetpy--application-shell)
 10. [Module reference (quick index)](#10-module-reference-quick-index)
@@ -1015,6 +1015,31 @@ clean_crop_truncation(crop_dir, gt_full_path, anisotropy, threshold=0.9):
         overwrite the mask file only if something was actually zeroed
 ```
 
+### `_combine_crops.py` — pooling one fish's crops into a shared training folder
+
+Symlinks one fish's own `generate_xzyz_patches()` output into a single shared folder every fish's crops get pooled into, so a multi-fish training run's own `--data_dir` can point at one place regardless of how many fish have been added to it.
+
+```
+combine_crop_folder(fish_crop_dir, combined_dir, fish_stem=None, ...):
+    fish_stem ← given, or fish_crop_dir's own parent folder name — the
+        fish's full, already-unique data-folder name (e.g.
+        "NT39-3dpf-Crispr-ctrl-D1F4_2024-09-05_15.38.01"), NEVER a short
+        Dish/Fish tag like "D1F4" alone — that shorthand repeats across
+        different experiments/ages in this project (two genuinely
+        different fish are both "D1F4")
+    pairs ← find_crop_pairs(fish_crop_dir) (reuses _crop_truncation.py's
+        own xy/xz/yz_NNN_NN pair-matching, so that logic lives in one
+        place)
+    for each (image, masks) pair:
+        link_path ← combined_dir / "<fish_stem>_<original filename>"
+        if link_path already exists or is already a symlink: skip,
+            count as "already existed" (never overwritten)
+        else: create a real OS symlink to the source file (not a copy)
+    return counts: pairs found, links created, already existed
+```
+
+Safe to call again later as new fish become available — an existing symlink is never touched, so re-running after a new fish's own crop folder is ready only ever adds that fish's new links.
+
 ### `_branch_calibration.py` — measuring real branch radius from GT
 
 Recalibrates `train_xzyz.py`'s `branch_radius` parameter (the erosion-survival-distance threshold the branch-weighted training loss uses to decide "this pixel is part of a thin branch") from actually-measured GT morphology instead of a frozen guess.
@@ -1488,6 +1513,7 @@ Every button/combo handler in the file is documented, with real behavior, in the
 | `_grow_correct.py` | 493 | Auto-grow / until-stable orchestration around Correct Label's 2D and 3D engines | §5 |
 | `_training_jobs.py` | 378 | Cross-platform detached-process training job management (launch, poll, kill, patience early-stop, email) | §7 |
 | `_gt_annotation.py` | 322 | Polygon-based hand-drawn GT annotation (brain/skin masks) | §7 |
+| `_combine_crops.py` | 85 | Symlinks one fish's crop folder into a shared multi-fish training pool | §7 |
 | `_epoch_sweep.py` | 275 | GT-verified Cellpose-SAM checkpoint (epoch) sweep, bbox-restricted | §8 |
 | `_contrast_sweep.py` | 275 | Self-referential Correct-Label contrast (`lo`) calibration against Cellpose-SAM's own output | §5 |
 | `_background.py` | 193 | Population-mode background estimation + 3 background-removal modes | §3 |
