@@ -2498,6 +2498,12 @@ class ZFMicrogliaAIWidget(QWidget):
         edit_labels_row = QHBoxLayout()
         edit_labels_row.addWidget(QLabel("Labels layer:"))
         self._edit_labels_combo = QComboBox()
+        # Force n_edit_dimensions=2 on whatever layer gets picked here
+        # the moment it's picked, not only the next time a tool button
+        # happens to run -- see _edit_labels_layer()'s own docstring.
+        self._edit_labels_combo.currentIndexChanged.connect(
+            lambda *_: self._edit_labels_layer()
+        )
         edit_labels_row.addWidget(self._edit_labels_combo)
         esl.addLayout(edit_labels_row)
 
@@ -6077,6 +6083,20 @@ class ZFMicrogliaAIWidget(QWidget):
                 idx = self._edit_labels_combo.findData(guess)
                 if idx >= 0:
                     self._edit_labels_combo.setCurrentIndex(idx)
+
+        # Force n_edit_dimensions=2 the moment a layer becomes "the one
+        # being edited" here -- not only the next time some Edit MG
+        # Labels button is clicked. _edit_labels_layer() applied this
+        # guard only inside each tool's own handler, which left a real
+        # gap: a layer freshly created/loaded (this function runs on
+        # every layers.events.inserted) or picked from this combo by
+        # hand starts at napari's own 3D default until a button happens
+        # to be pressed -- in between, a manual native napari paint/fill
+        # stroke meant for one slice can bleed into neighboring slices,
+        # exactly the "edits an adjacent slice too" report this guard
+        # exists to prevent. Calling it here, for its side effect only,
+        # closes that window.
+        self._edit_labels_layer()
 
     def _refresh_layer_info(self, *_):
         lyr = self._active_layer()
