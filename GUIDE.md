@@ -1139,16 +1139,16 @@ Both "Launch Training" buttons (MONAI and Cellpose-SAM) start a **detached backg
 
 ## 10. Tab 6 — Sweeps & Utilities
 
-Seven tools, gathered here so Tabs 1-4 stay focused on running the pipeline rather than tuning it. Each is individually collapsible: click a section's title checkbox to hide its contents, so you can keep only the one you're actively using expanded. Every tool below operates on its own Tab 1-4 sliders/fields and auto-applies its findings back there — this tab is where the sweep runs, not where its results live. Five are GT-*sweep* tools (test a small parameter grid against a handful of proxy cells or one mask, as a fast approximation); the other two (Score Against GT, Build GT-Correction Package) are related GT utilities that don't fit that "sweep" shape.
+Several tools, gathered here so Tabs 1-4 stay focused on running the pipeline rather than tuning it. Each is individually collapsible: click a section's title checkbox to hide its contents, so you can keep only the one you're actively using expanded. Every tool below operates on its own Tab 1-4 sliders/fields and auto-applies its findings back there — this tab is where the sweep runs, not where its results live. Five are GT-*sweep* tools (test a small parameter grid against a handful of proxy cells or one mask, as a fast approximation); the rest (Score Against GT, Build GT-Correction Package, Calibrate Correct-Label Contrast, and the General-category utilities below) are related tools that don't fit that "sweep against ground truth" shape.
 
-**"Show tools for..." filter** — with seven tools stacked in one tab and no indication of which pipeline each belongs to, it wasn't obvious at a glance what any given tool was even for. Four checkboxes at the top of the tab let you hide the ones you don't need:
+**"Show tools for..." filter** — with this many tools stacked in one tab and no indication of which pipeline each belongs to, it isn't obvious at a glance what any given tool is even for. Four checkboxes at the top of the tab let you hide the ones you don't need:
 
 | Category | Tools shown |
 |---|---|
-| Skin Removal (MONAI) | 9a. Verify MONAI Threshold / Erosion |
-| Pixel Classifier segmentation | 9b. Verify BG Threshold / Erosion, 9g. Verify Smooth σ XY / σ Z |
-| Cellpose-SAM segmentation | 9c. Verify Cellprob / Large-contact, 9d. Verify Best Epoch, 9f. Build GT-Correction Package |
-| General (any pipeline) | 9e. Score Against GT |
+| Skin Removal (MONAI) | 10a. Verify MONAI Threshold / Erosion |
+| Pixel Classifier segmentation | 10b. Verify BG Threshold / Erosion, 10g. Verify Smooth σ XY / σ Z |
+| Cellpose-SAM segmentation | 10c. Verify Cellprob / Large-contact, 10d. Verify Best Epoch, 10f. Build GT-Correction Package |
+| General (any pipeline) | 10e. Score Against GT, 10i. Calibrate Correct-Label Contrast, plus the other General-only utilities (Email notification, Drift View in 3D, Autosave Labels Layer, GT Toolkit Tuning Tool) |
 
 All four are checked by default (nothing is hidden until you actually uncheck something), and your choice is saved to config and restored next time you open napari. Unlike Tab 5's MONAI/Cellpose-SAM training switch, these are independent checkboxes, not a mutually-exclusive radio choice — you can leave several checked at once if you work with more than one pipeline.
 

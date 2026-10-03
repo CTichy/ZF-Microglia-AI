@@ -3595,6 +3595,116 @@ class ZFMicrogliaAIWidget(QWidget):
         t5.addWidget(asg)
         self._t5_category_groups.setdefault("general", []).append(asg)
 
+        # ── Calibrate Correct-Label Contrast ──────────────────────────── #
+        # General, not Cellpose-SAM-specific: this sweep's result (best_lo)
+        # is read by Edit MG Labels' own "Contrast low (best_lo)
+        # calibration" section, which every best_lo-driven tool there uses
+        # regardless of which route (Pixel Classifier or Cellpose-SAM)
+        # produced the Labels layer being corrected -- Protect Skin as
+        # Label and Auto-correct Labels apply equally to either route's
+        # output.
+        ccg = QGroupBox("Calibrate Correct-Label Contrast")
+        ccl = QVBoxLayout()
+
+        ccal_note = QLabel(
+            "  Select a Labels layer and its Signal layer in Edit MG "
+            "Labels' shared selector, then run this to find the "
+            "contrast-low value (best_lo) that best reproduces the "
+            "Labels layer's own existing 2D shapes from the Signal "
+            "layer's intensity -- no ground truth needed. On success, "
+            "sets the Signal layer's contrast limits to [best lo, "
+            "best lo + 20]. Every other best_lo-driven tool (Protect "
+            "Skin as Label, Auto-correct Labels, the "
+            "Cellpose-SAM auto-correct pipeline, via Edit MG Labels' "
+            "own \"Contrast low (best_lo) calibration\" section) runs "
+            "this exact sweep using the Cells / Slices-per-cell / Edge "
+            "margin / Sweep steps values set below."
+        )
+        ccal_note.setWordWrap(True)
+        ccal_note.setStyleSheet("color: #888; font-size: 10px;")
+        ccl.addWidget(ccal_note)
+
+        ccal_cells_row = QHBoxLayout()
+        ccal_cells_row.addWidget(QLabel("Cells:"))
+        self._ccal_ncells_spin = QSpinBox()
+        self._ccal_ncells_spin.setRange(1, 20)
+        self._ccal_ncells_spin.setValue(20)
+        ccal_cells_row.addWidget(self._ccal_ncells_spin)
+        ccal_cells_row.addWidget(QLabel("Slices/cell:"))
+        self._ccal_slices_spin = QSpinBox()
+        self._ccal_slices_spin.setRange(1, 30)
+        self._ccal_slices_spin.setValue(20)
+        ccal_cells_row.addWidget(self._ccal_slices_spin)
+        ccl.addLayout(ccal_cells_row)
+        ccal_cells_note = QLabel(
+            "  Cells sets how many of the most morphologically complex "
+            "labels to sample (ranked by skeleton branch count). "
+            "Slices/cell sets how many Z-slices to sample from each of "
+            "those cells -- total samples = Cells x Slices/cell."
+        )
+        ccal_cells_note.setWordWrap(True)
+        ccal_cells_note.setStyleSheet("color: #888; font-size: 10px;")
+        ccl.addWidget(ccal_cells_note)
+
+        ccal_margin_row = QHBoxLayout()
+        ccal_margin_row.addWidget(QLabel("Edge margin (µm):"))
+        self._ccal_margin_spin = QDoubleSpinBox()
+        self._ccal_margin_spin.setDecimals(1)
+        self._ccal_margin_spin.setRange(0.0, 1000.0)
+        self._ccal_margin_spin.setValue(50.0)
+        ccal_margin_row.addWidget(self._ccal_margin_spin)
+        ccal_margin_row.addWidget(QLabel("Sweep steps:"))
+        self._ccal_steps_spin = QSpinBox()
+        self._ccal_steps_spin.setRange(5, 200)
+        self._ccal_steps_spin.setValue(20)
+        ccal_margin_row.addWidget(self._ccal_steps_spin)
+        ccl.addLayout(ccal_margin_row)
+        ccal_margin_note = QLabel(
+            "  Edge margin excludes any cell whose centroid sits closer "
+            "than this to the volume's own boundary, in microns -- keeps "
+            "samples away from cells likely to already carry a "
+            "skin-residue artifact. Sweep steps sets how many candidate "
+            "lo values to test between the sampled cells' own intensity "
+            "range."
+        )
+        ccal_margin_note.setWordWrap(True)
+        ccal_margin_note.setStyleSheet("color: #888; font-size: 10px;")
+        ccl.addWidget(ccal_margin_note)
+
+        ccal_pad_row = QHBoxLayout()
+        ccal_pad_row.addWidget(QLabel("Bbox padding (px):"))
+        self._ccal_pad_spin = QSpinBox()
+        self._ccal_pad_spin.setRange(0, 500)
+        self._ccal_pad_spin.setValue(15)
+        ccal_pad_row.addWidget(self._ccal_pad_spin)
+        ccl.addLayout(ccal_pad_row)
+        ccal_pad_note = QLabel(
+            "  Bbox padding sets how far around each sampled cell, in "
+            "pixels, the sweep crops before testing candidate lo values."
+        )
+        ccal_pad_note.setWordWrap(True)
+        ccal_pad_note.setStyleSheet("color: #888; font-size: 10px;")
+        ccl.addWidget(ccal_pad_note)
+
+        self._ccal_run_btn = QPushButton("Run Contrast Calibration Sweep")
+        self._ccal_run_btn.setStyleSheet("QPushButton { font-weight: bold; padding: 5px; }")
+        ccl.addWidget(self._ccal_run_btn)
+
+        self._ccal_status_lbl = QLabel("")
+        self._ccal_status_lbl.setWordWrap(True)
+        ccl.addWidget(self._ccal_status_lbl)
+
+        self._ccal_report_view = QTextEdit()
+        self._ccal_report_view.setReadOnly(True)
+        self._ccal_report_view.setStyleSheet("font-family: monospace; font-size: 9px;")
+        self._ccal_report_view.setFixedHeight(160)
+        ccl.addWidget(self._ccal_report_view)
+
+        ccg.setLayout(ccl)
+        ccg = _make_collapsible(ccg)
+        t5.addWidget(ccg)
+        self._t5_category_groups.setdefault("general", []).append(ccg)
+
         t3.addStretch()
         tab3.setLayout(t3)
         tabs.addTab(_wrap_scroll(tab3), "Statistics")
@@ -4582,109 +4692,6 @@ class ZFMicrogliaAIWidget(QWidget):
         esg = _make_collapsible(esg)
         t5.addWidget(esg)
         self._t5_category_groups.setdefault("cellpose", []).append(esg)
-
-        # ── Calibrate Correct-Label Contrast ──────────────────────────── #
-        ccg = QGroupBox("Calibrate Correct-Label Contrast")
-        ccl = QVBoxLayout()
-
-        ccal_note = QLabel(
-            "  Select a Labels layer and its Signal layer in Edit MG "
-            "Labels' shared selector, then run this to find the "
-            "contrast-low value (best_lo) that best reproduces the "
-            "Labels layer's own existing 2D shapes from the Signal "
-            "layer's intensity -- no ground truth needed. On success, "
-            "sets the Signal layer's contrast limits to [best lo, "
-            "best lo + 20]. Every other best_lo-driven tool (Protect "
-            "Skin as Label, Auto-correct Labels, the "
-            "Cellpose-SAM auto-correct pipeline, via Edit MG Labels' "
-            "own \"Contrast low (best_lo) calibration\" section) runs "
-            "this exact sweep using the Cells / Slices-per-cell / Edge "
-            "margin / Sweep steps values set below."
-        )
-        ccal_note.setWordWrap(True)
-        ccal_note.setStyleSheet("color: #888; font-size: 10px;")
-        ccl.addWidget(ccal_note)
-
-        ccal_cells_row = QHBoxLayout()
-        ccal_cells_row.addWidget(QLabel("Cells:"))
-        self._ccal_ncells_spin = QSpinBox()
-        self._ccal_ncells_spin.setRange(1, 20)
-        self._ccal_ncells_spin.setValue(20)
-        ccal_cells_row.addWidget(self._ccal_ncells_spin)
-        ccal_cells_row.addWidget(QLabel("Slices/cell:"))
-        self._ccal_slices_spin = QSpinBox()
-        self._ccal_slices_spin.setRange(1, 30)
-        self._ccal_slices_spin.setValue(20)
-        ccal_cells_row.addWidget(self._ccal_slices_spin)
-        ccl.addLayout(ccal_cells_row)
-        ccal_cells_note = QLabel(
-            "  Cells sets how many of the most morphologically complex "
-            "labels to sample (ranked by skeleton branch count). "
-            "Slices/cell sets how many Z-slices to sample from each of "
-            "those cells -- total samples = Cells x Slices/cell."
-        )
-        ccal_cells_note.setWordWrap(True)
-        ccal_cells_note.setStyleSheet("color: #888; font-size: 10px;")
-        ccl.addWidget(ccal_cells_note)
-
-        ccal_margin_row = QHBoxLayout()
-        ccal_margin_row.addWidget(QLabel("Edge margin (µm):"))
-        self._ccal_margin_spin = QDoubleSpinBox()
-        self._ccal_margin_spin.setDecimals(1)
-        self._ccal_margin_spin.setRange(0.0, 1000.0)
-        self._ccal_margin_spin.setValue(50.0)
-        ccal_margin_row.addWidget(self._ccal_margin_spin)
-        ccal_margin_row.addWidget(QLabel("Sweep steps:"))
-        self._ccal_steps_spin = QSpinBox()
-        self._ccal_steps_spin.setRange(5, 200)
-        self._ccal_steps_spin.setValue(20)
-        ccal_margin_row.addWidget(self._ccal_steps_spin)
-        ccl.addLayout(ccal_margin_row)
-        ccal_margin_note = QLabel(
-            "  Edge margin excludes any cell whose centroid sits closer "
-            "than this to the volume's own boundary, in microns -- keeps "
-            "samples away from cells likely to already carry a "
-            "skin-residue artifact. Sweep steps sets how many candidate "
-            "lo values to test between the sampled cells' own intensity "
-            "range."
-        )
-        ccal_margin_note.setWordWrap(True)
-        ccal_margin_note.setStyleSheet("color: #888; font-size: 10px;")
-        ccl.addWidget(ccal_margin_note)
-
-        ccal_pad_row = QHBoxLayout()
-        ccal_pad_row.addWidget(QLabel("Bbox padding (px):"))
-        self._ccal_pad_spin = QSpinBox()
-        self._ccal_pad_spin.setRange(0, 500)
-        self._ccal_pad_spin.setValue(15)
-        ccal_pad_row.addWidget(self._ccal_pad_spin)
-        ccl.addLayout(ccal_pad_row)
-        ccal_pad_note = QLabel(
-            "  Bbox padding sets how far around each sampled cell, in "
-            "pixels, the sweep crops before testing candidate lo values."
-        )
-        ccal_pad_note.setWordWrap(True)
-        ccal_pad_note.setStyleSheet("color: #888; font-size: 10px;")
-        ccl.addWidget(ccal_pad_note)
-
-        self._ccal_run_btn = QPushButton("Run Contrast Calibration Sweep")
-        self._ccal_run_btn.setStyleSheet("QPushButton { font-weight: bold; padding: 5px; }")
-        ccl.addWidget(self._ccal_run_btn)
-
-        self._ccal_status_lbl = QLabel("")
-        self._ccal_status_lbl.setWordWrap(True)
-        ccl.addWidget(self._ccal_status_lbl)
-
-        self._ccal_report_view = QTextEdit()
-        self._ccal_report_view.setReadOnly(True)
-        self._ccal_report_view.setStyleSheet("font-family: monospace; font-size: 9px;")
-        self._ccal_report_view.setFixedHeight(160)
-        ccl.addWidget(self._ccal_report_view)
-
-        ccg.setLayout(ccl)
-        ccg = _make_collapsible(ccg)
-        t5.addWidget(ccg)
-        self._t5_category_groups.setdefault("cellpose", []).append(ccg)
 
         # Now that every Tab 5 tool has registered its category, wire the
         # filter checkboxes built at the top of this tab and apply their
