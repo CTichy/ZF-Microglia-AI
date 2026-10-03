@@ -860,7 +860,7 @@ class ZFMicrogliaAIWidget(QWidget):
         self._thresh_slider.setMinimum(0.01)
         self._thresh_slider.setMaximum(0.99)
         self._thresh_slider.setSingleStep(0.01)
-        self._thresh_slider.setValue(_root_cfg.get("monai_threshold", 0.622))
+        self._thresh_slider.setValue(_root_cfg.get("monai_threshold", 0.38))
         thresh_row.addWidget(self._thresh_slider)
         self._thresh_spin = _add_reliable_spinbox(
             thresh_row, self._thresh_slider, 0.01, 0.99, 0.01, decimals=2
