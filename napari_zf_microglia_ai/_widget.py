@@ -4603,12 +4603,12 @@ class ZFMicrogliaAIWidget(QWidget):
         ccal_cells_row.addWidget(QLabel("Cells:"))
         self._ccal_ncells_spin = QSpinBox()
         self._ccal_ncells_spin.setRange(1, 20)
-        self._ccal_ncells_spin.setValue(5)
+        self._ccal_ncells_spin.setValue(20)
         ccal_cells_row.addWidget(self._ccal_ncells_spin)
         ccal_cells_row.addWidget(QLabel("Slices/cell:"))
         self._ccal_slices_spin = QSpinBox()
         self._ccal_slices_spin.setRange(1, 30)
-        self._ccal_slices_spin.setValue(10)
+        self._ccal_slices_spin.setValue(20)
         ccal_cells_row.addWidget(self._ccal_slices_spin)
         ccl.addLayout(ccal_cells_row)
         ccal_cells_note = QLabel(
@@ -4631,7 +4631,7 @@ class ZFMicrogliaAIWidget(QWidget):
         ccal_margin_row.addWidget(QLabel("Sweep steps:"))
         self._ccal_steps_spin = QSpinBox()
         self._ccal_steps_spin.setRange(5, 200)
-        self._ccal_steps_spin.setValue(40)
+        self._ccal_steps_spin.setValue(20)
         ccal_margin_row.addWidget(self._ccal_steps_spin)
         ccl.addLayout(ccal_margin_row)
         ccal_margin_note = QLabel(
