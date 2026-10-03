@@ -332,7 +332,7 @@ def _add_sieve_controls(layout, axis_name, default_w2, default_s2, default_w3, d
              stage3_width_spin, stage3_step_spin).
     """
     cb = QCheckBox(f"Sieve: auto-narrow {axis_name} coarse -> fine (3 stages)")
-    cb.setChecked(False)
+    cb.setChecked(True)
     layout.addWidget(cb)
 
     row2 = QHBoxLayout()
@@ -366,7 +366,7 @@ def _add_sieve_controls(layout, axis_name, default_w2, default_s2, default_w3, d
     layout.addLayout(row3)
 
     note = QLabel(
-        f"  Off by default. When ticked, {axis_name} min/max/step above "
+        f"  On by default. When ticked, {axis_name} min/max/step above "
         "become stage 1 (the coarse pass); stages 2 and 3 each narrow "
         "around the previous stage's winner using the widths/steps here, "
         "clipped to stage 1's own min/max. The one expensive computation "
