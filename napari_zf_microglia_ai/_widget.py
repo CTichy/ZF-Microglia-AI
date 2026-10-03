@@ -60,6 +60,7 @@ from . import _ai_tools as _ait
 from . import _training_jobs as _tj
 from . import _xzyz_patches as _xzp
 from . import _crop_truncation as _ctr
+from . import _combine_crops as _cmb
 from . import _epoch_sweep as _esw
 from . import _branch_calibration as _bcal
 from ._live_progress import capture_live_output
@@ -859,7 +860,7 @@ class ZFMicrogliaAIWidget(QWidget):
         self._thresh_slider.setMinimum(0.01)
         self._thresh_slider.setMaximum(0.99)
         self._thresh_slider.setSingleStep(0.01)
-        self._thresh_slider.setValue(_root_cfg.get("monai_threshold", 0.25))
+        self._thresh_slider.setValue(_root_cfg.get("monai_threshold", 0.622))
         thresh_row.addWidget(self._thresh_slider)
         self._thresh_spin = _add_reliable_spinbox(
             thresh_row, self._thresh_slider, 0.01, 0.99, 0.01, decimals=2
@@ -925,7 +926,7 @@ class ZFMicrogliaAIWidget(QWidget):
         self._tol_slider.setMinimum(0.00)
         self._tol_slider.setMaximum(2.00)
         self._tol_slider.setSingleStep(0.01)
-        self._tol_slider.setValue(_root_cfg.get("bg_tolerance", 1.40))
+        self._tol_slider.setValue(_root_cfg.get("bg_tolerance", 1.025))
         tol_row.addWidget(self._tol_slider)
         self._tol_spin = _add_reliable_spinbox(
             tol_row, self._tol_slider, 0.00, 2.00, 0.01, decimals=2
@@ -1191,7 +1192,7 @@ class ZFMicrogliaAIWidget(QWidget):
 
         area_row = QHBoxLayout()
         area_row.addWidget(QLabel("Min volume (vox):"))
-        init_min_volume = _root_cfg.get("min_volume_vox", 7500)
+        init_min_volume = _root_cfg.get("min_volume_vox", 7069)
         self._area_value_lbl = QLabel(str(init_min_volume))
         self._area_value_lbl.setStyleSheet("font-weight: bold;")
         area_row.addWidget(self._area_value_lbl)
@@ -1236,7 +1237,7 @@ class ZFMicrogliaAIWidget(QWidget):
         hole_row = QHBoxLayout()
         hole_row.addWidget(QLabel("Min hole size (vox) — shared:"))
         self._hole_slider = QLabeledSlider(Qt.Horizontal)
-        init_min_hole = _root_cfg.get("min_hole_size_vox", 0)
+        init_min_hole = _root_cfg.get("min_hole_size_vox", 5)
         init_min_hole_recommended = _root_cfg.get("min_hole_size_recommended_vox")
         hole_slider_max = max(500, init_min_hole, init_min_hole_recommended or 500)
         self._hole_slider.setMinimum(0)
@@ -1377,7 +1378,7 @@ class ZFMicrogliaAIWidget(QWidget):
         self._sxy_slider.setMinimum(0.0)
         self._sxy_slider.setMaximum(5.0)
         self._sxy_slider.setSingleStep(0.1)
-        self._sxy_slider.setValue(_root_cfg.get("sigma_xy", 1.5))
+        self._sxy_slider.setValue(_root_cfg.get("sigma_xy", 2.60))
         sxy_row.addWidget(self._sxy_slider)
         self._sxy_spin = _add_reliable_spinbox(
             sxy_row, self._sxy_slider, 0.0, 5.0, 0.1, decimals=1
@@ -1394,7 +1395,7 @@ class ZFMicrogliaAIWidget(QWidget):
         self._sz_slider.setMinimum(0.0)
         self._sz_slider.setMaximum(5.0)
         self._sz_slider.setSingleStep(0.1)
-        self._sz_slider.setValue(_root_cfg.get("sigma_z", 3.0))
+        self._sz_slider.setValue(_root_cfg.get("sigma_z", 1.00))
         sz_row.addWidget(self._sz_slider)
         self._sz_spin = _add_reliable_spinbox(
             sz_row, self._sz_slider, 0.0, 5.0, 0.1, decimals=1
@@ -1925,7 +1926,7 @@ class ZFMicrogliaAIWidget(QWidget):
         self._cp_cellprob_slider.setMinimum(-6.0)
         self._cp_cellprob_slider.setMaximum(6.0)
         self._cp_cellprob_slider.setSingleStep(0.1)
-        self._cp_cellprob_slider.setValue(_root_cfg.get("cellpose_cellprob", -2.5))
+        self._cp_cellprob_slider.setValue(_root_cfg.get("cellpose_cellprob", 2.84))
         cp_cellprob_row.addWidget(self._cp_cellprob_slider)
         self._cp_cellprob_spin = _add_reliable_spinbox(
             cp_cellprob_row, self._cp_cellprob_slider, -6.0, 6.0, 0.1, decimals=2
@@ -1958,7 +1959,7 @@ class ZFMicrogliaAIWidget(QWidget):
         self._cp_maxgap_slider.setMinimum(0.0)
         self._cp_maxgap_slider.setMaximum(5.0)
         self._cp_maxgap_slider.setSingleStep(0.05)
-        self._cp_maxgap_slider.setValue(_root_cfg.get("cellpose_max_gap_um", 1.0))
+        self._cp_maxgap_slider.setValue(_root_cfg.get("cellpose_max_gap_um", 3.52))
         cp_maxgap_row.addWidget(self._cp_maxgap_slider)
         self._cp_maxgap_spin = _add_reliable_spinbox(
             cp_maxgap_row, self._cp_maxgap_slider, 0.0, 5.0, 0.05, decimals=2
@@ -1982,7 +1983,7 @@ class ZFMicrogliaAIWidget(QWidget):
         self._cp_mincontact_slider = QLabeledSlider(Qt.Horizontal)
         self._cp_mincontact_slider.setMinimum(0)
         self._cp_mincontact_slider.setMaximum(200)
-        self._cp_mincontact_slider.setValue(_root_cfg.get("cellpose_min_contact_vox", 10))
+        self._cp_mincontact_slider.setValue(_root_cfg.get("cellpose_min_contact_vox", 1))
         cp_mincontact_row.addWidget(self._cp_mincontact_slider)
         self._cp_mincontact_spin = _add_reliable_spinbox(
             cp_mincontact_row, self._cp_mincontact_slider, 0, 200, 1
@@ -3990,14 +3991,14 @@ class ZFMicrogliaAIWidget(QWidget):
 
         cfg = self._state.get("config", {})
 
-        # ── Extract XZYZ Patches (generate_xzyz_patches.py) ─────────── #
+        # ── Extract X/Y/Z Patches (generate_xzyz_patches.py) ─────────── #
         # The crop-generation method every real Cellpose-SAM training
         # run has actually used since May 2026 (train_cellpose_512,
         # _multi, _multi3 -- including the branch-weighted-loss runs).
         # Cleanup is on by default, not a separate manual step, per
         # explicit instruction: crops should only ever train on cells
         # that are substantially complete, going forward.
-        xzg = QGroupBox("Extract XZYZ Patches")
+        xzg = QGroupBox("Extract X/Y/Z Patches")
         xzl = QVBoxLayout()
         xzl.setSpacing(6)
 
@@ -4120,7 +4121,7 @@ class ZFMicrogliaAIWidget(QWidget):
         xz_clean_note.setWordWrap(True)
         xzl.addWidget(xz_clean_note)
 
-        self._xz_run_btn = QPushButton("Extract XZYZ Patches")
+        self._xz_run_btn = QPushButton("Extract X/Y/Z Patches")
         self._xz_run_btn.setStyleSheet("QPushButton { font-weight: bold; padding: 5px; }")
         xzl.addWidget(self._xz_run_btn)
 
@@ -4135,6 +4136,65 @@ class ZFMicrogliaAIWidget(QWidget):
 
         self._xz_patches_job = {"thread": None, "timer": None}
 
+        # ── Combine Crops into Shared Training Folder ───────────────── #
+        # No tool anywhere in this plugin did this before -- every real
+        # multi-fish training set in this project's history (_multi,
+        # _multi3) was pooled by hand, once, in whatever session built
+        # it. This makes adding one more fish to an existing pool a
+        # repeatable action instead of a remembered shell command.
+        ccg = QGroupBox("Combine Crops into Shared Training Folder")
+        ccl = QVBoxLayout()
+        ccl.setSpacing(6)
+
+        cc_note = QLabel(
+            "Adds one fish's own crops (from Extract X/Y/Z Patches above) into "
+            "a single shared folder every fish's crops get pooled into for "
+            "training — symlinks only, nothing is copied. Each file is "
+            "prefixed with the fish's own full data-folder name, never a "
+            "short Dish/Fish tag like 'D1F4' alone — that shorthand repeats "
+            "across different experiments and ages (this project has two "
+            "different fish both called 'D1F4'), so it's not a safe "
+            "identifier in a shared pool on its own. Safe to run again "
+            "later for a new fish: an already-linked fish's crops are left "
+            "untouched."
+        )
+        cc_note.setWordWrap(True)
+        cc_note.setStyleSheet("color: #888; font-size: 10px;")
+        ccl.addWidget(cc_note)
+
+        cc_fish_row = QHBoxLayout()
+        cc_fish_row.addWidget(QLabel("Fish crop folder:"))
+        self._cc_fish_edit = QLineEdit("")
+        cc_fish_row.addWidget(self._cc_fish_edit)
+        self._cc_fish_browse_btn = QPushButton("...")
+        self._cc_fish_browse_btn.setFixedWidth(32)
+        cc_fish_row.addWidget(self._cc_fish_browse_btn)
+        ccl.addLayout(cc_fish_row)
+
+        cc_combined_row = QHBoxLayout()
+        cc_combined_row.addWidget(QLabel("Combined folder:"))
+        self._cc_combined_edit = QLineEdit(cfg.get("cellpose_combined_dir", ""))
+        cc_combined_row.addWidget(self._cc_combined_edit)
+        self._cc_combined_browse_btn = QPushButton("...")
+        self._cc_combined_browse_btn.setFixedWidth(32)
+        cc_combined_row.addWidget(self._cc_combined_browse_btn)
+        ccl.addLayout(cc_combined_row)
+
+        self._cc_run_btn = QPushButton("Combine")
+        self._cc_run_btn.setStyleSheet("QPushButton { font-weight: bold; padding: 5px; }")
+        ccl.addWidget(self._cc_run_btn)
+
+        self._cc_status_lbl = QLabel("")
+        self._cc_status_lbl.setWordWrap(True)
+        ccl.addWidget(self._cc_status_lbl)
+
+        ccg.setLayout(ccl)
+        ccg = _make_collapsible(ccg)
+        self._ai_cellpose_group_layout.addWidget(ccg)
+        self._ai_cellpose_group_layout.addWidget(_sep())
+
+        self._cc_job = {"thread": None, "timer": None}
+
         # ── Train Cellpose-SAM (train_xzyz.py) ──────────────────────── #
         ctg = QGroupBox("Train Cellpose-SAM")
         ctl = QVBoxLayout()
@@ -4142,7 +4202,7 @@ class ZFMicrogliaAIWidget(QWidget):
 
         ct_note = QLabel(
             "Launches Cellpose-SAM fine-tuning on the crops from Extract "
-            "XZYZ Patches above (~20h for 200 epochs on this project's usual "
+            "X/Y/Z Patches above (~20h for 200 epochs on this project's usual "
             "dataset sizes). Runs as a detached process — closing napari "
             "doesn't stop it, and reopening reconnects automatically."
         )
@@ -4230,7 +4290,7 @@ class ZFMicrogliaAIWidget(QWidget):
         ct_bw_row.addWidget(QLabel("branch_radius:"))
         self._ct_branchradius_spin = QSpinBox()
         self._ct_branchradius_spin.setRange(1, 20)
-        self._ct_branchradius_spin.setValue(_root_cfg.get("cellpose_branch_radius", 3))
+        self._ct_branchradius_spin.setValue(_root_cfg.get("cellpose_branch_radius", 5))
         ct_bw_row.addWidget(self._ct_branchradius_spin)
         ctl.addLayout(ct_bw_row)
         ct_bw_note = QLabel("  branch_weight=0 disables the branch-weighted loss (standard Cellpose loss).")
@@ -4758,6 +4818,9 @@ class ZFMicrogliaAIWidget(QWidget):
         self._xz_gt_browse_btn.clicked.connect(self._on_xz_browse_gt)
         self._xz_out_browse_btn.clicked.connect(self._on_xz_browse_out)
         self._xz_run_btn.clicked.connect(self._on_xz_run)
+        self._cc_fish_browse_btn.clicked.connect(self._on_cc_browse_fish)
+        self._cc_combined_browse_btn.clicked.connect(self._on_cc_browse_combined)
+        self._cc_run_btn.clicked.connect(self._on_cc_run)
         self._ct_pretrained_browse_btn.clicked.connect(self._on_ct_browse_pretrained)
         self._ct_calib_browse_btn.clicked.connect(self._on_ct_calib_browse_gt)
         self._ct_calib_run_btn.clicked.connect(self._on_ct_calib_run)
@@ -6663,7 +6726,7 @@ class ZFMicrogliaAIWidget(QWidget):
         moved by a Tab 5 GT sweep or a GT-verified Generate Statistics
         run, never hand-tuned. Reads straight from config rather than a
         widget so every route/sweep launcher shares one source of truth."""
-        return self._state.get("config", {}).get("min_volume_vox", 7500)
+        return self._state.get("config", {}).get("min_volume_vox", 7069)
 
     def _lo_sweep_sample_params(self) -> dict:
         """The single canonical best_lo calibration-sweep sample-
@@ -11271,4 +11334,80 @@ class ZFMicrogliaAIWidget(QWidget):
         timer.timeout.connect(_poll)
         timer.start(500)
         self._xz_patches_job["timer"] = timer
+
+    def _on_cc_browse_fish(self):
+        path_str = QFileDialog.getExistingDirectory(self, "Select this fish's crop folder (Extract X/Y/Z Patches output)")
+        if path_str:
+            self._cc_fish_edit.setText(path_str)
+
+    def _on_cc_browse_combined(self):
+        path_str = QFileDialog.getExistingDirectory(self, "Select (or create) the shared combined training folder")
+        if path_str:
+            self._cc_combined_edit.setText(path_str)
+
+    def _on_cc_run(self):
+        """Pools one fish's own crop folder into the shared combined
+        training folder -- see _combine_crops.py's own docstring for
+        why the symlink prefix is the fish's full data-folder name,
+        never a short Dish/Fish tag."""
+        if self._cc_job.get("thread") and self._cc_job["thread"].is_alive():
+            self._cc_status_lbl.setText("A combine is already running.")
+            return
+
+        fish_dir = self._cc_fish_edit.text().strip()
+        combined_dir = self._cc_combined_edit.text().strip()
+        if not (fish_dir and combined_dir):
+            self._cc_status_lbl.setText("ERROR: set both the fish crop folder and the combined folder.")
+            return
+        if not Path(fish_dir).exists():
+            self._cc_status_lbl.setText(f"ERROR: fish crop folder not found: {fish_dir}")
+            return
+
+        self._cc_run_btn.setEnabled(False)
+        self._cc_status_lbl.setText("Combining...")
+
+        result = {}
+
+        def _worker():
+            try:
+                result["combine"] = _cmb.combine_crop_folder(
+                    fish_dir, combined_dir,
+                    progress_cb=lambda msg: result.update(_progress=msg),
+                )
+            except Exception as exc:
+                result["error"] = f"{exc}\n{traceback.format_exc()}"
+
+        thread = threading.Thread(target=_worker, daemon=True)
+        self._cc_job["thread"] = thread
+        thread.start()
+
+        timer = QTimer(self)
+
+        def _poll():
+            if "_progress" in result:
+                self._cc_status_lbl.setText(result["_progress"])
+            if thread.is_alive():
+                return
+            timer.stop()
+            timer.deleteLater()
+            self._cc_job["timer"] = None
+            self._cc_run_btn.setEnabled(True)
+
+            if "error" in result:
+                self._cc_status_lbl.setText(f"ERROR: {result['error'].splitlines()[0]}")
+                print(result["error"])
+                return
+
+            c = result["combine"]
+            self._cc_status_lbl.setText(
+                f"Done — '{c['fish_stem']}': {c['n_links_created']} symlink(s) created "
+                f"({c['n_pairs_found']} crop pairs found, {c['n_already_existed']} link(s) "
+                f"already existed) in '{combined_dir}'."
+            )
+            self._save_cfg(cellpose_combined_dir=combined_dir)
+            self._ct_data_dir_edit.setText(combined_dir)
+
+        timer.timeout.connect(_poll)
+        timer.start(300)
+        self._cc_job["timer"] = timer
 
