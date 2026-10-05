@@ -1892,6 +1892,9 @@ class ZFMicrogliaAIWidget(QWidget):
         cpminsize_note.setStyleSheet("color: #888; font-size: 10px;")
         cpminsize_note.setWordWrap(True)
         cpg.addWidget(cpminsize_note)
+        self._cp_minsize_recommended_lbl = _add_recommended_label(
+            cpg, _root_cfg.get("cellpose_min_size_recommended"), unit=" vox", noun="Min size"
+        )
 
         cpniter_row = QHBoxLayout()
         cpniter_row.addWidget(QLabel("Flow iterations (niter):"))
@@ -2166,12 +2169,12 @@ class ZFMicrogliaAIWidget(QWidget):
         # geometry alone (which has a real ambiguity: is the smallest gap
         # between two GT cells actual biology, or just how the boundary
         # happened to be drawn?).
-        krg = QGroupBox("Calibrate Cellprob + Krendl Merge Parameters (GT Sweep)")
+        krg = QGroupBox("Calibrate Cellprob + Krendl Merge Parameters + Min size (GT Sweep)")
         krl = QVBoxLayout()
         krl.setSpacing(6)
 
         kr_note = QLabel(
-            "One button, three steps in the correct order: (1) sweeps "
+            "One button, four steps in the correct order: (1) sweeps "
             "Cellprob against GT on raw voxel-level Dice/IoU (no GMM/"
             "Krendl/large-contact run at all here -- avoids entangling "
             "the Cellprob pick with not-yet-calibrated merge parameters); "
@@ -2182,7 +2185,16 @@ class ZFMicrogliaAIWidget(QWidget):
             "combined rule (gap<=max_gap OR contact>=min_contact), "
             "minimizing total corrections (missed + false merges) rather "
             "than avoiding one error type at any cost -- an over-merge is "
-            "fixable with Split Label, an under-merge with Join Labels. "
+            "fixable with Split Label, an under-merge with Join Labels; "
+            "(4) forms the SAME raw masks again but fully UNFILTERED "
+            "(min_size=0, still reusing step 1's cached flows -- no extra "
+            "network pass), and compares THOSE against GT to calibrate "
+            "the early Min size noise filter -- unlike step 3, a real "
+            "fragment min_size discards is simply gone (no \"restore a "
+            "deleted fragment\" tool exists), so this step weighs a missed "
+            "real fragment far more heavily than a noise fragment that "
+            "merely survives a little longer (GMM/Krendl/the final min-"
+            "size safety net still get three more chances at that one). "
             "do_3D's network pass runs exactly ONCE for the whole thing "
             "(~3h on a full-size fish). Does NOT calibrate large_contact "
             "(a separate, later merge stage operating on already-Krendl-"
@@ -6877,6 +6889,25 @@ class ZFMicrogliaAIWidget(QWidget):
         self._save_cfg(**{history_key: history})
         return _ksw.recommend_merge_params(list(history.values()))
 
+    def _update_minsize_stats_history(self, fish_key: str, minsize_stats: dict) -> dict:
+        """Persist this fish's raw-UNFILTERED-cp_masks-vs-GT minsize_stats
+        (the real/noise fragment size lists from
+        measure_min_size_from_prediction) and return a freshly-pooled
+        recommend_min_size() across every fish calibrated so far.
+
+        Same {fish_key: sample-lists-dict} history shape as
+        _update_merge_stats_history -- min_size is searched over the
+        pooled sample set, not averaged per-fish then combined, for the
+        identical reason: the real/noise size distributions themselves
+        are what the threshold search needs, not each fish's own
+        separately-chosen cutoff.
+        """
+        history_key = "cellpose_minsize_stats_history"
+        history = dict(self._state.get("config", {}).get(history_key, {}))
+        history[fish_key] = minsize_stats
+        self._save_cfg(**{history_key: history})
+        return _ksw.recommend_min_size(list(history.values()))
+
     # ---------------------------------------------------------------- #
     # GT Toolkit Tuning Tool
     # ---------------------------------------------------------------- #
@@ -10995,6 +11026,32 @@ class ZFMicrogliaAIWidget(QWidget):
                             f"fragmented, {len(merge_stats['should_merge_gaps_um'])} should-merge / "
                             f"{len(merge_stats['should_not_merge_gaps_um'])} should-not-merge samples."
                         )
+
+                        # Step 4: the SAME flow field, fully UNFILTERED
+                        # (min_size=0) -- a cheap mask-formation call, not
+                        # a second network pass -- to see every raw
+                        # fragment Cellpose actually produced, including
+                        # the ones the pipeline's normal min_size=15
+                        # would already have silently discarded before
+                        # raw_cp_masks above was even formed.
+                        _progress_cb("Forming UNFILTERED raw fragments (min_size=0, reusing "
+                                     "the same cached flows) to calibrate Min size...")
+                        raw_cp_masks_unfiltered = _masks_from_flows(
+                            model, dP, cellprob_map, shape, best_cp, flow_threshold=0.4,
+                            min_size=0, min_hole_size=min_hole_size,
+                        )
+                        _progress_cb("Comparing unfiltered raw fragments against GT to "
+                                     "calibrate Min size...")
+                        minsize_stats = _ksw.measure_min_size_from_prediction(
+                            raw_cp_masks_unfiltered, gt_labels,
+                        )
+                        result["minsize_stats"] = minsize_stats
+                        result["minsize_recommendation"] = _ksw.recommend_min_size([minsize_stats])
+                        _progress_cb(
+                            f"Min size calibration: {minsize_stats['n_fragments_assigned']} real "
+                            f"fragments, {minsize_stats['n_fragments_dropped_as_noise']} pure-noise "
+                            f"fragments measured."
+                        )
             except Exception as exc:
                 result["error"] = f"{exc}\n{traceback.format_exc()}"
 
@@ -11098,6 +11155,23 @@ class ZFMicrogliaAIWidget(QWidget):
                     f"Fragments dropped as noise (too small to match any GT cell): {merge_stats['n_fragments_dropped_as_noise']}\n"
                     f"{rec_line}"
                 )
+            minsize_stats = result.get("minsize_stats")
+            minsize_rec = result.get("minsize_recommendation")
+            if minsize_stats is not None:
+                if minsize_rec["min_size_vox"] is None:
+                    ms_rec_line = "This fish alone has no real-vs-noise fragments to calibrate from."
+                else:
+                    ms_rec_line = (
+                        f"This fish's own recommendation: min_size={minsize_rec['min_size_vox']}vox "
+                        f"(missed={minsize_rec['missed']} real fragments, "
+                        f"{minsize_rec['false_survivors']} noise fragments still survive)"
+                    )
+                report += (
+                    "\n\n===== Min size calibration (unfiltered raw fragments vs GT) =====\n"
+                    f"Real GT-assigned fragments measured: {minsize_stats['n_fragments_assigned']}\n"
+                    f"Pure-noise fragments measured: {minsize_stats['n_fragments_dropped_as_noise']}\n"
+                    f"{ms_rec_line}"
+                )
             self._kr_report_view.setPlainText(report)
             if sweep.get("cancelled"):
                 self._kr_is_gt_cb.setChecked(False)
@@ -11145,6 +11219,27 @@ class ZFMicrogliaAIWidget(QWidget):
                                 f" Merge params pooled across all fish calibrated so far: "
                                 f"max_gap={gap_val:.2f}µm, contact={contact_val}vox "
                                 f"(missed_merges={pooled_rec['missed_merges']}, false_merges={pooled_rec['false_merges']})."
+                            )
+
+                    if minsize_stats is not None:
+                        # Pooled across every fish calibrated so far, same
+                        # reasoning as merge params above -- see
+                        # _update_minsize_stats_history.
+                        pooled_ms_rec = self._update_minsize_stats_history(fish_key, minsize_stats)
+                        if pooled_ms_rec["min_size_vox"] is None:
+                            applied_note += (
+                                " No real-vs-noise fragments seen yet across any fish "
+                                "calibrated so far -- Min size left unchanged."
+                            )
+                        else:
+                            ms_val = pooled_ms_rec["min_size_vox"]
+                            self._cp_minsize_spin.setValue(ms_val)
+                            self._cp_minsize_recommended_lbl.setText(f"  Recommended Min size: {ms_val} vox")
+                            self._save_cfg(cellpose_min_size=ms_val, cellpose_min_size_recommended=ms_val)
+                            applied_note += (
+                                f" Min size pooled across all fish calibrated so far: "
+                                f"{ms_val}vox (missed={pooled_ms_rec['missed']}, "
+                                f"noise survivors={pooled_ms_rec['false_survivors']})."
                             )
                     applied_note += " Saved."
                 else:

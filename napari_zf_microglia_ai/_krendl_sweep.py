@@ -481,6 +481,163 @@ def recommend_merge_params(merge_stats_list):
     )
 
 
+def measure_min_size_from_prediction(cp_masks_unfiltered, gt_labels, min_overlap_vox=5):
+    """
+    Directly measure a safe `min_size` early-noise-filter threshold from
+    a REAL raw, UNFILTERED (min_size=0, pre-GMM, pre-Krendl) Cellpose-SAM
+    prediction compared against GT -- same spirit as
+    measure_merge_params_from_prediction(), but for fragment VOLUME
+    instead of gap/contact.
+
+    cp_masks_unfiltered MUST come from masks_from_flows(..., min_size=0)
+    (or run_do3d_inference(..., min_size=0)) -- any positive min_size
+    already discards exactly the small fragments this function needs to
+    see, before it ever gets a chance to measure them. Confirmed
+    directly by reading _make_capped_fill_holes()'s own _capped(): it
+    strips anything under threshold at TWO points before returning, so
+    a masks array formed with the pipeline's normal min_size=15 has
+    already lost this information irrecoverably.
+
+    Every fragment is assigned to whichever GT cell it overlaps most (by
+    voxel count) -- identical rule to measure_merge_params_from_
+    prediction(); a fragment whose best overlap is under
+    min_overlap_vox is dropped as noise. NOT discarded here the way
+    that other function discards it -- this IS the population min_size
+    exists to catch, so its size is recorded instead.
+
+    Unlike measure_merge_params_from_prediction(), every GT-assigned
+    fragment counts, not only ones belonging to a GT cell with >=2
+    fragments: the question here is "does this fragment, however small,
+    deserve to survive to GMM/Krendl," not "does it need merging," so a
+    GT cell matched by exactly one already-correctly-sized fragment
+    still contributes that fragment's own size to real_sizes_vox.
+
+    Returns dict: {
+      'real_sizes_vox': [int, ...],   # GT-assigned fragments, any size
+      'noise_sizes_vox': [int, ...],  # no real GT correspondence at all
+      'n_fragments_assigned': int,
+      'n_fragments_dropped_as_noise': int,
+    }
+    """
+    from scipy.ndimage import find_objects
+
+    cp_masks_unfiltered = np.asarray(cp_masks_unfiltered)
+    gt_labels = np.asarray(gt_labels)
+
+    frag_ids = np.unique(cp_masks_unfiltered)
+    frag_ids = frag_ids[frag_ids > 0]
+    if frag_ids.size == 0:
+        return dict(real_sizes_vox=[], noise_sizes_vox=[],
+                    n_fragments_assigned=0, n_fragments_dropped_as_noise=0)
+    frag_objs = find_objects(cp_masks_unfiltered, max_label=int(frag_ids.max()))
+
+    real_sizes, noise_sizes = [], []
+    n_assigned = 0
+    n_dropped = 0
+    for fid in frag_ids:
+        sl = frag_objs[fid - 1]
+        if sl is None:
+            continue
+        crop_frag = cp_masks_unfiltered[sl] == fid
+        size = int(crop_frag.sum())
+        overlap_vals = gt_labels[sl][crop_frag]
+        overlap_vals = overlap_vals[overlap_vals > 0]
+        if overlap_vals.size == 0:
+            noise_sizes.append(size)
+            n_dropped += 1
+            continue
+        best_overlap = int(np.bincount(overlap_vals).max())
+        if best_overlap < min_overlap_vox:
+            noise_sizes.append(size)
+            n_dropped += 1
+            continue
+        real_sizes.append(size)
+        n_assigned += 1
+
+    return dict(
+        real_sizes_vox=real_sizes,
+        noise_sizes_vox=noise_sizes,
+        n_fragments_assigned=n_assigned,
+        n_fragments_dropped_as_noise=n_dropped,
+    )
+
+
+def recommend_min_size(stats_list, miss_weight=1000):
+    """
+    Turn one or more measure_min_size_from_prediction() results (e.g.
+    one per fish, pooled) into a single recommended min_size -- same
+    "pool across fish, then search once over the real observed values"
+    pattern as recommend_merge_params().
+
+    Deliberately NOT the same objective as recommend_merge_params(),
+    even though the mechanics are similar. There, an over-merge (fixable
+    with Split Label) and an under-merge (fixable with Join Labels) are
+    both easy, expected things a human corrects by hand -- genuinely
+    symmetric failure costs, which is why that function optimizes for
+    fewest TOTAL corrections. Here the two directions are NOT symmetric:
+    a real fragment discarded by min_size is simply gone -- there is no
+    "restore a deleted raw fragment" tool anywhere in this plugin. A
+    noise fragment that survives too long, by contrast, still gets three
+    more chances to be caught (GMM cleanup, Krendl's own gt_min floor,
+    the final golden-ratio safety net) before it could ever become a
+    final cell. So missing a real fragment is treated as far more costly
+    than letting a noise fragment survive a little longer.
+
+    miss_weight: how many "noise fragments surviving" one "real fragment
+    discarded" is worth in the cost function minimized below. Default
+    1000 -- in practice this means "never discard a real fragment if ANY
+    threshold avoids it," falling back to a genuine trade-off only if
+    the two size distributions actually overlap (some real fragment is
+    smaller than some noise fragment, so no single threshold gets both
+    right).
+
+    Every size actually observed in the pooled data is tried as a
+    candidate threshold (exact, not a coarse grid); ties on cost prefer
+    the LARGEST candidate (cleans up more noise without costing any more
+    missed real fragments).
+
+    Returns dict: {
+      'min_size_vox': int or None, 'missed': int, 'false_survivors': int,
+      'n_real': int, 'n_noise': int,
+    }
+    Missed/false counts are against the pooled sample data itself, same
+    caveat as recommend_merge_params(): read them as "how many of the
+    real cases in this data landed on the wrong side," not a guaranteed
+    rate on an unseen fish.
+    """
+    real_sizes, noise_sizes = [], []
+    for st in stats_list:
+        real_sizes.extend(st["real_sizes_vox"])
+        noise_sizes.extend(st["noise_sizes_vox"])
+
+    if not real_sizes and not noise_sizes:
+        return dict(min_size_vox=None, missed=0, false_survivors=0, n_real=0, n_noise=0)
+
+    real_arr = np.asarray(real_sizes, dtype=float)
+    noise_arr = np.asarray(noise_sizes, dtype=float)
+
+    # Candidate thresholds: every observed size, plus a sentinel of 1 so
+    # "keep absolutely everything" (today's min_size=0 behaviour) stays
+    # representable even if every observed fragment happens to be large.
+    candidates = sorted(set(int(s) for s in (real_sizes + noise_sizes)) | {1})
+
+    best_t = best_cost = best_missed = best_false = None
+    for t in candidates:
+        missed = int((real_arr < t).sum()) if real_arr.size else 0
+        false_survivors = int((noise_arr >= t).sum()) if noise_arr.size else 0
+        cost = miss_weight * missed + false_survivors
+        # candidates is ascending, so on an exact tie this keeps
+        # replacing with the larger t -- ends up preferring the biggest
+        # threshold among every candidate achieving the minimum cost.
+        if best_cost is None or cost <= best_cost:
+            best_cost, best_t, best_missed, best_false = cost, t, missed, false_survivors
+
+    return dict(
+        min_size_vox=int(best_t), missed=best_missed, false_survivors=best_false,
+        n_real=len(real_sizes), n_noise=len(noise_sizes),
+    )
+
+
 def run_krendl_sweep(volume, gt_labels, model_path, cellprobs, large_contacts,
                       flow=0.4, anisotropy=5.747, max_gap=1.0, min_contact=10,
                       gt_min=None, iou_threshold=0.5, gpu=True, min_hole_size=None,
