@@ -57,13 +57,8 @@ every time it runs, instead of trusting a frozen number.
 
 import numpy as np
 
-from ._cellpose_seg import (
-    predict_flows, masks_from_flows, gmm_cleanup,
-    krendl_safe_merge, large_contact_merge, final_min_size_cleanup, relabel_sequential,
-)
-from ._gt_score import score_against_gt
+from ._cellpose_seg import predict_flows, masks_from_flows, gmm_cleanup, krendl_safe_merge
 from ._pixel_sweep import min_volume_from_gt as gt_min_from_labels
-from ._pixel_sweep import min_hole_size_from_gt
 # gt_min_from_labels is kept as a name here for readability at this
 # module's call sites (Krendl safe-merge's "already a whole cell"
 # floor), but it is no longer its own implementation: gt_min and the
@@ -638,239 +633,210 @@ def recommend_min_size(stats_list, miss_weight=1000):
     )
 
 
-def run_krendl_sweep(volume, gt_labels, model_path, cellprobs, large_contacts,
-                      flow=0.4, anisotropy=5.747, max_gap=1.0, min_contact=10,
-                      gt_min=None, iou_threshold=0.5, gpu=True, min_hole_size=None,
-                      min_size=15, final_min_fraction=0.618,
-                      progress_cb=None, cancel_event=None, precomputed=None,
-                      scale_zyx=(1.0, 0.174, 0.174)):
+def measure_large_contact_from_prediction(post_safe_merge_masks, gt_labels,
+                                           min_overlap_vox=5, bbox_margin_vox=2):
     """
-    Sweep every (cellprob, large_contact) combination, scoring the
-    resulting Krendl-pipeline labels against gt_labels with
-    _gt_score.score_against_gt.
+    Directly measure a safe `large_contact` threshold (large_contact_
+    merge()'s own, single-criterion "merge if contact >= large_contact"
+    rule) from a REAL post-GMM, post-Krendl-safe-merge prediction
+    compared against GT -- same spirit as measure_merge_params_from_
+    prediction(), but at the LATER pipeline stage large_contact_merge()
+    actually operates on.
 
-    max_gap, scale_zyx: passed through to krendl_safe_merge() -- max_gap
-    is in PHYSICAL MICRONS (Z, Y, X um/voxel = scale_zyx), not voxels.
-    See that function's docstring for why (anisotropic voxels).
+    post_safe_merge_masks MUST come from AFTER gmm_cleanup() and
+    krendl_safe_merge() have both already run, but BEFORE
+    large_contact_merge() itself -- i.e. exactly what large_contact_
+    merge() would receive as its own input in the real pipeline. Safe-
+    merge's own gt_min-based size gate has already reunited every small
+    fragment it could by then; large_contact_merge() is the next, size-
+    agnostic catch-all for whatever's still split through a thick
+    junction rather than a thin neck -- passing raw cp_masks here
+    instead would mix in everything safe_merge already fixes, which
+    isn't what this stage needs to decide.
 
-    precomputed: pass a (model, dP, cellprob_map, shape) tuple -- as
-    returned in this call's own result dict under 'precomputed' -- to
-    skip predict_flows() entirely and reuse an already-computed do_3D
-    network pass. cellprob_threshold only feeds the cheap
-    masks_from_flows() step (see this module's docstring), so a
-    multi-stage narrowing sweep (coarse pass, then a finer pass zoomed
-    around the winner, then finer still) run against the SAME volume +
-    model can share one ~3h inference pass across every stage instead
-    of repeating it per stage. If None (default), predict_flows() runs
-    as before.
+    Every object is assigned to whichever GT cell it overlaps most (same
+    rule as measure_merge_params_from_prediction); an object whose best
+    overlap is under min_overlap_vox is dropped as noise, not used.
 
-    gt_min: if None (default), computed from gt_labels itself via
-    gt_min_from_labels() -- the sweep recalibrates this parameter from
-    the real GT statistics every time it runs. Pass an explicit value
-    to override.
+    'should_merge' samples: for every GT cell still matched by >=2
+    objects at this stage (safe_merge couldn't fully reunite it), each
+    object's contact area with its STRONGEST (largest-contact) same-GT-
+    cell sibling -- large_contact must be <= this value to actually
+    trigger that merge. "Strongest contact" here plays the same role
+    "nearest by gap" plays in measure_merge_params_from_prediction: the
+    one pair large_contact_merge()'s own greedy loop would actually act
+    on first, since recording every pair would overstate what a single
+    threshold needs to bridge.
 
-    min_hole_size: passed through to masks_from_flows() -- see
-    _cellpose_seg._make_capped_fill_holes()'s docstring. Shared with the
-    Pixel Classifier route's Min hole size value. If None (default),
-    computed from gt_labels itself via _pixel_sweep.min_hole_size_from_gt()
-    -- the same real-GT measurement the Pixel Classifier's own two GT
-    sweeps already use, so this route's recommendation is measured, not
-    guessed, and every sweep tool feeds the same never-rising floor.
-    Pass an explicit value (e.g. 0, matching Cellpose's own unconditional
-    hole-filling) to override.
-
-    final_min_fraction: passed through to final_min_size_cleanup(), run
-    after large_contact_merge on every grid point exactly like
-    run_full_pipeline() does in production -- see that function's
-    docstring for why 0.618 (golden ratio) is the default. Keeping this
-    sweep's pipeline shape identical to production is the whole point of
-    testing here rather than trusting the proxy metrics alone.
-
-    progress_cb(str) / cancel_event: same contract as the other sweep
-    tools -- cancel_event is checked between cellprob values (not
-    between large_contact values, since those are cheap and fast enough
-    that checking every one adds no real responsiveness).
+    'should_not_merge' samples: contact area between any two bbox-close
+    (bbox_margin_vox -- matches large_contact_merge()'s OWN proximity
+    pre-filter exactly, not Krendl's wider search_pad_um) objects
+    assigned to DIFFERENT GT cells -- GT already confirms these are
+    genuinely separate cells, so this is a real, unambiguous safety
+    ceiling.
 
     Returns dict: {
-      'grid': [(cellprob, large_contact), ...],
-      'results': {(cellprob, large_contact): <score_against_gt() dict>},
-      'best_point': (cellprob, large_contact) or None,   # highest Score
-      'gt_min_used': int,   # the gt_min value actually applied (measured
-                             # or overridden), for reporting/auto-apply
-      'min_hole_size_used': int,   # the min_hole_size value actually
-                             # applied (measured or overridden)
-      'cancelled': bool,
-      'precomputed': tuple,   # (model, dP, cellprob_map, shape) -- pass
-                             # back in as precomputed= on a later call
-                             # against the same volume+model to skip
-                             # predict_flows() entirely.
+      'should_merge_contacts_vox': [int, ...],
+      'should_not_merge_contacts_vox': [int, ...],
+      'n_gt_cells_still_fragmented': int,
+      'n_objects_assigned': int,
+      'n_objects_dropped_as_noise': int,
     }
     """
-    if gt_min is None:
-        gt_min = gt_min_from_labels(gt_labels)
-        if progress_cb:
-            progress_cb(f"gt_min computed from this GT's smallest labeled cell: {gt_min} vox")
+    from scipy.ndimage import find_objects, binary_dilation
+    from ._cellpose_seg import _touch_struct, _bboxes_close, _joint_bbox
 
-    if min_hole_size is None:
-        min_hole_size = min_hole_size_from_gt(gt_labels)
-        if progress_cb:
-            progress_cb(f"min_hole_size computed from this GT's own real holes: {min_hole_size} vox")
+    post_safe_merge_masks = np.asarray(post_safe_merge_masks)
+    gt_labels = np.asarray(gt_labels)
 
-    if precomputed is not None:
-        if progress_cb:
-            progress_cb("Reusing precomputed flows from an earlier call -- no re-inference.")
-    else:
-        if progress_cb:
-            progress_cb("Predicting flows (do_3D network pass -- the one expensive step, runs once)...")
-        precomputed = predict_flows(volume, model_path, anisotropy, gpu=gpu)
-        if progress_cb:
-            progress_cb("Flows ready — forming masks per Cellprob value (cheap, no re-inference)...")
+    obj_ids = np.unique(post_safe_merge_masks)
+    obj_ids = obj_ids[obj_ids > 0]
+    if obj_ids.size == 0:
+        return dict(should_merge_contacts_vox=[], should_not_merge_contacts_vox=[],
+                    n_gt_cells_still_fragmented=0, n_objects_assigned=0,
+                    n_objects_dropped_as_noise=0)
+    obj_objs = find_objects(post_safe_merge_masks, max_label=int(obj_ids.max()))
 
-    results = {}
-    cancelled = False
-    for cellprob in cellprobs:
-        if cancel_event is not None and cancel_event.is_set():
-            cancelled = True
-            break
+    assigned = {}
+    obj_bbox = {}
+    n_dropped = 0
+    for oid in obj_ids:
+        sl = obj_objs[oid - 1]
+        if sl is None:
+            continue
+        crop_obj = post_safe_merge_masks[sl] == oid
+        overlap_vals = gt_labels[sl][crop_obj]
+        overlap_vals = overlap_vals[overlap_vals > 0]
+        if overlap_vals.size == 0:
+            n_dropped += 1
+            continue
+        counts = np.bincount(overlap_vals)
+        best_gt = int(np.argmax(counts))
+        if counts[best_gt] < min_overlap_vox:
+            n_dropped += 1
+            continue
+        assigned[oid] = best_gt
+        obj_bbox[oid] = tuple((s.start, s.stop) for s in sl)
 
-        model, dP, cellprob_map, shape = precomputed
-        masks = masks_from_flows(model, dP, cellprob_map, shape, cellprob, flow,
-                                  min_size=min_size, min_hole_size=min_hole_size)
-        n0 = len(set(masks[masks > 0].tolist()))
-        if progress_cb:
-            progress_cb(f"cellprob={cellprob}: {n0} raw cells — GMM + Krendl safe-merge...")
-        masks, _, _ = gmm_cleanup(masks)
-        masks, _ = krendl_safe_merge(masks, max_gap, min_contact, gt_min, scale_zyx=scale_zyx)
+    by_gt = {}
+    for oid, gt_lbl in assigned.items():
+        by_gt.setdefault(gt_lbl, []).append(oid)
 
-        for large_contact in large_contacts:
-            merged, _ = large_contact_merge(masks, large_contact)
-            merged, _ = final_min_size_cleanup(merged, gt_min, final_min_fraction)
-            labels, n_labels = relabel_sequential(merged)
-            r = score_against_gt(labels, gt_labels, iou_threshold=iou_threshold)
-            results[(cellprob, large_contact)] = r
-            if progress_cb:
-                progress_cb(
-                    f"cellprob={cellprob}, large_contact={large_contact}: "
-                    f"TP={r['tp']} FP={r['fp']} FN={r['fn']} Score={r['score']:+.1f} "
-                    f"MeanIoU={r['mean_iou']:.1f}%"
-                )
+    def _contact(oid_a, oid_b):
+        jbbox = _joint_bbox(obj_bbox[oid_a], obj_bbox[oid_b])
+        slZ = slice(jbbox[0][0], jbbox[0][1])
+        slY = slice(jbbox[1][0], jbbox[1][1])
+        slX = slice(jbbox[2][0], jbbox[2][1])
+        region = post_safe_merge_masks[slZ, slY, slX]
+        mask_a = region == oid_a
+        mask_b = region == oid_b
+        if not mask_a.any() or not mask_b.any():
+            return None
+        dilated = binary_dilation(mask_a, structure=_touch_struct)
+        return int((dilated & mask_b).sum())
 
-    grid = sorted(results.keys())
-    # Score (TP - 0.5*(FP+FN)) is coarse -- built from integer counts, so
-    # many grid points can tie on it even though they differ meaningfully
-    # in how tightly the matched cells are actually segmented. Breaking
-    # ties by mean_iou then mean_dice picks the most precise segmentation
-    # among equally-good-on-Score candidates, instead of just the first
-    # one encountered in grid order.
-    #
-    # A point with tp==0 detects no real cells at all -- score_against_gt()
-    # then reports mean_iou=mean_dice=0.0 (nothing to average), which can
-    # still tie or even "win" against a genuinely-detecting point whose FPs
-    # made its own Score just as bad or worse. That's never a usable
-    # result, so exclude tp==0 points from the winner search entirely
-    # unless literally every grid point detected nothing (in which case
-    # there's no better answer to give).
-    non_degenerate = {k: v for k, v in results.items() if v["tp"] > 0}
-    candidates = non_degenerate if non_degenerate else results
-    best_point = (
-        max(candidates, key=lambda k: (results[k]["score"], results[k]["mean_iou"], results[k]["mean_dice"]))
-        if candidates else None
+    should_merge = []
+    n_fragmented = 0
+    for gt_lbl, oids in by_gt.items():
+        if len(oids) < 2:
+            continue
+        n_fragmented += 1
+        for i in range(len(oids)):
+            best_contact = None
+            for j in range(len(oids)):
+                if i == j:
+                    continue
+                c = _contact(oids[i], oids[j])
+                if c is not None and (best_contact is None or c > best_contact):
+                    best_contact = c
+            if best_contact is not None:
+                should_merge.append(best_contact)
+
+    all_oids = list(assigned.keys())
+    should_not_merge = []
+    for i in range(len(all_oids)):
+        oid_a = all_oids[i]
+        ba = obj_bbox[oid_a]
+        for j in range(i + 1, len(all_oids)):
+            oid_b = all_oids[j]
+            if assigned[oid_a] == assigned[oid_b]:
+                continue
+            if not _bboxes_close(ba, obj_bbox[oid_b], margin=bbox_margin_vox):
+                continue
+            c = _contact(oid_a, oid_b)
+            if c is not None:
+                should_not_merge.append(c)
+
+    return dict(
+        should_merge_contacts_vox=should_merge,
+        should_not_merge_contacts_vox=should_not_merge,
+        n_gt_cells_still_fragmented=n_fragmented,
+        n_objects_assigned=len(assigned),
+        n_objects_dropped_as_noise=n_dropped,
     )
 
-    return dict(grid=grid, results=results, best_point=best_point,
-                gt_min_used=gt_min, min_hole_size_used=min_hole_size, cancelled=cancelled,
-                precomputed=precomputed)
 
-
-def _grid_table(sweep, cellprobs, large_contacts, value_key, fmt, current_large_contact):
-    """Build one metric's 2D grid table (rows = large_contact, columns =
-    cellprob). Shared by Score/MeanIoU/MeanDice below so the three tables
-    stay in lockstep -- same column layout, same missing-point handling."""
-    header = f"{'LrgCnt':>8} | " + " | ".join(f"cp={c:>5} " for c in cellprobs)
-    lines = [header, "-" * len(header)]
-    for lc in large_contacts:
-        row = []
-        for cp in cellprobs:
-            point = (cp, lc)
-            if point in sweep["results"]:
-                row.append(fmt(sweep["results"][point][value_key]))
-            else:
-                row.append(f"{'--':>8}")
-        marker = "  <- current" if lc == current_large_contact else ""
-        lines.append(f"{lc:>8} | " + " | ".join(row) + marker)
-    lines.append("-" * len(header))
-    return lines
-
-
-def format_krendl_sweep_report(sweep, current_cellprob=None, current_large_contact=None):
-    """Plain-text 2D grid report (rows = large_contact, columns = cellprob),
-    same spirit as the plugin's other sweep-tool reports.
-
-    Prints three grid tables -- Score, MeanIoU, MeanDice -- not just Score,
-    so the rise-peak-fall shape of cellprob's effect (too lenient -> noisy
-    FPs; sweet spot; too strict -> real signal gets excluded, IoU/Dice
-    collapse toward the TP=0 degenerate case) is directly visible in the
-    report instead of only inferable from where "Best" happens to land.
+def recommend_large_contact(stats_list, miss_weight=1.0):
     """
-    grid = sweep["grid"]
-    if not grid:
-        return "No grid points completed."
+    Turn one or more measure_large_contact_from_prediction() results
+    into a single recommended large_contact threshold.
 
-    cellprobs = sorted({c for c, _ in grid})
-    large_contacts = sorted({lc for _, lc in grid})
+    Unlike recommend_min_size(), this stage's two failure directions ARE
+    genuinely symmetric -- same reasoning as recommend_merge_params():
+    a false merge here (bridging two real, separate GT cells) is
+    fixable with Split Label; a missed merge (leaving one real GT cell
+    split across >=2 objects) is fixable with Join Labels. Neither is
+    silent or catastrophic the way a min_size-discarded fragment is
+    (nothing here is ever permanently lost -- both directions are
+    reviewable, expected things). So this defaults to miss_weight=1.0 --
+    fewest total corrections, deliberately NOT the heavily asymmetric
+    weighting min_size's genuinely irreversible failure mode needs.
 
-    lines0 = []
-    if sweep.get("gt_min_used") is not None:
-        lines0.append(
-            f"gt_min used for Safe-merge: {sweep['gt_min_used']} vox "
-            f"(measured from this GT's smallest labeled cell)\n"
-        )
-    if sweep.get("min_hole_size_used") is not None:
-        lines0.append(
-            f"min_hole_size used: {sweep['min_hole_size_used']} vox "
-            f"(measured from this GT's own real holes)\n"
-        )
+    large_contact_merge()'s own rule, "merge if contact >= large_contact",
+    means a BIGGER threshold here causes FEWER merges (missed merges
+    grow, false merges shrink as the threshold rises) -- the mirror
+    image of min_size's "keep if size >= min_size" direction, where a
+    bigger threshold means MORE gets discarded. Close enough in shape to
+    reuse the same candidate-threshold-search pattern, different enough
+    in which direction each failure count moves that this gets its own
+    loop rather than literally calling recommend_min_size().
 
-    lines = list(lines0)
-    lines.append("Score = TP - 0.5*(FP+FN):")
-    lines += _grid_table(
-        sweep, cellprobs, large_contacts, "score",
-        lambda v: f"{v:>+8.1f}", current_large_contact,
+    Every contact value actually observed in the pooled data is tried
+    as a candidate threshold (exact, not a coarse grid); ties on cost
+    prefer the LARGEST candidate -- merges less aggressively without
+    costing any more missed real merges, the safer default when nothing
+    in the data distinguishes two candidates.
+
+    Returns dict: {
+      'large_contact_vox': int or None, 'missed': int, 'false_merges': int,
+      'n_should_merge': int, 'n_should_not_merge': int,
+    }
+    Missed/false counts are against the pooled sample data itself, same
+    caveat as recommend_merge_params()/recommend_min_size().
+    """
+    should_merge, should_not_merge = [], []
+    for st in stats_list:
+        should_merge.extend(st["should_merge_contacts_vox"])
+        should_not_merge.extend(st["should_not_merge_contacts_vox"])
+
+    if not should_merge and not should_not_merge:
+        return dict(large_contact_vox=None, missed=0, false_merges=0,
+                    n_should_merge=0, n_should_not_merge=0)
+
+    sm_arr = np.asarray(should_merge, dtype=float)
+    snm_arr = np.asarray(should_not_merge, dtype=float)
+
+    candidates = sorted(set(int(c) for c in (should_merge + should_not_merge)) | {1})
+
+    best_t = best_cost = best_missed = best_false = None
+    for t in candidates:
+        missed = int((sm_arr < t).sum()) if sm_arr.size else 0
+        false_merges = int((snm_arr >= t).sum()) if snm_arr.size else 0
+        cost = miss_weight * missed + false_merges
+        if best_cost is None or cost <= best_cost:
+            best_cost, best_t, best_missed, best_false = cost, t, missed, false_merges
+
+    return dict(
+        large_contact_vox=int(best_t), missed=best_missed, false_merges=best_false,
+        n_should_merge=len(should_merge), n_should_not_merge=len(should_not_merge),
     )
-    lines.append("")
-    lines.append("Mean IoU % (matched cells only -- 0.0 at a fully degenerate/TP=0 point):")
-    lines += _grid_table(
-        sweep, cellprobs, large_contacts, "mean_iou",
-        lambda v: f"{v:>8.1f}", current_large_contact,
-    )
-    lines.append("")
-    lines.append("Mean Dice % (matched cells only -- 0.0 at a fully degenerate/TP=0 point):")
-    lines += _grid_table(
-        sweep, cellprobs, large_contacts, "mean_dice",
-        lambda v: f"{v:>8.1f}", current_large_contact,
-    )
-
-    best = sweep["best_point"]
-    if best is not None:
-        best_cp, best_lc = best
-        r = sweep["results"][best]
-        lines.append("")
-        lines.append(
-            f"Best: cellprob={best_cp}, large_contact={best_lc} "
-            f"(TP={r['tp']} FP={r['fp']} FN={r['fn']} Score={r['score']:+.1f}, "
-            f"MeanIoU={r['mean_iou']:.1f}%, MeanDice={r['mean_dice']:.1f}%)"
-        )
-        if current_cellprob is not None and current_large_contact is not None:
-            current = (current_cellprob, current_large_contact)
-            if current in sweep["results"] and current != best:
-                cr = sweep["results"][current]
-                lines.append(
-                    f"Current setting (cellprob={current_cellprob}, large_contact={current_large_contact}): "
-                    f"Score={cr['score']:+.1f} -- the sweep found a better combination above."
-                )
-            elif current == best:
-                lines.append("Current setting matches the sweep's best -- confirmed.")
-
-    if sweep.get("cancelled"):
-        lines.append("\n(sweep was cancelled -- results above are partial.)")
-    return "\n".join(lines)

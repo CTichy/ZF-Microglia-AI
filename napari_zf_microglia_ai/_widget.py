@@ -2169,17 +2169,20 @@ class ZFMicrogliaAIWidget(QWidget):
         # geometry alone (which has a real ambiguity: is the smallest gap
         # between two GT cells actual biology, or just how the boundary
         # happened to be drawn?).
-        krg = QGroupBox("Calibrate Cellprob + Krendl Merge Parameters + Min size (GT Sweep)")
+        krg = QGroupBox("Calibrate Cellprob + Krendl Merge Parameters + Min size + Large-contact (GT Sweep)")
         krl = QVBoxLayout()
         krl.setSpacing(6)
 
         kr_note = QLabel(
-            "One button, four steps in the correct order: (1) sweeps "
-            "Cellprob against GT on raw voxel-level Dice/IoU (no GMM/"
-            "Krendl/large-contact run at all here -- avoids entangling "
-            "the Cellprob pick with not-yet-calibrated merge parameters); "
-            "(2) forms raw cp_masks at the winning Cellprob, reusing the "
-            "same cached do_3D flows from step 1 -- no extra network pass; "
+            "One button, five steps in the correct order -- per the "
+            "standing policy that no pipeline value should be left "
+            "uncalibrated, this is now every Cellpose-SAM Segmentation "
+            "parameter this plugin has: (1) sweeps Cellprob against GT "
+            "on raw voxel-level Dice/IoU (no GMM/Krendl/large-contact "
+            "run at all here -- avoids entangling the Cellprob pick "
+            "with not-yet-calibrated merge parameters); (2) forms raw "
+            "cp_masks at the winning Cellprob, reusing the same cached "
+            "do_3D flows from step 1 -- no extra network pass; "
             "(3) compares those cp_masks against GT to jointly calibrate "
             "max_gap/min_contact against Krendl safe-merge's real OR-"
             "combined rule (gap<=max_gap OR contact>=min_contact), "
@@ -2194,12 +2197,16 @@ class ZFMicrogliaAIWidget(QWidget):
             "deleted fragment\" tool exists), so this step weighs a missed "
             "real fragment far more heavily than a noise fragment that "
             "merely survives a little longer (GMM/Krendl/the final min-"
-            "size safety net still get three more chances at that one). "
-            "do_3D's network pass runs exactly ONCE for the whole thing "
-            "(~3h on a full-size fish). Does NOT calibrate large_contact "
-            "(a separate, later merge stage operating on already-Krendl-"
-            "corrected data, not raw cp_masks) -- needs its own "
-            "measurement, not built yet."
+            "size safety net still get three more chances at that one); "
+            "(5) runs the step-1 raw cp_masks (min_size=15, matching "
+            "production exactly) through GMM cleanup + Krendl safe-merge "
+            "at step 3's own result, then compares what's STILL split "
+            "against GT to calibrate Large-contact merge -- same fewest-"
+            "total-corrections objective as step 3 (a false merge here "
+            "is fixable with Split Label, a missed one with Join Labels, "
+            "so this failure mode is symmetric, unlike step 4's). "
+            "do_3D's network pass still runs exactly ONCE for the whole "
+            "thing (~3h on a full-size fish)."
         )
         kr_note.setWordWrap(True)
         kr_note.setStyleSheet("color: #888; font-size: 10px;")
@@ -6908,6 +6915,20 @@ class ZFMicrogliaAIWidget(QWidget):
         self._save_cfg(**{history_key: history})
         return _ksw.recommend_min_size(list(history.values()))
 
+    def _update_largecontact_stats_history(self, fish_key: str, lc_stats: dict) -> dict:
+        """Persist this fish's post-safe-merge-objects-vs-GT lc_stats (the
+        should-merge/should-not-merge contact-area sample lists from
+        measure_large_contact_from_prediction) and return a freshly-
+        pooled recommend_large_contact() across every fish calibrated
+        so far. Same {fish_key: sample-lists-dict} history shape as
+        _update_merge_stats_history/_update_minsize_stats_history.
+        """
+        history_key = "cellpose_largecontact_stats_history"
+        history = dict(self._state.get("config", {}).get(history_key, {}))
+        history[fish_key] = lc_stats
+        self._save_cfg(**{history_key: history})
+        return _ksw.recommend_large_contact(list(history.values()))
+
     # ---------------------------------------------------------------- #
     # GT Toolkit Tuning Tool
     # ---------------------------------------------------------------- #
@@ -10940,6 +10961,13 @@ class ZFMicrogliaAIWidget(QWidget):
         min_size = self._cp_minsize_spin.value()
         gpu = torch.cuda.is_available()
         current_cellprob = self._cp_cellprob_slider.value()
+        # Fallback max_gap/min_contact for this run's own GMM+safe-merge
+        # pass (step 5, large_contact calibration) if this fish alone
+        # has no fragmented GT cells to derive its own per-fish
+        # recommendation from -- whatever production would actually use
+        # right now, not a second guess.
+        cur_max_gap = self._cp_maxgap_slider.value()
+        cur_min_contact = self._cp_mincontact_slider.value()
 
         sieve_on = self._kr_sieve_cb.isChecked()
         sieve_refine_steps = [
@@ -11051,6 +11079,44 @@ class ZFMicrogliaAIWidget(QWidget):
                             f"Min size calibration: {minsize_stats['n_fragments_assigned']} real "
                             f"fragments, {minsize_stats['n_fragments_dropped_as_noise']} pure-noise "
                             f"fragments measured."
+                        )
+
+                        # Step 5: run the SAME raw_cp_masks (min_size=15,
+                        # matching production exactly) through GMM cleanup
+                        # + Krendl safe-merge -- this fish's own fresh
+                        # merge_rec if it has fragmented GT cells to
+                        # derive one from, else whatever max_gap/
+                        # min_contact Tab 2 is set to right now -- to see
+                        # exactly what large_contact_merge() would
+                        # actually receive as its own input, then
+                        # calibrate large_contact from THAT against GT.
+                        this_fish_merge_rec = result["merge_recommendation"]
+                        mg_val = (this_fish_merge_rec["max_gap_um"]
+                                  if this_fish_merge_rec["max_gap_um"] is not None else cur_max_gap)
+                        mc_val = (this_fish_merge_rec["contact_vox"]
+                                  if this_fish_merge_rec["contact_vox"] is not None else cur_min_contact)
+                        gt_min_val = _ksw.gt_min_from_labels(gt_labels)
+                        _progress_cb(
+                            f"Forming post-safe-merge masks (GMM + Krendl safe-merge at "
+                            f"max_gap={mg_val}, min_contact={mc_val}, gt_min={gt_min_val}) "
+                            f"to calibrate Large-contact merge..."
+                        )
+                        post_gmm, _gmm_cutoff, _gmm_removed = _ksw.gmm_cleanup(raw_cp_masks)
+                        post_safe_merge, _n_safe_merges = _ksw.krendl_safe_merge(
+                            post_gmm, mg_val, mc_val, gt_min_val, scale_zyx=scale_zyx,
+                        )
+                        _progress_cb("Comparing post-safe-merge objects against GT to "
+                                     "calibrate Large-contact merge...")
+                        lc_stats = _ksw.measure_large_contact_from_prediction(
+                            post_safe_merge, gt_labels,
+                        )
+                        result["lc_stats"] = lc_stats
+                        result["lc_recommendation"] = _ksw.recommend_large_contact([lc_stats])
+                        _progress_cb(
+                            f"Large-contact calibration: {lc_stats['n_gt_cells_still_fragmented']} "
+                            f"GT cells still split after safe-merge, "
+                            f"{len(lc_stats['should_merge_contacts_vox'])} should-merge / "
+                            f"{len(lc_stats['should_not_merge_contacts_vox'])} should-not-merge samples."
                         )
             except Exception as exc:
                 result["error"] = f"{exc}\n{traceback.format_exc()}"
@@ -11172,6 +11238,23 @@ class ZFMicrogliaAIWidget(QWidget):
                     f"Pure-noise fragments measured: {minsize_stats['n_fragments_dropped_as_noise']}\n"
                     f"{ms_rec_line}"
                 )
+            lc_stats = result.get("lc_stats")
+            lc_rec = result.get("lc_recommendation")
+            if lc_stats is not None:
+                if lc_rec["large_contact_vox"] is None:
+                    lc_rec_line = "This fish alone has no still-split GT cells to calibrate from."
+                else:
+                    lc_rec_line = (
+                        f"This fish's own recommendation: large_contact={lc_rec['large_contact_vox']}vox "
+                        f"(missed_merges={lc_rec['missed']}, false_merges={lc_rec['false_merges']})"
+                    )
+                report += (
+                    "\n\n===== Large-contact calibration (post-safe-merge objects vs GT) =====\n"
+                    f"GT cells still split after safe-merge: {lc_stats['n_gt_cells_still_fragmented']}\n"
+                    f"Should-merge samples (same real cell, still split): {len(lc_stats['should_merge_contacts_vox'])}\n"
+                    f"Should-NOT-merge samples (different real cells, touching): {len(lc_stats['should_not_merge_contacts_vox'])}\n"
+                    f"{lc_rec_line}"
+                )
             self._kr_report_view.setPlainText(report)
             if sweep.get("cancelled"):
                 self._kr_is_gt_cb.setChecked(False)
@@ -11240,6 +11323,29 @@ class ZFMicrogliaAIWidget(QWidget):
                                 f" Min size pooled across all fish calibrated so far: "
                                 f"{ms_val}vox (missed={pooled_ms_rec['missed']}, "
                                 f"noise survivors={pooled_ms_rec['false_survivors']})."
+                            )
+
+                    if lc_stats is not None:
+                        # Pooled across every fish calibrated so far, same
+                        # reasoning as merge params/min size above -- see
+                        # _update_largecontact_stats_history.
+                        pooled_lc_rec = self._update_largecontact_stats_history(fish_key, lc_stats)
+                        if pooled_lc_rec["large_contact_vox"] is None:
+                            applied_note += (
+                                " No still-split GT cells seen yet across any fish "
+                                "calibrated so far -- Large-contact merge left unchanged."
+                            )
+                        else:
+                            lc_val = pooled_lc_rec["large_contact_vox"]
+                            self._cp_largecontact_slider.setValue(lc_val)
+                            self._cp_largecontact_recommended_lbl.setText(
+                                f"  Recommended Large-contact merge: {lc_val} vox"
+                            )
+                            self._save_cfg(cellpose_large_contact=lc_val, cellpose_large_contact_recommended=lc_val)
+                            applied_note += (
+                                f" Large-contact pooled across all fish calibrated so far: "
+                                f"{lc_val}vox (missed_merges={pooled_lc_rec['missed']}, "
+                                f"false_merges={pooled_lc_rec['false_merges']})."
                             )
                     applied_note += " Saved."
                 else:

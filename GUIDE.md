@@ -32,7 +32,7 @@
 10. [Tab 6 — Sweeps & Utilities](#10-tab-6--sweeps--utilities)
     - [10a. Verify MONAI Threshold / Erosion (GT Sweep)](#10a-verify-monai-threshold--erosion-gt-sweep)
     - [10b. Verify BG Threshold / Erosion (GT Sweep)](#10b-verify-bg-threshold--erosion-gt-sweep)
-    - [10c. Verify Cellprob / Large-contact (GT Sweep)](#10c-verify-cellprob--large-contact-gt-sweep)
+    - [10c. Calibrate Cellprob + Krendl Merge Parameters + Min size + Large-contact (GT Sweep)](#10c-calibrate-cellprob--krendl-merge-parameters--min-size--large-contact-gt-sweep)
     - [10d. Verify Best Epoch (GT Sweep)](#10d-verify-best-epoch-gt-sweep)
     - [10e. Score Against GT](#10e-score-against-gt)
     - [10f. Build GT-Correction Package](#10f-build-gt-correction-package)
@@ -401,7 +401,7 @@ The old behavior, unconditional hole-filling regardless of size, could silently 
 
 > Leave this at 0 unless you have actually seen real internal holes disappearing from your labels, or a GT sweep/GT-verified Statistics run has measured a recommended value from ground truth. There is no universal correct number — real GT checked during development showed a sharp split between 1–2 voxel gaps (near-certainly annotation noise) and 400+ voxel gaps (clearly real structure), with nothing in between, so a value anywhere in that gap works for that fish; a different fish may look different.
 >
-> Measured by every GT-sweep tool that has a GT labels volume available (both Pixel Classifier sweeps, [9b](#10b-verify-bg-threshold--erosion-gt-sweep)/[9g](#10g-verify-smooth-sigma-xy-sigma-z-gt-sweep), and the Cellprob/Large-contact sweep, [9c](#10c-verify-cellprob--large-contact-gt-sweep)) **and** by a GT-verified Generate Statistics run (Tab 4) — all folded into the same never-rising floor.
+> Measured by every GT-sweep tool that has a GT labels volume available (both Pixel Classifier sweeps, [9b](#10b-verify-bg-threshold--erosion-gt-sweep)/[9g](#10g-verify-smooth-sigma-xy-sigma-z-gt-sweep)), by a GT-verified Generate Statistics run (Tab 4), and by the GT Toolkit Tuning Tool's own first step (Tab 6) — all folded into the same never-rising floor. The Cellprob + Krendl calibration sweep ([10c](#10c-calibrate-cellprob--krendl-merge-parameters--min-size--large-contact-gt-sweep)) measures this fish's own value internally for its own mask-formation calls, but — like `gt_min` above — doesn't push that measurement into this shared floor on its own; run it through the GT Toolkit Tuning Tool for that.
 
 #### Final min-size fraction — both routes
 
@@ -511,9 +511,9 @@ Cellpose-SAM's own early noise filter, applied right when raw instance masks are
 
 **Range:** -6.0 to 6.0 — **Default: 2.84**
 
-Cellpose-SAM's own confidence cutoff for what counts as foreground (cell) vs. background. Lower (more negative) values are more permissive — they recover more of a cell's thin, dim protrusions but can also let in more noise. The current default comes from the first GT-sweep pass across every fish swept so far — a notably strict value; re-run [Verify Cellprob / Large-contact](#10c-verify-cellprob--large-contact-gt-sweep) against more fish before trusting it broadly.
+Cellpose-SAM's own confidence cutoff for what counts as foreground (cell) vs. background. Lower (more negative) values are more permissive — they recover more of a cell's thin, dim protrusions but can also let in more noise. The current default comes from the first GT-sweep pass across every fish swept so far — a notably strict value; re-run [this calibration](#10c-calibrate-cellprob--krendl-merge-parameters--min-size--large-contact-gt-sweep) against more fish before trusting it broadly.
 
-A read-only **Recommended Cellprob threshold** line sits underneath — updated only by a GT-verified **Verify Cellprob / Large-contact (GT Sweep)** run (Tab 6, [9c](#10c-verify-cellprob--large-contact-gt-sweep)).
+A read-only **Recommended Cellprob threshold** line sits underneath — updated only by a GT-verified **Calibrate Cellprob + Krendl Merge Parameters + Min size + Large-contact (GT Sweep)** run (Tab 6, [9c](#10c-calibrate-cellprob--krendl-merge-parameters--min-size--large-contact-gt-sweep)).
 
 #### Flow threshold
 
@@ -531,7 +531,7 @@ Euler-integration steps each voxel's flow trajectory gets before instances are f
 
 During the Krendl safe-merge pass, two fragments separated by a real physical gap up to this many microns are considered for merging into one cell (in addition to the contact-area check below). Measured in µm, not voxels, so the same value applies consistently regardless of a fish's own Z/XY anisotropy.
 
-A read-only **Recommended Safe-merge max gap** line sits underneath — updated only by a GT-verified **Verify Cellprob / Large-contact (GT Sweep)** run (Tab 6, [10c](#10c-verify-cellprob--large-contact-gt-sweep)).
+A read-only **Recommended Safe-merge max gap** line sits underneath — updated only by a GT-verified **Calibrate Cellprob + Krendl Merge Parameters + Min size + Large-contact (GT Sweep)** run (Tab 6, [10c](#10c-calibrate-cellprob--krendl-merge-parameters--min-size--large-contact-gt-sweep)).
 
 #### Safe-merge min contact (vox)
 
@@ -543,7 +543,7 @@ A read-only **Recommended Safe-merge min contact** line sits underneath, same as
 
 #### Safe-merge "already a whole cell" floor
 
-Not a field of its own here. The volume below which the safe-merge pass treats a fragment as *not yet* a whole cell and a candidate to merge into something else is exactly the same measurement as **Min volume** in Common Settings (6a) — the smallest true voxel volume ever confirmed in real GT. Recalibrated by the **Verify BG Threshold / Erosion**, **Verify Smooth σ XY/σZ**, and **Verify Cellprob / Large-contact** sweeps (Tab 6), and by Tab 4 Statistics whenever its "This is verified ground truth" checkbox is ticked — you shouldn't normally need to set this by hand.
+Not a field of its own here. The volume below which the safe-merge pass treats a fragment as *not yet* a whole cell and a candidate to merge into something else is exactly the same measurement as **Min volume** in Common Settings (6a) — the smallest true voxel volume ever confirmed in real GT. Recalibrated by the **Verify BG Threshold / Erosion** and **Verify Smooth σ XY/σZ** sweeps, the GT Toolkit Tuning Tool's own first step (Tab 6), and by Tab 4 Statistics whenever its "This is verified ground truth" checkbox is ticked — you shouldn't normally need to set this by hand. The Cellprob + Krendl calibration sweep (10c) measures this fish's own `gt_min` internally for its own Krendl safe-merge/Large-contact steps, but doesn't itself push that measurement into this shared floor — run it through the GT Toolkit Tuning Tool if you want this floor updated in the same pass.
 
 #### Large-contact merge (vox)
 
@@ -609,7 +609,7 @@ Typical use: when a cell comes out porous/skeletonized or otherwise wrongly segm
 
 ---
 
-**Verify Cellprob / Large-contact (GT Sweep)** — moved to [Section 10c](#10c-verify-cellprob--large-contact-gt-sweep), Tab 6 — Sweeps & Utilities. Also recalibrates the shared Min volume field (Common Settings, 6a) from GT — Safe-merge's floor and Min volume are the same number now, not two separately-tracked copies of it.
+**Calibrate Cellprob + Krendl Merge Parameters + Min size + Large-contact (GT Sweep)** — moved to [Section 10c](#10c-calibrate-cellprob--krendl-merge-parameters--min-size--large-contact-gt-sweep), Tab 6 — Sweeps & Utilities. Safe-merge's GT-min floor and the shared Min volume field (Common Settings, 6a) are the same number now, not two separately-tracked copies of it — this sweep measures it internally for its own use but doesn't push it into the shared floor on its own (that's the GT Toolkit Tuning Tool's own first step).
 
 **Build GT-Correction Package** — moved to [Section 10f](#10f-build-gt-correction-package), Tab 6 — Sweeps & Utilities.
 
@@ -1147,7 +1147,7 @@ Several tools, gathered here so Tabs 1-4 stay focused on running the pipeline ra
 |---|---|
 | Skin Removal (MONAI) | 10a. Verify MONAI Threshold / Erosion |
 | Pixel Classifier segmentation | 10b. Verify BG Threshold / Erosion, 10g. Verify Smooth σ XY / σ Z |
-| Cellpose-SAM segmentation | 10c. Verify Cellprob / Large-contact, 10d. Verify Best Epoch, 10f. Build GT-Correction Package |
+| Cellpose-SAM segmentation | 10c. Calibrate Cellprob + Krendl + Min size + Large-contact, 10d. Verify Best Epoch, 10f. Build GT-Correction Package |
 | General (any pipeline) | 10e. Score Against GT, 10i. Calibrate Correct-Label Contrast, plus the other General-only utilities (Email notification, Drift View in 3D, Autosave Labels Layer, GT Toolkit Tuning Tool) |
 
 All four are checked by default (nothing is hidden until you actually uncheck something), and your choice is saved to config and restored next time you open napari. Unlike Tab 5's MONAI/Cellpose-SAM training switch, these are independent checkboxes, not a mutually-exclusive radio choice — you can leave several checked at once if you work with more than one pipeline.
@@ -1202,27 +1202,31 @@ The report is a 2D grid (rows = Erosion, columns = BG Threshold, cells = average
 
 ---
 
-### 10c. Verify Cellprob / Large-contact (GT Sweep)
+### 10c. Calibrate Cellprob + Krendl Merge Parameters + Min size + Large-contact (GT Sweep)
 
-Sweeps **Cellprob** × **Large-contact merge** (both Tab 2, Cellpose-SAM Segmentation) against a full-fish GT labels volume, scored with the exact same whole-fish Hungarian-matched methodology as **Score Against GT** (9e below).
+One button, one `do_3D` network pass, five calibration steps against a full-fish GT labels volume — every Cellpose-SAM Segmentation parameter this plugin has (per the standing policy: no pipeline value is left uncalibrated).
 
 1. **Image** / **GT labels** — a full-fish `brain_only` image + its corresponding GT labels volume.
 2. **Voxel scale Z/XY** — drives the do_3D `anisotropy` parameter (Z/XY ratio); independent of whatever's open in the viewer.
-3. **Cellprob min/max/step** and **Large-contact min/max/step** — define the grid.
-4. **Sieve** (default on) — auto-narrows Cellprob coarse → fine across 3 stages, same idea as the other sweepers; Large-contact's own grid stays fixed at every stage, and the one `do_3D` network pass per sweep described below is still reused across all 3 stages, not repeated.
+3. **Cellprob min/max/step** — define the grid for step (1) below.
+4. **Sieve** (default on) — auto-narrows Cellprob coarse → fine across 3 stages; the one `do_3D` network pass is reused across all 3 stages, not repeated.
 5. Tick **"Email me when done"** if you want a notification (~3h is well past the point where that's worth it) — see [Section 10h](#10h-email-notification-optional).
-6. Tick **"This is verified ground truth"** if the GT labels above are genuinely hand-verified (off by default — see Section 10's intro for the one-shot rule shared by every sweep tool here). Only then will this run's findings move Cellprob threshold, Large-contact merge, the Min volume floor, or the Min hole size floor.
-7. Click **Run Cellprob/LC Sweep**. Uses Tab 2's current **Safe-merge max gap** and **Safe-merge min contact** values — only Cellprob and Large-contact vary.
+6. Tick **"This is verified ground truth"** if the GT labels above are genuinely hand-verified (off by default — see Section 10's intro for the one-shot rule shared by every sweep tool here). Only then will this run's findings move any Tab 2 slider or the shared Min volume/Min hole size floors.
+7. Click **Run Full Calibration**.
 
-**Cellprob is cheap to sweep, same as Large-contact.** Cellpose's own `CellposeModel.eval()` internally splits into two independent steps: the network forward pass that predicts a flow field (the one genuinely expensive, GPU-bound part — completely unrelated to Cellprob or any other threshold) and a separate, cheap mask-formation step that Cellprob threshold feeds into. This sweep runs the network pass **exactly once** for the whole grid, then re-thresholds cheaply for every Cellprob value, then runs GMM cleanup + Krendl safe-merge per Cellprob value, with **Large-contact** varying freely on top of that. Total sweep time is roughly **one `do_3D` network pass, period** — not one per Cellprob value.
+**What the five steps actually measure, in order:**
+
+1. **Cellprob** — sweeps against GT on raw voxel-level Dice/IoU (binarized foreground vs. background, instance identity ignored) — no GMM/Krendl/large-contact run at all here, to avoid entangling the Cellprob pick with not-yet-calibrated merge parameters. `min_hole_size` is measured once from this GT's own real holes and reused by every mask-formation call below.
+2. Forms raw `cp_masks` at the winning Cellprob, reusing the same cached `do_3D` flows from step 1 — no extra network pass.
+3. Compares those `cp_masks` against GT to jointly calibrate **Safe-merge max gap** / **Safe-merge min contact** against Krendl safe-merge's real OR-combined rule (`gap<=max_gap OR contact>=min_contact`), minimizing total corrections (missed + false merges) rather than avoiding one error type at any cost — an over-merge is fixable with Split Label, an under-merge with Join Labels.
+4. Forms the SAME raw masks again but fully **unfiltered** (`min_size=0`, still reusing step 1's cached flows), and compares those against GT to calibrate the early **Min size** noise filter. Unlike step 3, a real fragment `min_size` discards is simply gone — no "restore a deleted fragment" tool exists — so this step weighs a missed real fragment far more heavily than a noise fragment that merely survives a little longer (GMM/Krendl/the final min-size safety net still get three more chances at that one).
+5. Runs step 2's raw masks (`min_size=15`, matching production exactly) through GMM cleanup + Krendl safe-merge at step 3's own result, then compares what's **still split** against GT to calibrate **Large-contact merge**. Same fewest-total-corrections objective as step 3 (a false merge is fixable with Split Label, a missed one with Join Labels) — a genuinely symmetric failure mode, unlike step 4's.
 
 **Flow is not swept, and has no user control anywhere in this plugin**: reading `cellpose/dynamics.py` shows its flow-error QC filter only runs when `do_3D=False` (2D/stitch mode) — under `do_3D=True`, which this plugin always uses, changing Flow threshold changes nothing about the result. It's fixed internally purely because `do_3D`'s call signature still accepts it — see [Flow threshold](#flow-threshold) in Section 6c.
 
-A single `do_3D` network pass on a full-size fish can take a few hours, and that's this sweep's entire cost, regardless of how many Cellprob or Large-contact values are in the grid — every value in the grid is evaluated from that one pass's cached flows, not a separate network pass each. **Stop Sweep** only cancels between grid points; since the network pass happens once upfront, it can't itself be interrupted mid-pass. This does **not** run detached — it won't survive closing napari. The report box streams Cellpose's internal `do_3D` progress live during that one pass rather than sitting on one static message — see the note under [Run Cellpose-SAM Segmentation](#run-cellpose-sam-segmentation-button) in Section 6c.
+A single `do_3D` network pass on a full-size fish can take a few hours, and that's this tool's entire cost regardless of how many Cellprob values are in the grid — steps 2-5 all reuse that one pass's cached flows, never a separate network pass each. **Stop Sweep** only cancels step 1, between grid points; since the network pass happens once upfront, it can't itself be interrupted mid-pass, and steps 2-5 (all cheap, CPU-side) always run to completion once step 1 picks a winner. This does **not** run detached — it won't survive closing napari. The report box streams Cellpose's internal `do_3D` progress live during step 1 rather than sitting on one static message — see the note under [Run Cellpose-SAM Segmentation](#run-cellpose-sam-segmentation-button) in Section 6c.
 
-**The shared Min volume field is also recalibrated every time you run this sweep** — measured directly from the GT labels volume's own smallest labeled cell, and protected by the same never-rising floor every other GT-sweep tool contributes to. Cellprob and Large-contact, which have no safe direction to bias toward, are instead averaged across every fish swept so far. This fish's own best point, the updated cross-fish averages, **and** the Min volume floor are all applied to the Tab 2 sliders and saved to config.
-
-**Min hole size is measured from GT here too**, exactly the same way the Pixel Classifier's two GT sweeps do (10b, below): a recommended floor is measured from this GT's own real holes via `_pixel_sweep.min_hole_size_from_gt()`, and folded into the same never-rising `min_hole_size_vox` history every other sweep tool contributes to.
+**Pooling across fish**: Cellprob is averaged across every fish swept so far (no safe direction to bias toward). Max gap/min contact, Min size, and Large-contact are each jointly re-optimized over the full pooled sample set across every fish calibrated so far for that parameter (not averaged per-fish then combined) — see `_update_merge_stats_history`/`_update_minsize_stats_history`/`_update_largecontact_stats_history`. This fish's own best point and every pooled recommendation are applied to the Tab 2 sliders and saved to config in one pass.
 
 ---
 
@@ -1319,7 +1323,7 @@ Not a sweep — a General-category utility, alongside Score Against GT, since it
 - Tab 1 — **Run Skin-Remover**
 - Tab 2 — **Run Cellpose-SAM Segmentation**
 - Tab 5 — **Launch Training** (MONAI and Cellpose-SAM, each has its own checkbox: "Email me when this training run stops")
-- Tab 6 — **Verify Cellprob / Large-contact (GT Sweep)** and **Verify Best Epoch (GT Sweep)**
+- Tab 6 — **Calibrate Cellprob + Krendl Merge Parameters + Min size + Large-contact (GT Sweep)** and **Verify Best Epoch (GT Sweep)**
 
 These are the plugin's operations that can realistically run 30+ minutes; the other, faster sweep/utility tools don't have this option since there's rarely anything to wait for.
 
@@ -2204,7 +2208,7 @@ Nine tools consolidated from Tabs 1, 2, 4, and 5, each individually collapsible 
 | Verify MONAI Threshold / Erosion (GT Sweep) | 5x5 grid, Sieve on by default | (Tab 1) Confirms current values against a hand-corrected GT brain mask — MONAI runs once, rest is cheap — **cross-fish average auto-applied to the sliders and saved** |
 | Verify BG Threshold / Erosion (GT Sweep) | 5x5 grid, Sieve on by default | (Tab 1/2) Confirms current BG Threshold/Erosion against real GT IoU, and measures Min volume + Min hole size as never-rising floors from GT — CPU-OK, doesn't survive closing napari — **cross-fish average + Min volume + Min hole size floors auto-applied and saved** |
 | Verify Smooth σ XY / σ Z (GT Sweep) | grid, Sieve on by default | (Tab 2) Confirms current Smooth σ XY/Z against real GT IoU, BG Threshold/Erosion held fixed — CPU-OK, doesn't survive closing napari — **cross-fish average + Min volume + Min hole size floors auto-applied and saved** |
-| Verify Cellprob / Large-contact (GT Sweep) | 5x5 grid, Sieve on by default, full fish, ~3h total | (Tab 2) Confirms against whole-fish GT — do_3D's network pass runs once for the whole grid (~3h on a full-size fish, GPU-preferred), Cellprob + Large-contact both re-thresholded cheaply on top — **cross-fish average + measured GT-min floor auto-applied to the sliders and saved**. Has an "Email me when done" checkbox (~3h is well past the 30-min mark) |
+| Calibrate Cellprob + Krendl Merge Parameters + Min size + Large-contact (GT Sweep) | 5 calibration steps, Sieve on by default, full fish, ~3h total | (Tab 2) Confirms against whole-fish GT — do_3D's network pass runs exactly once (~3h on a full-size fish, GPU-preferred), reused for Cellprob, then max_gap/min_contact, Min size, and Large-contact are each calibrated from that same cached pass with no extra inference — **this fish's own Cellprob + the pooled cross-fish recommendations for all four others auto-applied to the sliders and saved**. Has an "Email me when done" checkbox (~3h is well past the 30-min mark) |
 | Verify Best Epoch (GT Sweep) | 5 cells, ±2 checkpoints | (Tab 5, Cellpose-SAM) confirms the recommendation against real GT IoU/Dice, not just test_loss — doesn't survive closing napari — **if the sweep disagrees, rewrites the pointer to the confirmed epoch and loads it as Tab 2's active model**. Has an "Email me when done" checkbox (can run 30 min to a couple hours) |
 | Calibrate Correct-Label Contrast | 400 samples (20 cells x 20 slices) | (Tab 3, Edit MG Labels) the canonical best_lo sweep every autosweep-driven tool (Protect Skin as Label, Auto-correct Labels) correlates to — finds the lower-contrast value that best reproduces the active Labels layer's own shapes (mean IoU), not independent GT — reads its Signal/Labels layers from Tab 3's shared selector, **auto-applies the winning value to the chosen signal layer's contrast limits (low = winning value, high = an adaptive percentile of this fish's own real signal)** |
 | Score Against GT | any 2 Labels layers | Whole-fish Hungarian-matched TP/FP/FN/Score/MeanIoU/MeanDice between any two Labels layers — synchronous, no GPU needed |
