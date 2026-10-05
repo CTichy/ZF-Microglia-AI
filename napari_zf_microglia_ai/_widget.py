@@ -6336,14 +6336,48 @@ class ZFMicrogliaAIWidget(QWidget):
     def _output_dir(self) -> Path:
         """
         Return (and create) the output folder for all saved files.
-        Folder = <original_file_parent> / <original_file_stem>
-        Falls back to current working directory if no file has been opened.
+        Folder = <original_file_parent> / <original_file_stem>.
+
+        Resolution order:
+          1. self._state["last_file_path"] -- set when a file is opened
+             via this plugin's own "Open TIF/IMS file" button
+             (_add_channels()).
+          2. Any layer's own napari-assigned `layer.source.path`. napari
+             sets this automatically for ANY file-backed layer, including
+             ones opened via native File > Open or drag-and-drop -- paths
+             that never go through _add_channels() and so never set (1)
+             on their own. Found once, cached into last_file_path so
+             every later call (and every other _state["last_file_path"]
+             reader elsewhere in this file) stays consistent.
+          3. Last resort: the current working directory -- loudly
+             flagged, since silently falling back here is exactly what
+             sent a full comparison run's worth of large pipeline
+             outputs into the home directory instead of the fish's own
+             folder (real incident, 2026-10-05): napari had been launched
+             from a terminal sitting in the home directory, and the
+             stack was opened a way that never populated either (1) or
+             (2) below.
         """
         fp = self._state.get("last_file_path")
+        if not fp:
+            for lyr in self._viewer.layers:
+                src_path = getattr(getattr(lyr, "source", None), "path", None)
+                if src_path:
+                    fp = Path(src_path)
+                    self._state["last_file_path"] = fp
+                    break
         if fp:
             out = fp.parent / fp.stem
         else:
             out = Path(".")
+            print(
+                "[_output_dir] WARNING: no source file path known (no layer "
+                "opened via this plugin's own Open button, native File > "
+                "Open, or drag-and-drop with a real file behind it) -- "
+                f"saving to the current working directory ({out.resolve()}) "
+                "instead of the fish's own folder. Open the stack from a "
+                "real file first to avoid this."
+            )
         out.mkdir(parents=True, exist_ok=True)
         return out
 
