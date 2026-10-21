@@ -42,13 +42,10 @@ import numpy as np
 import tifffile
 from scipy.ndimage import find_objects
 
-# Best-effort default location of the guide template, matching this
-# project's own directory layout (same pattern as _ai_tools.py's
-# DEFAULT_*_SCRIPT constants) -- always overridable via the GUI.
-_PLUGIN_DIR = Path(__file__).resolve().parents[1]         # .../skin_segmentation/napari-zf-microglia-ai
-_SKIN_SEG_DIR = _PLUGIN_DIR.parent                          # .../skin_segmentation
-_MASTER_PROJECT_DIR = _SKIN_SEG_DIR.parent                  # .../MasterProject
-DEFAULT_GT_GUIDE_PATH = _MASTER_PROJECT_DIR / "microglia_segmentation" / "outputs" / "GROUND_TRUTH_CREATION_GUIDE.md"
+# Default location of the guide template: the repo's own docs/ folder,
+# so it ships with every clone -- always overridable via the GUI.
+_PLUGIN_DIR = Path(__file__).resolve().parents[1]         # repo root
+DEFAULT_GT_GUIDE_PATH = _PLUGIN_DIR / "docs" / "GROUND_TRUTH_CREATION_GUIDE.md"
 
 
 def _cell_statistics_csv(labels, scale_zyx, out_csv):
