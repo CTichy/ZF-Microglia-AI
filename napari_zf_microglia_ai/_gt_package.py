@@ -3,8 +3,10 @@ _gt_package.py — build the GT-correction package this project has sent
 to Nathalie (Peri Lab) for every fish's ground-truth creation: the
 most-advanced Cellpose-SAM correction stage available as a correction
 starting point, a reference copy of the raw pre-merge Cellpose masks, a
-lightweight per-cell statistics CSV, the source image, and the
-ground-truth creation guide, all zipped together.
+lightweight per-cell statistics CSV, the source image, the raw
+(unmasked) signal channel and brain mask Protect Skin as Label needs,
+the auto-correction report, and the ground-truth creation guide, all
+zipped together.
 
 Not a new methodology -- automates a manual step repeated by hand at
 least three times in this project's history (D1F1, D1F2, two different
@@ -20,9 +22,15 @@ D1F4 fish), always producing the exact same file layout:
     <stem>_cp_masks_3D.tif        (raw pre-merge Cellpose masks, reference only)
     <stem>_cell_statistics.csv    (label/volume/centroid/bbox per cell)
     <stem>_brain_only_ExtRm.tif   (source image)
-    <stem>_brain_mask.tif         (optional -- needed to use Protect Skin
-                                   as Label during correction, see
+    <stem>_brain_mask.tif         (needed to use Protect Skin as Label
+                                   during correction, see
                                    build_gt_package()'s own docstring)
+    <stem>_original.tif           (raw, unmasked signal channel -- the
+                                   Signal layer Protect Skin as Label
+                                   needs, since _brain_only_ExtRm.tif is
+                                   zeroed outside the brain)
+    <stem>_autocorrect_report.txt (the Auto-correct report for the labels
+                                   being sent, if one was saved)
 """
 
 import csv
@@ -89,6 +97,7 @@ def _cell_statistics_csv(labels, scale_zyx, out_csv):
 
 def build_gt_package(stem, out_dir, image_path, corrected_masks_path,
                       raw_cellpose_masks_path=None, brain_mask_path=None,
+                      raw_signal_path=None, autocorrect_report_path=None,
                       scale_zyx=(1.0, 0.174, 0.174),
                       guide_path=None, progress_cb=None):
     """
@@ -115,6 +124,18 @@ def build_gt_package(stem, out_dir, image_path, corrected_masks_path,
                                 tool needs a brain mask layer), so it's
                                 worth including whenever one exists for
                                 this fish.
+    raw_signal_path           : optional raw, unmasked signal channel
+                                (e.g. <stem>_ch1_original.tif, which Run
+                                Skin-Remover saves beside its other
+                                outputs) -- written as <stem>_original.tif,
+                                zlib-compressed. Protect Skin as Label
+                                needs it as its Signal layer: the source
+                                image is zeroed outside the brain, so
+                                without this the reviewer has to open the
+                                fish's original .ims themselves.
+    autocorrect_report_path   : optional Auto-correct report (.txt) for
+                                the corrected masks being sent, copied in
+                                as <stem>_autocorrect_report.txt
     scale_zyx                 : (Z, Y, X) um/voxel, for the statistics CSV
     guide_path                 : path to GROUND_TRUTH_CREATION_GUIDE.md,
                                 defaults to DEFAULT_GT_GUIDE_PATH
@@ -135,6 +156,15 @@ def build_gt_package(stem, out_dir, image_path, corrected_masks_path,
     out_dir = Path(out_dir)
     package_dir = out_dir / f"{stem}_GT_package"
     package_dir.mkdir(parents=True, exist_ok=True)
+    # A rebuild into the same folder must not ship a previous build's
+    # optional files (e.g. an old report when none is given this time).
+    # Only the files this function itself writes are removed -- anything
+    # else someone put in the folder is left alone.
+    for name in (f"{stem}_brain_only_ExtRm.tif", f"{stem}_cp_corrected.tif",
+                 f"{stem}_cp_masks_3D.tif", f"{stem}_brain_mask.tif",
+                 f"{stem}_original.tif", f"{stem}_autocorrect_report.txt",
+                 f"{stem}_cell_statistics.csv", "GROUND_TRUTH_CREATION_GUIDE.md"):
+        (package_dir / name).unlink(missing_ok=True)
 
     _report("copying source image...")
     shutil.copy2(image_path, package_dir / f"{stem}_brain_only_ExtRm.tif")
@@ -149,6 +179,21 @@ def build_gt_package(stem, out_dir, image_path, corrected_masks_path,
     if brain_mask_path:
         _report("copying brain mask (for Protect Skin as Label)...")
         shutil.copy2(brain_mask_path, package_dir / f"{stem}_brain_mask.tif")
+
+    if raw_signal_path:
+        _report("writing raw signal channel (for Protect Skin as Label)...")
+        raw_signal = tifffile.imread(raw_signal_path)
+        if raw_signal.ndim != 3:
+            raise ValueError(
+                f"Raw signal channel must be a single-channel 3D (Z, Y, X) "
+                f"stack, got shape {raw_signal.shape} from {raw_signal_path}"
+            )
+        tifffile.imwrite(package_dir / f"{stem}_original.tif", raw_signal, compression="zlib")
+        del raw_signal
+
+    if autocorrect_report_path:
+        _report("copying auto-correction report...")
+        shutil.copy2(autocorrect_report_path, package_dir / f"{stem}_autocorrect_report.txt")
 
     _report("copying ground-truth creation guide...")
     shutil.copy2(guide_path, package_dir / "GROUND_TRUTH_CREATION_GUIDE.md")

@@ -45,6 +45,10 @@ stem --
   <parent>/<stem>/<stem>_GROUND_TRUTH.tif       (hand-corrected cell
                                                   instance labels)
   <parent>/<stem>/<stem>_statistics.csv
+  <parent>/<stem>/<layer>_autocorrect_report.txt  (one per Auto-correct
+                                                  run, named after the
+                                                  layer it ran on; the
+                                                  newest is used)
 
 Cellpose-SAM naming is cumulative and self-documenting: each stage's
 filename is the previous stage's filename with one more suffix
@@ -70,7 +74,15 @@ SUFFIXES = {
     "cp_krendl_ac_snd":    "_cp_krendl_ac_snd.tif",
     "ground_truth":        "_GROUND_TRUTH.tif",
     "statistics_csv":      "_statistics.csv",
+    "autocorrect_report":  "_autocorrect_report.txt",
 }
+
+# Keys where several matching files in one folder are normal, not
+# ambiguous: every Auto-correct run (standalone or chained onto
+# Cellpose-SAM) writes its own report, named after the layer it ran on,
+# so the most recently written one is the report of the labels as they
+# stand now.
+_NEWEST_MATCH_WINS = {"autocorrect_report"}
 
 # Priority order for "most-advanced Cellpose-SAM correction stage this
 # fish actually has" -- sanded beats auto-corrected beats Krendl-only.
@@ -110,7 +122,9 @@ def discover_fish_files(source_path):
     """Returns (folder, stem, found). found maps each key in SUFFIXES to
     a Path if <stem><suffix> exists exactly, else to the single match of
     a same-suffix glob if exactly one exists (tolerates the folder name
-    and a file's own stem drifting apart slightly), else None."""
+    and a file's own stem drifting apart slightly), else None. For the
+    keys in _NEWEST_MATCH_WINS, the most recently modified glob match is
+    taken instead of requiring exactly one."""
     folder = resolve_fish_folder(source_path)
     stem = folder.name
     found = {}
@@ -120,7 +134,10 @@ def discover_fish_files(source_path):
             found[key] = exact
             continue
         matches = sorted(folder.glob(f"*{suffix}")) if folder.is_dir() else []
-        found[key] = matches[0] if len(matches) == 1 else None
+        if key in _NEWEST_MATCH_WINS and matches:
+            found[key] = max(matches, key=lambda m: m.stat().st_mtime)
+        else:
+            found[key] = matches[0] if len(matches) == 1 else None
     return folder, stem, found
 
 

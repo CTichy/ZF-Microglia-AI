@@ -765,6 +765,8 @@ Any non-positive label (skin `-1`) is treated as plain background during this sw
 ```
 `format_auto_correction_report()` renders one consolidated report: the calibration, skin protection outcome, wave/parallelism summary, per-cell detail (reusing `format_grow_report()` for 3D cells, a matching `_format_2d_vs_skin_report()` for skin-touching ones), and the non-microglia flag list.
 
+Both widget call sites save that text: `_on_autocorrect_labels` to `<output folder>/<labels layer>_autocorrect_report.txt`, `_run_auto_correction_stage` to `<stem>_autocorrect_report.txt` next to `_cp_krendl_ac.tif` — both through `_write_autocorrect_report()` (date/labels/signal header, overwrites, never raises so a failed write can't abort applying the labels); the chained sanding stages append `format_sanding_report()` to the same file via `_append_sanding_report()`. Build GT-Correction Package picks the newest one up.
+
 ### `_widget.py` — Tab 3 (Edit MG Labels) handlers
 
 **Shared layer selection**: `_edit_labels_layer()` / `_edit_signal_combo` / `_edit_mask_combo` — one explicit combo triple the user sets once, replacing the old implicit "whatever's active" fallback (see §1).
@@ -1301,7 +1303,7 @@ Optimizes for **fewest total manual corrections**, not zero risk of one error di
 
 ### `_gt_package.py` — packaging for external manual correction
 
-`build_gt_package(stem, out_dir, image_path, corrected_masks_path, raw_cellpose_masks_path=None, brain_mask_path=None, ...)` — automates a manual packaging step repeated by hand for every fish sent out for GT correction: copies the source image, the most-advanced correction stage available (as the correction starting point), the raw pre-merge masks (reference only), an optional brain mask (needed if the reviewer wants to use Protect Skin as Label themselves), and `GROUND_TRUTH_CREATION_GUIDE.md`, plus a lightweight per-cell CSV (`_cell_statistics_csv` — label/volume/centroid/bbox only, deliberately not the full ~51-column Tab 4 output), all zipped into `<stem>_GT_package.zip`.
+`build_gt_package(stem, out_dir, image_path, corrected_masks_path, raw_cellpose_masks_path=None, brain_mask_path=None, raw_signal_path=None, autocorrect_report_path=None, ...)` — automates a manual packaging step repeated by hand for every fish sent out for GT correction: first deletes any file it is about to write from a previous build in the same package folder (so an optional input left empty never ships a stale copy), then copies the source image, the most-advanced correction stage available (as the correction starting point), the raw pre-merge masks (reference only), the brain mask and the raw unmasked signal channel (re-written zlib-compressed as `<stem>_original.tif`, rejected unless 3D) — both needed for the reviewer to use Protect Skin as Label — the auto-correct report `.txt`, and `GROUND_TRUTH_CREATION_GUIDE.md`, plus a lightweight per-cell CSV (`_cell_statistics_csv` — label/volume/centroid/bbox only, deliberately not the full ~51-column Tab 4 output), all zipped into `<stem>_GT_package.zip`.
 
 ### `_gt_toolkit.py` — single-folder auto-discovery ("GT Toolkit Tuning Tool")
 
@@ -1311,7 +1313,7 @@ SUFFIXES ← the fixed map of {key: filename suffix} this plugin's own
            _output_dir() convention produces (_original.tif, _brain_mask.tif,
            _brain_only_ExtRm/NoBG/RndFill.tif, _cp.tif, _cp_krendl.tif,
            _cp_krendl_ac.tif, _cp_krendl_ac_snd.tif, _GROUND_TRUTH.tif,
-           _statistics.csv) — Cellpose-SAM's own naming is cumulative and
+           _statistics.csv, _autocorrect_report.txt) — Cellpose-SAM's own naming is cumulative and
            self-documenting: _cp_krendl_ac_snd.tif's name itself says it
            went through Krendl, then auto-correct, then sanding
 
@@ -1321,6 +1323,8 @@ discover_fish_files(source_path):
     for each SUFFIXES key: an exact <stem><suffix> match, else the single
         result of a same-suffix glob if exactly one exists (tolerates the
         folder name and a file's own stem drifting apart slightly), else None
+        — except _autocorrect_report.txt, where several per-layer reports
+        are normal: the most recently modified match wins
 
 best_corrected_masks(found): the most-advanced stage present, priority
     sanded > auto-corrected > Krendl-only (never the raw "cp" stage,
@@ -1340,7 +1344,7 @@ Every sweep tool shares: a **Sieve checkbox** (§2's `_add_sieve_controls()` —
 
 **GT Toolkit Tuning Tool**: a single file/folder picker driving `discover_fish_files()` + `step_preconditions()`, pre-filling every other sweep tool's own file fields with whatever it found and greying out (with a reason shown) any step this fish's files can't support.
 
-**Build GT-Correction Package**: background-thread wrapper around `build_gt_package()`, auto-selecting `best_corrected_masks()` and the matching `_cp.tif`/`_brain_mask.tif` when a fish folder is picked via the GT Toolkit discovery above.
+**Build GT-Correction Package**: background-thread wrapper around `build_gt_package()`, auto-selecting `best_corrected_masks()` and the matching `_cp.tif`/`_brain_mask.tif`/`_original.tif`/newest `_autocorrect_report.txt` when a fish folder is picked via the GT Toolkit discovery above.
 
 ---
 

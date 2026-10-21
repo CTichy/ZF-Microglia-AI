@@ -2406,7 +2406,7 @@ class ZFMicrogliaAIWidget(QWidget):
         gtpl.addLayout(gtp_raw_row)
 
         gtp_mask_row = QHBoxLayout()
-        gtp_mask_row.addWidget(QLabel("Brain mask (optional):"))
+        gtp_mask_row.addWidget(QLabel("Brain mask:"))
         self._gtp_mask_edit = QLineEdit("")
         gtp_mask_row.addWidget(self._gtp_mask_edit)
         self._gtp_mask_browse_btn = QPushButton("...")
@@ -2423,6 +2423,44 @@ class ZFMicrogliaAIWidget(QWidget):
         gtp_mask_note.setStyleSheet("color: #aaa; font-size: 10px;")
         gtp_mask_note.setWordWrap(True)
         gtpl.addWidget(gtp_mask_note)
+
+        gtp_sig_row = QHBoxLayout()
+        gtp_sig_row.addWidget(QLabel("Raw signal channel:"))
+        self._gtp_sig_edit = QLineEdit("")
+        gtp_sig_row.addWidget(self._gtp_sig_edit)
+        self._gtp_sig_browse_btn = QPushButton("...")
+        self._gtp_sig_browse_btn.setFixedWidth(32)
+        gtp_sig_row.addWidget(self._gtp_sig_browse_btn)
+        gtpl.addLayout(gtp_sig_row)
+        gtp_sig_note = QLabel(
+            "  The raw, unmasked microglia channel (<stem>_ch1_original.tif, "
+            "saved by Run Skin-Remover). Protect Skin as Label needs it as its "
+            "Signal layer, since the source image is zeroed outside the brain. "
+            "Written to the package as <stem>_original.tif (zlib-compressed). "
+            "Auto-filled from this fish's own folder."
+        )
+        gtp_sig_note.setStyleSheet("color: #aaa; font-size: 10px;")
+        gtp_sig_note.setWordWrap(True)
+        gtpl.addWidget(gtp_sig_note)
+
+        gtp_rep_row = QHBoxLayout()
+        gtp_rep_row.addWidget(QLabel("Auto-correct report:"))
+        self._gtp_rep_edit = QLineEdit("")
+        gtp_rep_row.addWidget(self._gtp_rep_edit)
+        self._gtp_rep_browse_btn = QPushButton("...")
+        self._gtp_rep_browse_btn.setFixedWidth(32)
+        gtp_rep_row.addWidget(self._gtp_rep_browse_btn)
+        gtpl.addLayout(gtp_rep_row)
+        gtp_rep_note = QLabel(
+            "  The <layer>_autocorrect_report.txt every Auto-correct run saves "
+            "(standalone Auto-correct Labels or chained onto Cellpose-SAM "
+            "Segmentation). Auto-filled with the newest one in this fish's own "
+            "folder -- check it belongs to the Corrected masks above. Copied in "
+            "as <stem>_autocorrect_report.txt."
+        )
+        gtp_rep_note.setStyleSheet("color: #aaa; font-size: 10px;")
+        gtp_rep_note.setWordWrap(True)
+        gtpl.addWidget(gtp_rep_note)
 
         gtp_guide_row = QHBoxLayout()
         gtp_guide_row.addWidget(QLabel("Creation guide (optional override):"))
@@ -4807,6 +4845,8 @@ class ZFMicrogliaAIWidget(QWidget):
         self._gtp_masks_browse_btn.clicked.connect(self._on_gtp_browse_masks)
         self._gtp_raw_browse_btn.clicked.connect(self._on_gtp_browse_raw)
         self._gtp_mask_browse_btn.clicked.connect(self._on_gtp_browse_mask)
+        self._gtp_sig_browse_btn.clicked.connect(self._on_gtp_browse_sig)
+        self._gtp_rep_browse_btn.clicked.connect(self._on_gtp_browse_rep)
         self._gtp_guide_browse_btn.clicked.connect(self._on_gtp_browse_guide)
         self._gtp_out_browse_btn.clicked.connect(self._on_gtp_browse_out)
         self._gtp_run_btn.clicked.connect(self._on_gtp_run)
@@ -6400,6 +6440,44 @@ class ZFMicrogliaAIWidget(QWidget):
         out.mkdir(parents=True, exist_ok=True)
         return out
 
+    @staticmethod
+    def _write_autocorrect_report(path, report_text, labels_name, signal_name, extra_lines=()):
+        """Save an Auto-correct report as plain text (Build GT-Correction
+        Package picks the newest <...>_autocorrect_report.txt up from the
+        fish's folder). Overwrites a previous report for the same layer --
+        the file always describes that layer's latest auto-correction.
+        Never raises: a failed report save must not abort the handler
+        that already applied the corrected labels. Returns the path, or
+        None if the write failed."""
+        import datetime as _dt
+        header = [
+            "ZF-Microglia-AI -- Auto-correct report",
+            f"Date: {_dt.datetime.now().strftime('%Y-%m-%d %H:%M:%S')}",
+            f"Labels: {labels_name}",
+            f"Signal layer: {signal_name}",
+            *extra_lines,
+            "",
+        ]
+        try:
+            Path(path).write_text("\n".join(header) + report_text + "\n", encoding="utf-8")
+            print(f"Auto-correct report saved: {path}")
+            return Path(path)
+        except Exception as exc:
+            print(f"[Auto-correct] could not save the report to {path}: {exc}")
+            return None
+
+    @staticmethod
+    def _append_sanding_report(path, report_text):
+        """Append the chained sanding stage's own report to an already
+        saved Auto-correct report (no-op if there is none)."""
+        if path is None or not Path(path).is_file():
+            return
+        try:
+            with open(path, "a", encoding="utf-8") as fh:
+                fh.write("\n" + report_text + "\n")
+        except Exception as exc:
+            print(f"[Sanding] could not append to the report {path}: {exc}")
+
     def _resolve_skin_signal_image(self, signal_layer_name: str, out_dir: Path):
         """
         Find a signal image that still retains real outside-brain
@@ -7008,6 +7086,10 @@ class ZFMicrogliaAIWidget(QWidget):
             self._gtp_raw_edit.setText(str(found["cp"]))
         if brain_mask is not None:
             self._gtp_mask_edit.setText(str(brain_mask))
+        if original is not None:
+            self._gtp_sig_edit.setText(str(original))
+        if found["autocorrect_report"] is not None:
+            self._gtp_rep_edit.setText(str(found["autocorrect_report"]))
         self._gtp_out_edit.setText(str(folder))
 
     def _on_gtk_run(self):
@@ -9127,6 +9209,11 @@ class ZFMicrogliaAIWidget(QWidget):
             report_text = format_auto_correction_report(report)
             self._ac_log_view.setPlainText(report_text)
             self._ac_log_view.show()
+            report_path = self._write_autocorrect_report(
+                self._output_dir() / f"{lyr.name}_autocorrect_report.txt",
+                report_text, lyr.name, signal_lyr.name,
+                extra_lines=("Source: Auto-correct Labels (Edit MG Labels)",),
+            )
             n_skin_final = int((new_labels == report["skin_label_id"]).sum())
             skin_warn = (
                 " WARNING: skin ended up with 0 voxels -- check the "
@@ -9141,7 +9228,8 @@ class ZFMicrogliaAIWidget(QWidget):
                 f"{report['n_cells_corrected']}/{report['n_cells_total']} cells corrected "
                 f"({len(report.get('touching_skin_cell_ids', []))} touching skin, in 2D; "
                 f"the rest in 3D), {report['n_debris_fragments_removed']} debris fragment(s) "
-                f"removed.{skin_warn} Full report below."
+                f"removed.{skin_warn} Full report below"
+                + (f" (saved as {report_path.name})." if report_path else ".")
             )
             # Chain the same sanding + hole-fill stage the Cellpose-SAM ->
             # auto-correct pipeline already chains (_run_sanding_stage) --
@@ -9154,7 +9242,8 @@ class ZFMicrogliaAIWidget(QWidget):
             # ever mutates the live layer in place.
             if self._sanding_cb.isChecked():
                 self._ac_status_lbl.setText(done_status + " Sanding label contours...")
-                self._run_sanding_stage_ac(lyr, new_labels, report["skin_label_id"], done_status)
+                self._run_sanding_stage_ac(lyr, new_labels, report["skin_label_id"], done_status,
+                                           report_path=report_path)
             else:
                 self._ac_status_lbl.setText(done_status)
                 self._ac_labels_btn.setEnabled(True)
@@ -9162,7 +9251,7 @@ class ZFMicrogliaAIWidget(QWidget):
         timer.timeout.connect(_poll)
         timer.start(200)
 
-    def _run_sanding_stage_ac(self, lyr, labels, skin_label_id, done_status):
+    def _run_sanding_stage_ac(self, lyr, labels, skin_label_id, done_status, report_path=None):
         """
         Chained onto "Auto-correct Labels" (_on_autocorrect_labels),
         gated by self._sanding_cb -- the same sand_labels_stack()
@@ -9182,6 +9271,8 @@ class ZFMicrogliaAIWidget(QWidget):
                        Cellpose-SAM-chained _run_sanding_stage() prefixes
                        with base_status, so that summary survives once
                        sanding's own status replaces the status line.
+        report_path   : the auto-correct stage's saved report, if any --
+                       this stage's own report is appended to it.
         """
         sigma_xy = self._sanding_sigxy_slider.value()
         sigma_z = self._sanding_sigz_slider.value()
@@ -9250,6 +9341,7 @@ class ZFMicrogliaAIWidget(QWidget):
             self._ac_log_view.append("\n" + report_text)
             sb = self._ac_log_view.verticalScrollBar()
             sb.setValue(sb.maximum())
+            self._append_sanding_report(report_path, report_text)
             self._ac_labels_btn.setEnabled(True)
 
             print(f"{'='*70}")
@@ -10528,6 +10620,12 @@ class ZFMicrogliaAIWidget(QWidget):
                 )
 
             report_text = format_auto_correction_report(report)
+            self._write_autocorrect_report(
+                out_dir / f"{stem}_autocorrect_report.txt",
+                report_text, autocorrected_path.name,
+                signal_layer.name if signal_layer is not None else "(none)",
+                extra_lines=("Source: Cellpose-SAM Segmentation -> auto-correct",),
+            )
             autocorrect_status = (
                 f"{base_status} Auto-correct done — lo={report['best_lo']:.4g}, "
                 f"contrast set to [{best_lo:.4g}, {contrast_hi:.4g}], "
@@ -10648,6 +10746,8 @@ class ZFMicrogliaAIWidget(QWidget):
             tifffile.imwrite(str(sanded_path), new_labels.astype(np.int32))
 
             report_text = format_sanding_report(report)
+            self._append_sanding_report(out_dir / f"{stem}_autocorrect_report.txt",
+                                        f"Sanded labels saved as: {sanded_path.name}\n" + report_text)
             holes_note = (
                 f", {report['n_cells_holes_filled']}/{report['n_cells_total']} had "
                 f"interior cavities filled ({report['n_cavity_voxels_filled']:,} vox)"
@@ -11391,6 +11491,10 @@ class ZFMicrogliaAIWidget(QWidget):
             self._gtp_raw_edit.setText(str(found["cp"]))
         if found["brain_mask"] is not None:
             self._gtp_mask_edit.setText(str(found["brain_mask"]))
+        if found["original"] is not None:
+            self._gtp_sig_edit.setText(str(found["original"]))
+        if found["autocorrect_report"] is not None:
+            self._gtp_rep_edit.setText(str(found["autocorrect_report"]))
         self._gtp_out_edit.setText(str(folder))
 
     def _on_gtp_browse_masks(self):
@@ -11407,6 +11511,16 @@ class ZFMicrogliaAIWidget(QWidget):
         path_str, _ = QFileDialog.getOpenFileName(self, "Select brain_mask.tif (optional, raw/un-eroded)", "", "TIFF files (*.tif *.tiff)")
         if path_str:
             self._gtp_mask_edit.setText(path_str)
+
+    def _on_gtp_browse_sig(self):
+        path_str, _ = QFileDialog.getOpenFileName(self, "Select raw, unmasked signal channel (e.g. <stem>_ch1_original.tif)", "", "TIFF files (*.tif *.tiff)")
+        if path_str:
+            self._gtp_sig_edit.setText(path_str)
+
+    def _on_gtp_browse_rep(self):
+        path_str, _ = QFileDialog.getOpenFileName(self, "Select Auto-correct report", "", "Text files (*.txt)")
+        if path_str:
+            self._gtp_rep_edit.setText(path_str)
 
     def _on_gtp_browse_guide(self):
         path_str, _ = QFileDialog.getOpenFileName(self, "Select GROUND_TRUTH_CREATION_GUIDE.md", "", "Markdown files (*.md)")
@@ -11442,6 +11556,25 @@ class ZFMicrogliaAIWidget(QWidget):
         if mask_path and not Path(mask_path).exists():
             self._gtp_status_lbl.setText(f"ERROR: Brain mask not found: {mask_path}")
             return
+        sig_path = self._gtp_sig_edit.text().strip() or None
+        if sig_path and not Path(sig_path).exists():
+            self._gtp_status_lbl.setText(f"ERROR: Raw signal channel not found: {sig_path}")
+            return
+        rep_path = self._gtp_rep_edit.text().strip() or None
+        if rep_path and not Path(rep_path).exists():
+            self._gtp_status_lbl.setText(f"ERROR: Auto-correct report not found: {rep_path}")
+            return
+        # Everything the creation guide's workflow relies on -- the
+        # package still builds without them, but says plainly what the
+        # reviewer will be missing.
+        missing = []
+        if not mask_path:
+            missing.append("brain mask (Protect Skin as Label can't run)")
+        if not sig_path:
+            missing.append("raw signal channel (reviewer must open the fish's .ims for Protect Skin)")
+        if not rep_path:
+            missing.append("auto-correct report")
+        missing_note = f" WARNING — not included: {'; '.join(missing)}." if missing else ""
         guide_path = self._gtp_guide_edit.text().strip() or None
 
         scale = self._get_layer_scale()
@@ -11456,6 +11589,7 @@ class ZFMicrogliaAIWidget(QWidget):
                 package_dir, zip_path, n_cells = _gtp.build_gt_package(
                     stem, out_dir, img_path, masks_path,
                     raw_cellpose_masks_path=raw_path, brain_mask_path=mask_path,
+                    raw_signal_path=sig_path, autocorrect_report_path=rep_path,
                     scale_zyx=scale, guide_path=guide_path,
                     progress_cb=lambda msg: result.update(_progress=msg),
                 )
@@ -11488,7 +11622,7 @@ class ZFMicrogliaAIWidget(QWidget):
                 return
 
             self._gtp_status_lbl.setText(
-                f"Done — {result['n_cells']} cells. Package: {result['zip_path']}"
+                f"Done — {result['n_cells']} cells. Package: {result['zip_path']}{missing_note}"
             )
 
         timer.timeout.connect(_poll)
