@@ -5,6 +5,7 @@ _widget.py — ZFMicrogliaAIWidget napari dock panel.
 import json
 import os
 import threading
+import time
 import traceback
 import zipfile
 from datetime import datetime
@@ -484,25 +485,6 @@ def _sep():
     return w
 
 
-def _make_notify_checkbox():
-    """'Email me when done' checkbox for the plugin's longer-running, non-
-    detached operations (Tab 1 Run, Tab 2 Cellpose-SAM Segmentation, Tab
-    5's Cellprob/Large-contact and Best-Epoch sweeps) -- each can run
-    well past 30 minutes. Unchecked by default; uses the shared SMTP
-    credentials configured once in Tab 5 -- Sweeps & Utilities, General
-    category, Email notification panel. Kept as a plain function (not a
-    QCheckBox subclass) since every call site still needs to persist its
-    own checked-state to config and wire completion separately -- this
-    only removes the repeated construction/tooltip boilerplate."""
-    cb = QCheckBox("Email me when done")
-    cb.setToolTip(
-        "Sends one email when this finishes (or errors), using the SMTP "
-        "credentials set once in Tab 5 -- Sweeps & Utilities, General "
-        "category, Email notification panel."
-    )
-    return cb
-
-
 def _extract_region_lines_um(shapes_lyr):
     """
     Extract boundary curves from a Shapes layer as (M, 2) YX arrays in µm.
@@ -588,6 +570,15 @@ class ZFMicrogliaAIWidget(QWidget):
         # auto-generated colormap, saved so toggling back off restores
         # it exactly>} -- see _on_toggle_skin_visibility().
         self._skin_hidden_state = None
+        # Plugin-wide job emails (see _job_thread / _finish_notify_job):
+        # a GUI-thread snapshot of the Email notification panel, so a
+        # worker thread finishing a job never reads Qt widgets itself.
+        self._notify_settings = {"enabled": False}
+        # Set while a job that runs other tools' jobs (GT Toolkit Tuning)
+        # is active, so only it emails, not each step.
+        self._notify_outer_job = None
+        self._cp_notify_job = None
+        self._ac_notify_job = None
         self._build_ui()
         self._connect_signals()
         self._refresh_layer_info()
@@ -743,9 +734,6 @@ class ZFMicrogliaAIWidget(QWidget):
         self._gtk_discovery_view.setStyleSheet("font-family: monospace; font-size: 9px;")
         self._gtk_discovery_view.setFixedHeight(140)
         gtkl.addWidget(self._gtk_discovery_view)
-
-        self._gtk_notify_cb = _make_notify_checkbox()
-        gtkl.addWidget(self._gtk_notify_cb)
 
         self._gtk_is_gt_cb = QCheckBox("This is verified ground truth")
         self._gtk_is_gt_cb.setChecked(False)
@@ -980,9 +968,6 @@ class ZFMicrogliaAIWidget(QWidget):
         t1.addWidget(self._save_mask_cb)
 
         t1.addWidget(_sep())
-
-        self._run_notify_cb = _make_notify_checkbox()
-        t1.addWidget(self._run_notify_cb)
 
         self._run_btn = QPushButton("Run Skin-Remover")
         self._run_btn.setStyleSheet("QPushButton { font-weight: bold; padding: 6px; }")
@@ -2086,9 +2071,6 @@ class ZFMicrogliaAIWidget(QWidget):
         cp_sanding_note.setStyleSheet("color: #888; font-size: 10px;")
         cpg.addWidget(cp_sanding_note)
 
-        self._cp_run_notify_cb = _make_notify_checkbox()
-        cpg.addWidget(self._cp_run_notify_cb)
-
         self._cp_run_btn = QPushButton("Run Cellpose-SAM Segmentation")
         self._cp_run_btn.setStyleSheet("QPushButton { font-weight: bold; padding: 6px; }")
         cpg.addWidget(self._cp_run_btn)
@@ -2297,9 +2279,6 @@ class ZFMicrogliaAIWidget(QWidget):
          self._kr_sieve3_w_spin, self._kr_sieve3_s_spin) = _add_sieve_controls(
             krl, "Cellprob", 1.0, 0.25, 0.5, 0.1
         )
-
-        self._kr_notify_cb = _make_notify_checkbox()
-        krl.addWidget(self._kr_notify_cb)
 
         self._kr_is_gt_cb = _add_gt_checkbox(krl, "this sweep", visible=False)
 
@@ -3487,10 +3466,12 @@ class ZFMicrogliaAIWidget(QWidget):
         nl.setSpacing(6)
 
         ng_note = QLabel(
-            "Sends one email when a Tab 4 training run stops (finishes, "
-            "crashes, or is early-stopped) — even if napari is closed at the "
-            "time. Leave Notify email blank to disable (the default). Shared "
-            "by both MONAI and Cellpose-SAM training, whichever is active."
+            "One switch for the whole plugin: when any job (a segmentation, "
+            "correction, sweep, statistics run, ...) finishes or fails after "
+            "running longer than the threshold below, one email is sent. "
+            "Training runs always email when they stop (they run for hours), "
+            "even if napari is closed by then. Nothing is sent while Notify "
+            "email is blank, and a missing or wrong SMTP setup never stops a job."
         )
         ng_note.setWordWrap(True)
         ng_note.setStyleSheet("color: #888; font-size: 10px;")
@@ -3528,9 +3509,24 @@ class ZFMicrogliaAIWidget(QWidget):
         npass_row.addWidget(self._notify_smtp_password_edit)
         nl.addLayout(npass_row)
 
+        self._notify_enabled_cb = QCheckBox("Email me when a job finishes or fails")
+        self._notify_enabled_cb.setChecked(bool(notify_cfg.get("notify_auto_enabled", True)))
+        nl.addWidget(self._notify_enabled_cb)
+        nmin_row = QHBoxLayout()
+        nmin_row.addWidget(QLabel("only if it ran longer than:"))
+        self._notify_min_minutes_spin = QSpinBox()
+        self._notify_min_minutes_spin.setRange(0, 1440)
+        self._notify_min_minutes_spin.setSuffix(" min")
+        self._notify_min_minutes_spin.setValue(int(notify_cfg.get("notify_min_minutes", 10)))
+        self._notify_min_minutes_spin.setToolTip(
+            "Jobs shorter than this never send an email. 0 = email after every job."
+        )
+        nmin_row.addWidget(self._notify_min_minutes_spin)
+        nmin_row.addStretch()
+        nl.addLayout(nmin_row)
+
         notify_note = QLabel(
-            "Configure this once, opt in per tool with each 'Email me when done' checkbox "
-            "elsewhere in the plugin. Free with any Gmail account: smtp.gmail.com, port 465, "
+            "Configure this once; the switch above covers every tool in the plugin. Free with any Gmail account: smtp.gmail.com, port 465, "
             "username = your Gmail address, password = a Google App Password "
             "(myaccount.google.com/apppasswords — requires 2-Step Verification), not your normal "
             "Gmail password. The password is saved encrypted in your OS's credential store "
@@ -4113,10 +4109,6 @@ class ZFMicrogliaAIWidget(QWidget):
         mt_pat_note.setWordWrap(True)
         mtl.addWidget(mt_pat_note)
 
-        self._mt_notify_cb = _make_notify_checkbox()
-        self._mt_notify_cb.setText("Email me when this training run stops")
-        mtl.addWidget(self._mt_notify_cb)
-
         mt_btn_row = QHBoxLayout()
         self._mt_launch_btn = QPushButton("Launch Training")
         self._mt_launch_btn.setStyleSheet("QPushButton { font-weight: bold; padding: 5px; }")
@@ -4530,10 +4522,6 @@ class ZFMicrogliaAIWidget(QWidget):
         ct_pat_note.setWordWrap(True)
         ctl.addWidget(ct_pat_note)
 
-        self._ct_notify_cb = _make_notify_checkbox()
-        self._ct_notify_cb.setText("Email me when this training run stops")
-        ctl.addWidget(self._ct_notify_cb)
-
         ct_btn_row = QHBoxLayout()
         self._ct_launch_btn = QPushButton("Launch Training")
         self._ct_launch_btn.setStyleSheet("QPushButton { font-weight: bold; padding: 5px; }")
@@ -4719,9 +4707,6 @@ class ZFMicrogliaAIWidget(QWidget):
         es_inf_note.setWordWrap(True)
         esl.addWidget(es_inf_note)
 
-        self._es_notify_cb = _make_notify_checkbox()
-        esl.addWidget(self._es_notify_cb)
-
         self._es_is_gt_cb = _add_gt_checkbox(
             esl, "this sweep -- overriding the active checkpoint is a consequential change"
         )
@@ -4851,6 +4836,15 @@ class ZFMicrogliaAIWidget(QWidget):
         self._gtp_out_browse_btn.clicked.connect(self._on_gtp_browse_out)
         self._gtp_run_btn.clicked.connect(self._on_gtp_run)
         self._notify_test_btn.clicked.connect(self._on_send_test_email)
+        for _w in (self._notify_to_edit, self._notify_smtp_host_edit,
+                   self._notify_smtp_user_edit, self._notify_smtp_password_edit):
+            _w.textChanged.connect(self._sync_notify_settings)
+            _w.editingFinished.connect(self._persist_notify_fields)
+        self._notify_smtp_port_spin.valueChanged.connect(self._sync_notify_settings)
+        self._notify_smtp_port_spin.editingFinished.connect(self._persist_notify_fields)
+        self._notify_enabled_cb.toggled.connect(self._on_notify_switch_changed)
+        self._notify_min_minutes_spin.valueChanged.connect(self._on_notify_switch_changed)
+        self._sync_notify_settings()
         self._drift_btn.clicked.connect(self._on_toggle_drift)
         self._as_enable_cb.toggled.connect(self._on_autosave_settings_changed)
         self._as_interval_spin.valueChanged.connect(self._on_autosave_settings_changed)
@@ -5056,7 +5050,7 @@ class ZFMicrogliaAIWidget(QWidget):
                 traceback.print_exc()
                 result["error"] = str(exc)
 
-        thread = threading.Thread(target=_worker, daemon=True)
+        thread = self._job_thread("Prepare MONAI Training Data", _worker, result)
         thread.start()
 
         timer = QTimer(self)
@@ -5188,12 +5182,16 @@ class ZFMicrogliaAIWidget(QWidget):
         session = f"monai_train_{datetime.now():%Y%m%d_%H%M%S}"
         log_path = Path(model_dir) / f"gui_launch_{session}.log"
 
+        # Training always emails when it stops (no time threshold: it runs
+        # for hours), if the plugin-wide switch is on and SMTP is set up.
+        # A missing SMTP setup only skips the email, never the launch.
         notify = None
-        if self._mt_notify_cb.isChecked():
+        email_note = ""
+        if self._notify_enabled_cb.isChecked():
             notify, notify_err = self._build_notify_cfg("MONAI U-Net", _tj.MONAI_METRIC)
             if notify_err:
-                self._mt_status_lbl.setText(notify_err)
-                return
+                notify = None
+                email_note = " (no email will be sent: SMTP username/password missing)"
 
         try:
             pid = _tj.launch_detached(argv, cwd, log_path, conda_env, notify=notify)
@@ -5211,7 +5209,7 @@ class ZFMicrogliaAIWidget(QWidget):
         )
         self._mt_launch_btn.setEnabled(False)
         self._mt_stop_btn.setEnabled(True)
-        self._mt_status_lbl.setText(f"Launched (PID {pid}) — log: {log_path}")
+        self._mt_status_lbl.setText(f"Launched (PID {pid}) — log: {log_path}{email_note}")
         self._start_monai_polling()
 
     def _on_mt_stop_training(self):
@@ -5304,7 +5302,7 @@ class ZFMicrogliaAIWidget(QWidget):
             except Exception as exc:
                 result["error"] = f"{exc}\n{traceback.format_exc()}"
 
-        thread = threading.Thread(target=_worker, daemon=True)
+        thread = self._job_thread("Calibrate branch_radius", _worker, result)
         self._branch_calib_job["thread"] = thread
         self._branch_calib_job["result"] = result
         self._branch_calib_job["current_radius"] = current_radius
@@ -5475,12 +5473,16 @@ class ZFMicrogliaAIWidget(QWidget):
         log_dir.mkdir(parents=True, exist_ok=True)
         log_path = log_dir / f"gui_launch_{session}.log"
 
+        # Training always emails when it stops (no time threshold: it runs
+        # for hours), if the plugin-wide switch is on and SMTP is set up.
+        # A missing SMTP setup only skips the email, never the launch.
         notify = None
-        if self._ct_notify_cb.isChecked():
+        email_note = ""
+        if self._notify_enabled_cb.isChecked():
             notify, notify_err = self._build_notify_cfg("Cellpose-SAM", _tj.CELLPOSE_METRIC)
             if notify_err:
-                self._ct_status_lbl.setText(notify_err)
-                return
+                notify = None
+                email_note = " (no email will be sent: SMTP username/password missing)"
 
         try:
             pid = _tj.launch_detached(argv, cwd, log_path, conda_env, notify=notify)
@@ -5501,7 +5503,7 @@ class ZFMicrogliaAIWidget(QWidget):
         )
         self._ct_launch_btn.setEnabled(False)
         self._ct_stop_btn.setEnabled(True)
-        self._ct_status_lbl.setText(f"Launched (PID {pid}) — log: {log_path}")
+        self._ct_status_lbl.setText(f"Launched (PID {pid}) — log: {log_path}{email_note}")
         self._start_cellpose_polling()
 
     def _on_ct_stop_training(self):
@@ -5670,7 +5672,7 @@ class ZFMicrogliaAIWidget(QWidget):
             except Exception as exc:
                 result["error"] = f"{exc}\n{traceback.format_exc()}"
 
-        thread = threading.Thread(target=_worker, daemon=True)
+        thread = self._job_thread("Verify Best Epoch sweep", _worker, result, auto_finish=False)
         self._epoch_sweep_job["thread"] = thread
         self._epoch_sweep_job["cancel_event"] = cancel_event
         self._epoch_sweep_job["result"] = result
@@ -5724,8 +5726,8 @@ class ZFMicrogliaAIWidget(QWidget):
                 self._es_is_gt_cb.setChecked(False)
                 self._es_status_lbl.setText(f"ERROR during sweep: {result['error'].splitlines()[0]}")
                 self._es_report_view.append("\n" + result["error"])
-                self._maybe_send_notify(
-                    self._es_notify_cb,
+                self._finish_notify_job(
+                    job["thread"].notify_job, False,
                     "[ZF-Microglia-AI] Verify Best Epoch sweep failed",
                     f"Verify Best Epoch (GT Sweep) failed:\n\n{result['error']}",
                 )
@@ -5778,8 +5780,10 @@ class ZFMicrogliaAIWidget(QWidget):
                     f"not the recommended {job['recommended']}.{applied_msg}"
                 )
 
-            self._maybe_send_notify(
-                self._es_notify_cb,
+            self._finish_notify_job(
+
+                job["thread"].notify_job, True,
+
                 "[ZF-Microglia-AI] Verify Best Epoch sweep done",
                 f"Verify Best Epoch (GT Sweep) finished.\n\n{self._es_status_lbl.text()}",
             )
@@ -5906,7 +5910,7 @@ class ZFMicrogliaAIWidget(QWidget):
                 traceback.print_exc()
                 result["error"] = str(exc)
 
-        thread = threading.Thread(target=_worker, daemon=True)
+        thread = self._job_thread("Calibrate Correct-Label Contrast", _worker, result)
         thread.start()
 
         timer = QTimer(self)
@@ -6302,7 +6306,7 @@ class ZFMicrogliaAIWidget(QWidget):
                 import traceback as _tb
                 _tb.print_exc()
 
-        thread = threading.Thread(target=_worker, daemon=True)
+        thread = self._job_thread("Open file", _worker, result)
         thread.start()
 
         timer = QTimer(self)
@@ -6345,7 +6349,7 @@ class ZFMicrogliaAIWidget(QWidget):
                 import traceback as _tb
                 _tb.print_exc()
 
-        thread = threading.Thread(target=_worker, daemon=True)
+        thread = self._job_thread("Load Labels layer", _worker, result)
         thread.start()
 
         timer = QTimer(self)
@@ -6683,11 +6687,10 @@ class ZFMicrogliaAIWidget(QWidget):
         (never returned as `err`, never blocks the operation) if *both*
         the OS store and that fallback fail.
 
-        Shared by every "Email me when done" checkbox in the plugin (Tab 1
-        Run, Tab 2 Cellpose-SAM Segmentation, Tab 4's two training
-        launchers via _build_notify_cfg below, Tab 5's Cellprob/Large-
-        contact and Best-Epoch sweeps) -- one set of credentials, opted
-        into per tool."""
+        Used on the GUI thread by Send Test Email and the two Tab 5
+        training launchers (via _build_notify_cfg below); every other job
+        emails through _finish_notify_job, which reads the same fields
+        from the self._notify_settings snapshot instead."""
         to_addr = self._notify_to_edit.text().strip()
         if not to_addr:
             return None, None
@@ -6722,39 +6725,154 @@ class ZFMicrogliaAIWidget(QWidget):
             return None, err
         return dict(**creds, job_label=job_label, metric_cfg=metric_cfg), None
 
-    def _maybe_send_notify(self, checkbox, subject, body):
-        """For the in-process "Email me when done" checkboxes (Tab 1 Run,
-        Tab 2 Cellpose-SAM Segmentation, Tab 5's Cellprob/Large-contact and
-        Best-Epoch sweeps) -- call from the worker thread right before it
-        finishes (not the GUI/poll thread, so the SMTP round-trip doesn't
-        block the UI). No-op if the checkbox is unchecked. Errors (bad
-        creds, network failure) are swallowed into a print() rather than
-        raised, matching send_notification_email's own contract -- a
-        broken email config must never take down the operation whose
-        result it was reporting."""
-        if checkbox is None or not checkbox.isChecked():
-            return
-        creds, err = self._get_notify_creds()
-        if err:
-            print(f"Email notification skipped: {err}")
-            return
-        if creds is None:
-            print("Email notification checkbox is checked but Notify email "
-                  "(Tab 5, General) is blank -- skipped.")
-            return
-        send_err = _tj.send_notification_email(
-            creds["to_addr"], creds["smtp_host"], creds["smtp_port"],
-            creds["smtp_user"], creds["smtp_password"], subject, body,
+    def _sync_notify_settings(self, *_):
+        """GUI thread only: snapshot the Email notification panel into
+        self._notify_settings, which _finish_notify_job reads from any
+        thread. Never persists anything (see _persist_notify_fields)."""
+        self._notify_settings = {
+            "enabled": self._notify_enabled_cb.isChecked(),
+            "min_minutes": self._notify_min_minutes_spin.value(),
+            "to_addr": self._notify_to_edit.text().strip(),
+            "smtp_host": self._notify_smtp_host_edit.text().strip() or "smtp.gmail.com",
+            "smtp_port": self._notify_smtp_port_spin.value(),
+            "smtp_user": self._notify_smtp_user_edit.text().strip(),
+            "smtp_password": self._notify_smtp_password_edit.text(),
+        }
+
+    def _on_notify_switch_changed(self, *_):
+        self._sync_notify_settings()
+        self._save_cfg(
+            notify_auto_enabled=self._notify_enabled_cb.isChecked(),
+            notify_min_minutes=self._notify_min_minutes_spin.value(),
         )
-        if send_err:
-            print(f"Email notification failed: {send_err}")
+
+    def _persist_notify_fields(self):
+        """Save the SMTP fields when the user finishes editing one, so the
+        setup survives a restart without needing Send Test Email first.
+        The password goes to the OS credential store, never config.json."""
+        s = self._notify_settings
+        self._save_cfg(
+            notify_email_to=s["to_addr"], notify_smtp_host=s["smtp_host"],
+            notify_smtp_port=s["smtp_port"], notify_smtp_user=s["smtp_user"],
+        )
+        if s["smtp_password"]:
+            err = _secrets.set_secret("notify_smtp_password", s["smtp_password"])
+            if err:
+                print(f"SMTP password not saved for next session: {err}")
+
+    def _new_notify_job(self, label):
+        """A job's email bookkeeping. Timing starts when its worker thread
+        starts (see _job_thread). A job started while an outer job (GT
+        Toolkit Tuning) runs never emails itself -- the outer one does."""
+        return {
+            "label": label, "start": None, "started_at": None, "done": False,
+            "lock": threading.Lock(),
+            "suppressed": self._notify_outer_job is not None,
+        }
+
+    def _start_notify_job(self, label):
+        """A job timed from now, for a job without a worker thread of its
+        own (GT Toolkit Tuning, which runs other tools in sequence)."""
+        job = self._new_notify_job(label)
+        job["start"] = time.monotonic()
+        job["started_at"] = datetime.now()
+        return job
+
+    def _job_thread(self, label, target, result=None, notify_job=None, auto_finish=True):
+        """Returns an UNSTARTED daemon thread running `target`, timed as a
+        job for the plugin-wide email switch. Workers report failure the
+        same way everywhere in this file -- result["error"] -- so with
+        auto_finish the job is finished (and maybe emailed) as soon as the
+        worker returns, ok unless result has an "error". Tools whose own
+        poll writes a richer email (or that chain further stages) pass
+        auto_finish=False and call _finish_notify_job themselves, via
+        thread.notify_job; a chained stage passes the first stage's job
+        as notify_job so the whole chain is timed and emailed once."""
+        job = notify_job if notify_job is not None else self._new_notify_job(label)
+
+        def _run():
+            if job["start"] is None:
+                job["start"] = time.monotonic()
+                job["started_at"] = datetime.now()
+            try:
+                target()
+            except Exception as exc:
+                traceback.print_exc()
+                if result is not None:
+                    result.setdefault("error", str(exc))
+            if auto_finish:
+                err = result.get("error") if result is not None else None
+                self._finish_notify_job(job, ok=not err, body=str(err) if err else "")
+
+        thread = threading.Thread(target=_run, daemon=True)
+        thread.notify_job = job
+        return thread
+
+    def _finish_notify_job(self, job, ok=True, subject=None, body=""):
+        """Ends a job and sends one email if the plugin-wide switch is on
+        and the job ran at least the threshold. Callable from any thread;
+        a second call for the same job does nothing. Never raises: no
+        recipient means notification is off, incomplete SMTP settings or
+        a failed send only print a note -- a broken email setup must never
+        take down the job it reports on. Sending happens in its own
+        thread, so a slow SMTP server never blocks napari."""
+        try:
+            if job is None:
+                return
+            with job["lock"]:
+                if job["done"]:
+                    return
+                job["done"] = True
+            if job["suppressed"] or job["start"] is None:
+                return
+            cfg = dict(self._notify_settings)
+            if not cfg.get("enabled"):
+                return
+            elapsed = time.monotonic() - job["start"]
+            if elapsed < cfg["min_minutes"] * 60:
+                return
+            if not cfg["to_addr"]:
+                return
+            if not cfg["smtp_user"] or not cfg["smtp_password"]:
+                print(f"Email notification for '{job['label']}' skipped: SMTP username/"
+                      "password missing in the Email notification panel.")
+                return
+            status = "finished" if ok else "FAILED"
+            if subject is None:
+                subject = f"[ZF-Microglia-AI] {job['label']} {status}"
+            elif not ok and "fail" not in subject.lower():
+                subject = f"{subject} (FAILED)"
+            mins, secs = divmod(int(elapsed), 60)
+            hours, mins = divmod(mins, 60)
+            header = (
+                f"Job: {job['label']}\n"
+                f"Status: {status}\n"
+                f"Started: {job['started_at']:%Y-%m-%d %H:%M:%S}\n"
+                f"Ended: {datetime.now():%Y-%m-%d %H:%M:%S}\n"
+                f"Duration: {hours}h {mins:02d}m {secs:02d}s\n"
+            )
+            text = header + (f"\n{body}" if body else "")
+
+            def _send():
+                try:
+                    err = _tj.send_notification_email(
+                        cfg["to_addr"], cfg["smtp_host"], cfg["smtp_port"],
+                        cfg["smtp_user"], cfg["smtp_password"], subject, text,
+                    )
+                except Exception as exc:
+                    err = str(exc)
+                if err:
+                    print(f"Email notification failed: {err}")
+
+            threading.Thread(target=_send, daemon=True).start()
+        except Exception as exc:
+            print(f"Email notification skipped (internal error): {exc}")
 
     def _on_send_test_email(self):
         """Verify SMTP credentials actually work without waiting on any
-        real 30+min operation -- sends one email immediately using
-        exactly the same _get_notify_creds()/send_notification_email()
-        path every "Email me when done" checkbox uses, just with a fixed
-        test subject/body instead of a real result. Runs in a background
+        real long job -- sends one email immediately with the same
+        SMTP settings and send_notification_email() call every job email
+        uses, just with a fixed test subject/body. Runs in a background
         thread since a misconfigured host/port can hang for the full
         SMTP timeout (30s) rather than fail instantly, and that shouldn't
         freeze napari."""
@@ -6779,9 +6897,9 @@ class ZFMicrogliaAIWidget(QWidget):
                 creds["smtp_user"], creds["smtp_password"],
                 "[ZF-Microglia-AI] Test email",
                 "This is a test email from the ZF-Microglia-AI napari plugin's "
-                "Email notification panel (Tab 5, General category).\n\n"
-                "If you received this, your SMTP settings are correct and any "
-                "'Email me when done' checkbox in the plugin will work.",
+                "Email notification panel (Sweeps & Utilities, General category).\n\n"
+                "If you received this, your SMTP settings are correct and job "
+                "emails from the plugin will reach you.",
             )
 
         thread = threading.Thread(target=_worker, daemon=True)
@@ -7103,6 +7221,7 @@ class ZFMicrogliaAIWidget(QWidget):
         reasons = _gtk.step_preconditions(found)
         is_gt = self._gtk_is_gt_cb.isChecked()
         self._gtk_is_gt_cb.setChecked(False)
+        self._gtk_job["notify"] = self._start_notify_job("GT Toolkit Tuning")
 
         report_lines = [_gtk.format_discovery_report(folder, stem, found), ""]
 
@@ -7189,8 +7308,9 @@ class ZFMicrogliaAIWidget(QWidget):
             self._gtk_status_lbl.setText(
                 "Nothing more to run -- no folded-in sweep's required files were found."
             )
-            self._maybe_send_notify(
-                self._gtk_notify_cb, "[ZF-Microglia-AI] GT Toolkit Tuning finished",
+            self._finish_notify_job(
+                self._gtk_job.get("notify"), True,
+                "[ZF-Microglia-AI] GT Toolkit Tuning finished",
                 f"GT Toolkit Tuning finished for {stem}.\n\n{self._gtk_report_view.toPlainText()}",
             )
             return
@@ -7203,6 +7323,7 @@ class ZFMicrogliaAIWidget(QWidget):
         self._gtk_run_btn.setEnabled(False)
         self._gtk_stop_btn.setEnabled(True)
         self._gtk_status_lbl.setText(f"Running step 1/{len(queue)}: {queue[0][1]}...")
+        self._notify_outer_job = self._gtk_job["notify"]
         self._gtk_launch_step(queue[0], is_gt)
 
         timer = QTimer(self)
@@ -7239,13 +7360,15 @@ class ZFMicrogliaAIWidget(QWidget):
             job["timer"].deleteLater()
             job["timer"] = None
             job["running"] = False
+            self._notify_outer_job = None
             self._gtk_run_btn.setEnabled(True)
             self._gtk_stop_btn.setEnabled(False)
             self._gtk_status_lbl.setText(
                 f"GT Toolkit Tuning finished for {job['stem']} -- {len(queue)} step(s) run."
             )
-            self._maybe_send_notify(
-                self._gtk_notify_cb, "[ZF-Microglia-AI] GT Toolkit Tuning finished",
+            self._finish_notify_job(
+                self._gtk_job.get("notify"), True,
+                "[ZF-Microglia-AI] GT Toolkit Tuning finished",
                 f"GT Toolkit Tuning finished for {job['stem']}.\n\n{self._gtk_report_view.toPlainText()}",
             )
             return
@@ -7438,7 +7561,7 @@ class ZFMicrogliaAIWidget(QWidget):
                 traceback.print_exc()
                 result["error"] = str(exc)
 
-        thread = threading.Thread(target=_worker, daemon=True)
+        thread = self._job_thread("Run Skin-Remover", _worker, result, auto_finish=False)
         thread.start()
 
         timer = QTimer(self)
@@ -7461,8 +7584,8 @@ class ZFMicrogliaAIWidget(QWidget):
             if "error" in result:
                 self._status(f"ERROR: {result['error']}")
                 self._run_btn.setEnabled(True)
-                self._maybe_send_notify(
-                    self._run_notify_cb,
+                self._finish_notify_job(
+                    thread.notify_job, False,
                     f"[ZF-Microglia-AI] Run Skin-Remover failed — {stem}",
                     f"Run Skin-Remover on {stem} failed:\n\n{result['error']}",
                 )
@@ -7537,8 +7660,8 @@ class ZFMicrogliaAIWidget(QWidget):
 
             self._status(f"Done — brain={nonzero_pct:.1f}% of volume.")
             self._run_btn.setEnabled(True)
-            self._maybe_send_notify(
-                self._run_notify_cb,
+            self._finish_notify_job(
+                thread.notify_job, True,
                 f"[ZF-Microglia-AI] Run Skin-Remover done — {stem}",
                 f"Run Skin-Remover on {stem} finished.\n\nBrain: {nonzero_pct:.1f}% of volume.",
             )
@@ -7653,7 +7776,7 @@ class ZFMicrogliaAIWidget(QWidget):
             except Exception as exc:
                 result["error"] = f"{exc}\n{traceback.format_exc()}"
 
-        thread = threading.Thread(target=_worker, daemon=True)
+        thread = self._job_thread("Verify MONAI Threshold/Erosion sweep", _worker, result)
         self._brain_sweep_job["thread"] = thread
         self._brain_sweep_job["cancel_event"] = cancel_event
         self._brain_sweep_job["result"] = result
@@ -7834,7 +7957,7 @@ class ZFMicrogliaAIWidget(QWidget):
                 traceback.print_exc()
                 result["error"] = str(exc)
 
-        thread = threading.Thread(target=_worker, daemon=True)
+        thread = self._job_thread("Resort Labels", _worker, result)
         thread.start()
 
         timer = QTimer(self)
@@ -7896,7 +8019,7 @@ class ZFMicrogliaAIWidget(QWidget):
                 traceback.print_exc()
                 result["error"] = str(exc)
 
-        thread = threading.Thread(target=_worker, daemon=True)
+        thread = self._job_thread("Remove Debris", _worker, result)
         thread.start()
 
         timer = QTimer(self)
@@ -8015,7 +8138,7 @@ class ZFMicrogliaAIWidget(QWidget):
                 traceback.print_exc()
                 result["error"] = str(exc)
 
-        thread = threading.Thread(target=_worker, daemon=True)
+        thread = self._job_thread("Split Label", _worker, result)
         thread.start()
 
         timer = QTimer(self)
@@ -8068,7 +8191,7 @@ class ZFMicrogliaAIWidget(QWidget):
                 traceback.print_exc()
                 result["error"] = str(exc)
 
-        thread = threading.Thread(target=_worker, daemon=True)
+        thread = self._job_thread("Join Labels", _worker, result)
         thread.start()
 
         timer = QTimer(self)
@@ -8260,7 +8383,7 @@ class ZFMicrogliaAIWidget(QWidget):
                     traceback.print_exc()
                     result["error"] = str(exc)
 
-        thread = threading.Thread(target=_worker, daemon=True)
+        thread = self._job_thread("Correct Label", _worker, result)
         thread.start()
 
         timer = QTimer(self)
@@ -8404,7 +8527,7 @@ class ZFMicrogliaAIWidget(QWidget):
                 traceback.print_exc()
                 result["error"] = str(exc)
 
-        thread = threading.Thread(target=_worker, daemon=True)
+        thread = self._job_thread("Copy Label to Adjacent Slice", _worker, result)
         thread.start()
 
         timer = QTimer(self)
@@ -8520,7 +8643,7 @@ class ZFMicrogliaAIWidget(QWidget):
                 traceback.print_exc()
                 result["error"] = str(exc)
 
-        thread = threading.Thread(target=_worker, daemon=True)
+        thread = self._job_thread("Correct Adjacent Labels", _worker, result)
         thread.start()
 
         timer = QTimer(self)
@@ -8794,7 +8917,7 @@ class ZFMicrogliaAIWidget(QWidget):
                 traceback.print_exc()
                 result["error"] = str(exc)
 
-        thread = threading.Thread(target=_worker, daemon=True)
+        thread = self._job_thread("Protect Skin as Label", _worker, result)
         thread.start()
         # 30 min, not the 10 min default -- skin's own per-slice trim
         # already spans nearly the whole frame on most slices, and a
@@ -9120,7 +9243,8 @@ class ZFMicrogliaAIWidget(QWidget):
                 traceback.print_exc()
                 result["error"] = str(exc)
 
-        thread = threading.Thread(target=_worker, daemon=True)
+        thread = self._job_thread("Auto-correct Labels", _worker, result, auto_finish=False)
+        self._ac_notify_job = thread.notify_job
         thread.start()
         # 30 min -- same reasoning as Protect Skin as Label's own
         # watchdog: this pipeline's skin-protection step does the exact
@@ -9142,6 +9266,7 @@ class ZFMicrogliaAIWidget(QWidget):
             if "error" in result:
                 self._ac_status_lbl.setText(f"ERROR: {result['error']}")
                 self._ac_labels_btn.setEnabled(True)
+                self._finish_notify_job(self._ac_notify_job, False, body=result["error"])
                 return
 
             new_labels = result["labels"]
@@ -9247,6 +9372,7 @@ class ZFMicrogliaAIWidget(QWidget):
             else:
                 self._ac_status_lbl.setText(done_status)
                 self._ac_labels_btn.setEnabled(True)
+                self._finish_notify_job(self._ac_notify_job, True, body=done_status)
 
         timer.timeout.connect(_poll)
         timer.start(200)
@@ -9298,7 +9424,7 @@ class ZFMicrogliaAIWidget(QWidget):
                 traceback.print_exc()
                 result5["error"] = str(exc)
 
-        thread5 = threading.Thread(target=_worker5, daemon=True)
+        thread5 = self._job_thread("Auto-correct Labels", _worker5, result5, notify_job=self._ac_notify_job, auto_finish=False)
         thread5.start()
 
         timer5 = QTimer(self)
@@ -9317,6 +9443,7 @@ class ZFMicrogliaAIWidget(QWidget):
                     f"(the auto-corrected result above is unaffected)."
                 )
                 self._ac_labels_btn.setEnabled(True)
+                self._finish_notify_job(self._ac_notify_job, False, body=self._ac_status_lbl.text())
                 return
 
             new_labels = result5["labels"]
@@ -9343,6 +9470,10 @@ class ZFMicrogliaAIWidget(QWidget):
             sb.setValue(sb.maximum())
             self._append_sanding_report(report_path, report_text)
             self._ac_labels_btn.setEnabled(True)
+            self._finish_notify_job(
+                self._ac_notify_job, True,
+                body=f"{self._ac_status_lbl.text()}\n\n{report_text}",
+            )
 
             print(f"{'='*70}")
             print(f"SANDING COMPLETE (Auto-correct Labels)")
@@ -9482,7 +9613,7 @@ class ZFMicrogliaAIWidget(QWidget):
                 traceback.print_exc()
                 result["error"] = str(exc)
 
-        thread = threading.Thread(target=_worker, daemon=True)
+        thread = self._job_thread("Generate Statistics", _worker, result)
         thread.start()
 
         timer = QTimer(self)
@@ -9620,7 +9751,7 @@ class ZFMicrogliaAIWidget(QWidget):
                 traceback.print_exc()
                 result["error"] = str(exc)
 
-        thread = threading.Thread(target=_worker, daemon=True)
+        thread = self._job_thread("Create Labels", _worker, result)
         thread.start()
 
         timer = QTimer(self)
@@ -9767,7 +9898,7 @@ class ZFMicrogliaAIWidget(QWidget):
             except Exception as exc:
                 result["error"] = f"{exc}\n{traceback.format_exc()}"
 
-        thread = threading.Thread(target=_worker, daemon=True)
+        thread = self._job_thread("Verify BG Threshold/Signal Erosion sweep", _worker, result)
         self._pixel_sweep_job["thread"] = thread
         self._pixel_sweep_job["cancel_event"] = cancel_event
         self._pixel_sweep_job["result"] = result
@@ -10044,7 +10175,7 @@ class ZFMicrogliaAIWidget(QWidget):
             except Exception as exc:
                 result["error"] = f"{exc}\n{traceback.format_exc()}"
 
-        thread = threading.Thread(target=_worker, daemon=True)
+        thread = self._job_thread("Verify Smooth sigma XY/Z sweep", _worker, result)
         self._sigma_sweep_job["thread"] = thread
         self._sigma_sweep_job["cancel_event"] = cancel_event
         self._sigma_sweep_job["result"] = result
@@ -10312,7 +10443,8 @@ class ZFMicrogliaAIWidget(QWidget):
                 traceback.print_exc()
                 result["error"] = str(exc)
 
-        thread = threading.Thread(target=_worker, daemon=True)
+        thread = self._job_thread("Cellpose-SAM Segmentation", _worker, result, auto_finish=False)
+        self._cp_notify_job = thread.notify_job
         thread.start()
 
         timer2 = QTimer(self)
@@ -10336,8 +10468,8 @@ class ZFMicrogliaAIWidget(QWidget):
             if "error" in result:
                 self._cp_status_lbl.setText(f"ERROR: {result['error']}")
                 self._cp_run_btn.setEnabled(True)
-                self._maybe_send_notify(
-                    self._cp_run_notify_cb,
+                self._finish_notify_job(
+                    self._cp_notify_job, False,
                     f"[ZF-Microglia-AI] Cellpose-SAM Segmentation failed — {stem}",
                     f"Cellpose-SAM Segmentation on {stem} failed:\n\n{result['error']}",
                 )
@@ -10388,8 +10520,8 @@ class ZFMicrogliaAIWidget(QWidget):
             if not self._cp_autocorrect_cb.isChecked():
                 self._cp_status_lbl.setText(base_status)
                 self._cp_run_btn.setEnabled(True)
-                self._maybe_send_notify(
-                    self._cp_run_notify_cb,
+                self._finish_notify_job(
+                    self._cp_notify_job, True,
                     f"[ZF-Microglia-AI] Cellpose-SAM Segmentation done — {stem}",
                     base_email,
                 )
@@ -10495,7 +10627,7 @@ class ZFMicrogliaAIWidget(QWidget):
                 traceback.print_exc()
                 result3["error"] = str(exc)
 
-        thread3 = threading.Thread(target=_worker3, daemon=True)
+        thread3 = self._job_thread("Cellpose-SAM Segmentation", _worker3, result3, notify_job=self._cp_notify_job, auto_finish=False)
         thread3.start()
         # Same watchdog + budget as Protect Skin as Label's own -- this
         # stage runs the identical skin-protection trim, with the same
@@ -10519,8 +10651,8 @@ class ZFMicrogliaAIWidget(QWidget):
                     f"(the segmentation result above is unaffected)."
                 )
                 self._cp_run_btn.setEnabled(True)
-                self._maybe_send_notify(
-                    self._cp_run_notify_cb,
+                self._finish_notify_job(
+                    self._cp_notify_job, False,
                     f"[ZF-Microglia-AI] Cellpose-SAM Segmentation done, auto-correct failed — {stem}",
                     f"{base_email}\n\nAuto-correction failed: {result3['error']}\n"
                     f"The segmentation result itself is unaffected.",
@@ -10646,8 +10778,8 @@ class ZFMicrogliaAIWidget(QWidget):
 
             if not self._sanding_cb.isChecked():
                 self._cp_run_btn.setEnabled(True)
-                self._maybe_send_notify(
-                    self._cp_run_notify_cb,
+                self._finish_notify_job(
+                    self._cp_notify_job, True,
                     f"[ZF-Microglia-AI] Cellpose-SAM Segmentation + auto-correct done — {stem}",
                     f"{base_email}\n\n{report_text}",
                 )
@@ -10703,7 +10835,7 @@ class ZFMicrogliaAIWidget(QWidget):
                 traceback.print_exc()
                 result4["error"] = str(exc)
 
-        thread4 = threading.Thread(target=_worker4, daemon=True)
+        thread4 = self._job_thread("Cellpose-SAM Segmentation", _worker4, result4, notify_job=self._cp_notify_job, auto_finish=False)
         thread4.start()
 
         timer4 = QTimer(self)
@@ -10722,8 +10854,8 @@ class ZFMicrogliaAIWidget(QWidget):
                     f"(the auto-corrected result above is unaffected)."
                 )
                 self._cp_run_btn.setEnabled(True)
-                self._maybe_send_notify(
-                    self._cp_run_notify_cb,
+                self._finish_notify_job(
+                    self._cp_notify_job, False,
                     f"[ZF-Microglia-AI] Cellpose-SAM Segmentation done, sanding failed — {stem}",
                     f"{base_email}\n\nSanding failed: {result4['error']}\n"
                     f"The auto-corrected result itself is unaffected.",
@@ -10764,8 +10896,8 @@ class ZFMicrogliaAIWidget(QWidget):
             sb.setValue(sb.maximum())
 
             self._cp_run_btn.setEnabled(True)
-            self._maybe_send_notify(
-                self._cp_run_notify_cb,
+            self._finish_notify_job(
+                self._cp_notify_job, True,
                 f"[ZF-Microglia-AI] Cellpose-SAM Segmentation + auto-correct + sanding done — {stem}",
                 f"{base_email}\n\n{report_text}",
             )
@@ -10966,7 +11098,7 @@ class ZFMicrogliaAIWidget(QWidget):
                 traceback.print_exc()
                 result["error"] = str(exc)
 
-        thread = threading.Thread(target=_worker, daemon=True)
+        thread = self._job_thread("Re-run This Cell Only", _worker, result)
         thread.start()
 
         timer3 = QTimer(self)
@@ -11221,7 +11353,7 @@ class ZFMicrogliaAIWidget(QWidget):
             except Exception as exc:
                 result["error"] = f"{exc}\n{traceback.format_exc()}"
 
-        thread = threading.Thread(target=_worker, daemon=True)
+        thread = self._job_thread("Verify Cellprob + Krendl merge sweep", _worker, result, auto_finish=False)
         self._krendl_sweep_job["thread"] = thread
         self._krendl_sweep_job["cancel_event"] = cancel_event
         self._krendl_sweep_job["result"] = result
@@ -11283,8 +11415,8 @@ class ZFMicrogliaAIWidget(QWidget):
                 self._kr_is_gt_cb.setChecked(False)
                 self._kr_status_lbl.setText(f"ERROR during sweep: {result['error'].splitlines()[0]}")
                 self._kr_report_view.append("\n" + result["error"])
-                self._maybe_send_notify(
-                    self._kr_notify_cb,
+                self._finish_notify_job(
+                    job["thread"].notify_job, False,
                     "[ZF-Microglia-AI] Cellprob sweep failed",
                     f"Verify Cellprob (GT Sweep) failed:\n\n{result['error']}",
                 )
@@ -11462,8 +11594,10 @@ class ZFMicrogliaAIWidget(QWidget):
                 self._kr_is_gt_cb.setChecked(False)
                 self._kr_status_lbl.setText("Sweep finished but no grid points could be scored.")
 
-            self._maybe_send_notify(
-                self._kr_notify_cb,
+            self._finish_notify_job(
+
+                job["thread"].notify_job, True,
+
                 "[ZF-Microglia-AI] Cellprob sweep done",
                 f"Verify Cellprob (GT Sweep) finished.\n\n{self._kr_status_lbl.text()}",
             )
@@ -11599,7 +11733,7 @@ class ZFMicrogliaAIWidget(QWidget):
             except Exception as exc:
                 result["error"] = f"{exc}\n{traceback.format_exc()}"
 
-        thread = threading.Thread(target=_worker, daemon=True)
+        thread = self._job_thread("Build GT-Correction Package", _worker, result)
         self._gt_package_job["thread"] = thread
         self._gt_package_job["result"] = result
         thread.start()
@@ -11696,7 +11830,7 @@ class ZFMicrogliaAIWidget(QWidget):
             except Exception as exc:
                 result["error"] = f"{exc}\n{traceback.format_exc()}"
 
-        thread = threading.Thread(target=_worker, daemon=True)
+        thread = self._job_thread("Extract X/Y/Z Patches", _worker, result)
         self._xz_patches_job["thread"] = thread
         self._xz_patches_job["result"] = result
         thread.start()
@@ -11773,7 +11907,7 @@ class ZFMicrogliaAIWidget(QWidget):
             except Exception as exc:
                 result["error"] = f"{exc}\n{traceback.format_exc()}"
 
-        thread = threading.Thread(target=_worker, daemon=True)
+        thread = self._job_thread("Combine Crops", _worker, result)
         self._cc_job["thread"] = thread
         thread.start()
 

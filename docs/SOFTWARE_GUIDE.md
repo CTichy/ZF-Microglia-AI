@@ -69,7 +69,8 @@ def _on_run_button_click():
             result["value"] ← do_the_actual_work(...)   # runs on a background thread
         except Exception as exc:
             result["error"] ← str(exc)
-    thread ← Thread(target=_worker); thread.start()
+    thread ← self._job_thread("<tool name>", _worker, result); thread.start()
+                                              # timed job: may email at the end (§9)
 
     timer ← QTimer()                          # polls on the GUI thread
     def _poll():
@@ -257,7 +258,6 @@ A handful of small functions used throughout `_build_ui()` (the ~10,000-line met
 - **`_wrap_scroll(widget)`** — wraps a fully-built tab page in a vertical-only `QScrollArea` (`setWidgetResizable(True)`, horizontal scrollbar forced off) so a tab taller than the napari window stays fully reachable.
 - **`_add_recommended_label(layout, initial, unit, noun)`** — the read-only "Recommended: X" line under a GT-sweepable slider, kept separate from the slider's own editable value so a GT-confirmed sweep's finding is never silently overwritten by the user nudging the slider to test something else.
 - **`_add_gt_checkbox(layout, hint, visible=True)`** — the "This is verified ground truth" one-shot opt-in every sweep tool has: off by default, un-checks itself after every run, and is the only thing that lets a sweep move a shared recommended value (Min volume, a slider's own "Recommended" line, etc.) rather than just reporting a result.
-- **`_make_notify_checkbox()`** — builds one "Email me when done" `QCheckBox` with a shared tooltip; every long-running, non-detached tool (Run Skin-Remover, Cellpose-SAM Segmentation, the Cellprob/Best-Epoch sweeps) gets its own instance of this, all reading the same shared SMTP credentials configured once in Tab 6.
 
 ---
 
@@ -379,7 +379,7 @@ background thread, wrapped in capture_live_output (surfaces MONAI's tqdm bar +
     if bg_mode == 3 (_RndFill): brain_only ← fill_outside_brain_random(volume, eroded_mask)
     # bg_mode == 0 (Off): brain_only stays exactly run_inference()'s own (volume × eroded_mask)
 on completion: add brain_mask/brain_only as new Labels/Image layers (suffix per _BG_SUFFIX),
-    save the ticked output files, send email notification if configured
+    save the ticked output files, end the job (email if it ran past the threshold)
 ```
 
 ---
@@ -1365,7 +1365,7 @@ _add_reliable_spinbox / _add_gt_checkbox /
 _add_sieve_controls / _is_valid_cellpose_
 checkpoint / _add_recommended_label /
 _set_layout_widgets_visible / _make_collapsible /
-_wrap_scroll / _sep / _make_notify_checkbox /
+_wrap_scroll / _sep /
 _extract_region_lines_um                        — module-level shared
                                                     UI helpers, see §2/§6
 
@@ -1469,10 +1469,24 @@ Wrapped around Protect Skin as Label, Auto-correct, and the Cellpose-SAM-chained
 
 ### Email notification
 
-Two independent paths sharing one credential source (`_get_notify_creds()`, reading Tab 6's shared SMTP fields and persisting the password via `_secrets.py`, never plaintext):
-- **In-process** (`_maybe_send_notify(checkbox, subject, body)`): called from a background *worker* thread right before it finishes (not the GUI/poll thread, so the SMTP round-trip never blocks the UI) — used by Tab 1 Run, Tab 2 Cellpose-SAM Segmentation, and Tab 6's Cellprob/Large-contact and Best-Epoch sweeps, none of which survive napari closing anyway.
-- **Detached** (`_build_notify_cfg()` → `_training_jobs.launch_detached(..., notify=...)`, §7): used only by Tab 5's two training launchers, which must keep running (and therefore be able to notify) even after napari itself has closed — hence the standalone supervisor-script approach instead of this same in-process function.
-Both paths swallow their own errors into a `print()` rather than raising — a broken email config must never take down the operation whose completion it was reporting.
+One plugin-wide switch (**Email me when a job finishes or fails**, default on) and one threshold (**only if it ran longer than**, default 10 min) in Tab 6's Email notification panel; no per-tool checkboxes. Two paths:
+
+- **In-process jobs** — every background worker in `_widget.py` is started through `_job_thread(label, target, result, notify_job=None, auto_finish=True)`, which returns an unstarted daemon thread whose wrapper stamps the start time, runs the worker (an uncaught exception becomes `result["error"]`), and — with `auto_finish` — calls `_finish_notify_job()` as soon as it returns, ok unless `result` holds an `"error"` (the one failure convention every worker in the file already follows). Tools whose own poll writes a richer email body (Run Skin-Remover, Cellpose-SAM Segmentation, the Cellprob and Best-Epoch sweeps) pass `auto_finish=False` and call `_finish_notify_job(thread.notify_job, ok, subject, body)` themselves. A chained stage (Cellpose-SAM → auto-correct → sanding, Auto-correct Labels → sanding) passes the first stage's job as `notify_job`, so the chain is timed from the first click and emails once. GT Toolkit Tuning, which runs other tools' sweeps in sequence, times itself with `_start_notify_job()` and sets `_notify_outer_job` while its queue runs; any job created meanwhile is marked suppressed, so only the orchestrator emails.
+- **Detached training** (`_build_notify_cfg()` → `_training_jobs.launch_detached(..., notify=...)`, §7): Tab 5's two launchers pass the SMTP settings to the supervisor script when the switch is on, with no threshold, so the email still arrives after napari has closed. Incomplete SMTP settings launch the run anyway, without email, and say so in the status line.
+
+```
+_finish_notify_job(job, ok, subject=None, body=""):     # any thread, never raises
+    if job already done: return                          # first call wins (lock)
+    mark done
+    if job suppressed, or switch off, or elapsed < threshold, or no recipient: return
+    if SMTP username/password missing: print a note, return
+    subject ← "[ZF-Microglia-AI] <label> finished|FAILED" unless given
+    body    ← job, status, start, end, duration + the job's own text
+    send via _training_jobs.send_notification_email in a new daemon thread
+        (errors only printed)
+```
+
+Worker threads never read Qt widgets: `_sync_notify_settings()` keeps a GUI-thread snapshot of the panel (`self._notify_settings`) updated on every edit, and `_finish_notify_job` reads only that. Fields are persisted on edit-finished (`_persist_notify_fields`, password via `_secrets.py`, never plaintext); the switch and threshold on change.
 
 ### The 10-minute recovery timer
 
@@ -1498,7 +1512,7 @@ Every button/combo handler in the file is documented, with real behavior, in the
 | 4 — Statistics | §6 | `_on_generate_stats`, `_on_stats_backend_changed`, `_on_gtscore_run` |
 | 5 — AI Tools | §7 | `_on_gt_interpolate`, `_on_gt_generate_masks`, `_on_gt_image_changed`, `_on_prepare_monai_data`, `_on_mt_launch_training`, `_on_mt_stop_training`, `_resume_monai_job_if_active`, `_start_monai_polling`, `_on_ct_launch_training`, `_on_ct_stop_training`, `_resume_cellpose_job_if_active`, `_start_cellpose_polling`, `_on_ct_calib_run` (branch_radius), `_on_es_run_sweep` (epoch sweep), `_on_xz_run` (XZYZ patches), `_write_cellpose_best_pointer` |
 | 6 — Sweeps & Utilities | §8 | `_on_gtk_scan`/`_on_gtk_run` (GT Toolkit), `_on_bs_run_sweep` (brain/MONAI), `_on_ps_run_sweep` (BG Threshold/Erosion), `_on_sg_run_sweep` (Sigma), `_on_kr_run_sweep` (Cellprob/Large-contact), `_on_gtp_run` (GT package) |
-| Shell (this section) | §9 | `__init__`, `_build_ui`, `_connect_signals`, `_status`, `_save_cfg`, `_update_gt_history`, `_update_merge_stats_history`, `_hang_watch_start/stop`, `_get_notify_creds`, `_build_notify_cfg`, `_maybe_send_notify`, `_on_send_test_email`, `_start_recovery_timer`, `_output_dir`, `_get_layer_scale`, `_active_layer`, `_active_labels_layer`, `_edit_labels_layer`, `_refresh_*`, `_current_min_volume`, `_lo_sweep_sample_params`, `_on_ai_tools_mode_changed`, `_update_labels_section_visibility` |
+| Shell (this section) | §9 | `__init__`, `_build_ui`, `_connect_signals`, `_status`, `_save_cfg`, `_update_gt_history`, `_update_merge_stats_history`, `_hang_watch_start/stop`, `_get_notify_creds`, `_build_notify_cfg`, `_sync_notify_settings`, `_persist_notify_fields`, `_new_notify_job`, `_start_notify_job`, `_job_thread`, `_finish_notify_job`, `_on_send_test_email`, `_start_recovery_timer`, `_output_dir`, `_get_layer_scale`, `_active_layer`, `_active_labels_layer`, `_edit_labels_layer`, `_refresh_*`, `_current_min_volume`, `_lo_sweep_sample_params`, `_on_ai_tools_mode_changed`, `_update_labels_section_visibility` |
 
 ---
 

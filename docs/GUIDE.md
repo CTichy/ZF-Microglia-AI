@@ -321,7 +321,7 @@ Both files are saved in the output folder (see Section 11). The `brain_only` fil
 
 ### Run Skin-Remover
 
-Click to start processing. The button is greyed out while running; the status bar shows one summary line, and the small live-output box underneath streams progress from **both** stages the run actually goes through — MONAI's own sliding-window progress (one line per processed window) during brain segmentation, followed by the background/skin-removal step's own messages (background level detected, threshold applied, voxel counts removed or filled) once that starts — the same progress you'd see running each step from a terminal. Tick **"Email me when done"** above the button first if you want a notification — see [Section 10h](#10h-email-notification-optional) for setup.
+Click to start processing. The button is greyed out while running; the status bar shows one summary line, and the small live-output box underneath streams progress from **both** stages the run actually goes through — MONAI's own sliding-window progress (one line per processed window) during brain segmentation, followed by the background/skin-removal step's own messages (background level detected, threshold applied, voxel counts removed or filled) once that starts — the same progress you'd see running each step from a terminal. If the run takes longer than the email threshold, you get an email when it finishes or fails — see [Section 10h](#10h-email-notification-optional).
 
 When complete, two new layers appear in napari:
 
@@ -559,7 +559,7 @@ The last stage of this pipeline, run automatically after large-contact merge —
 
 #### Run Cellpose-SAM Segmentation (button)
 
-Click to start. `do_3D` inference is slow — it can take **hours** for a full-size fish — and runs in a background thread, so napari itself stays responsive while it works. The status line shows which pipeline stage is active (do_3D → GMM cleanup → Krendl safe-merge → large-contact merge), and the live-output box underneath streams Cellpose's own internal progress during `do_3D` itself — normally invisible even from a terminal, since Cellpose only emits it through Python's `logging` module and doesn't configure a handler by default unless its own CLI is used. Tick **"Email me when done"** above the button first if you'd rather not watch — see [Section 10h](#10h-email-notification-optional). When complete, a `*_labels` layer appears, exactly as with the Pixel Classifier.
+Click to start. `do_3D` inference is slow — it can take **hours** for a full-size fish — and runs in a background thread, so napari itself stays responsive while it works. The status line shows which pipeline stage is active (do_3D → GMM cleanup → Krendl safe-merge → large-contact merge), and the live-output box underneath streams Cellpose's own internal progress during `do_3D` itself — normally invisible even from a terminal, since Cellpose only emits it through Python's `logging` module and doesn't configure a handler by default unless its own CLI is used. You get an email when it finishes or fails (if it runs longer than the email threshold) — see [Section 10h](#10h-email-notification-optional). When complete, a `*_labels` layer appears, exactly as with the Pixel Classifier.
 
 > If this button errors with `No module named 'cellpose'`, install it in your environment: `pip install cellpose` (already listed in `environment.yml`/`environment-mac.yml` for fresh installs — see Section 16).
 
@@ -1072,7 +1072,7 @@ Always visible, regardless of GPU. A banner at the top reports your GPU situatio
 
 A smaller GPU, or none at all, doesn't mean the tools are useless — just slower, or in need of a smaller `batch_size`. GT Annotation itself needs no GPU at all.
 
-**Email notification (optional)** — moved to [Section 10h](#10h-email-notification-optional), Tab 6 — Sweeps & Utilities, General category. Each training launcher below has its own "Email me when this training run stops" checkbox that opts into it.
+**Email notification (optional)** — moved to [Section 10h](#10h-email-notification-optional), Tab 6 — Sweeps & Utilities, General category. When its switch is on, every training run below emails when it stops.
 
 ---
 
@@ -1140,6 +1140,7 @@ Both "Launch Training" buttons (MONAI and Cellpose-SAM) start a **detached backg
 ## 10. Tab 6 — Sweeps & Utilities
 
 Several tools, gathered here so Tabs 1-4 stay focused on running the pipeline rather than tuning it. Each is individually collapsible: click a section's title checkbox to hide its contents, so you can keep only the one you're actively using expanded. Every tool below operates on its own Tab 1-4 sliders/fields and auto-applies its findings back there — this tab is where the sweep runs, not where its results live. Five are GT-*sweep* tools (test a small parameter grid against a handful of proxy cells or one mask, as a fast approximation); the rest (Score Against GT, Build GT-Correction Package, Calibrate Correct-Label Contrast, and the General-category utilities below) are related tools that don't fit that "sweep against ground truth" shape.
+
 
 **"Show tools for..." filter** — with this many tools stacked in one tab and no indication of which pipeline each belongs to, it isn't obvious at a glance what any given tool is even for. Four checkboxes at the top of the tab let you hide the ones you don't need:
 
@@ -1210,7 +1211,7 @@ One button, one `do_3D` network pass, five calibration steps against a full-fish
 2. **Voxel scale Z/XY** — drives the do_3D `anisotropy` parameter (Z/XY ratio); independent of whatever's open in the viewer.
 3. **Cellprob min/max/step** — define the grid for step (1) below.
 4. **Sieve** (default on) — auto-narrows Cellprob coarse → fine across 3 stages; the one `do_3D` network pass is reused across all 3 stages, not repeated.
-5. Tick **"Email me when done"** if you want a notification (~3h is well past the point where that's worth it) — see [Section 10h](#10h-email-notification-optional).
+5. You get an email when it finishes or fails (~3h is well past the default 10-minute threshold) — see [Section 10h](#10h-email-notification-optional).
 6. Tick **"This is verified ground truth"** if the GT labels above are genuinely hand-verified (off by default — see Section 10's intro for the one-shot rule shared by every sweep tool here). Only then will this run's findings move any Tab 2 slider or the shared Min volume/Min hole size floors.
 7. Click **Run Full Calibration**.
 
@@ -1242,7 +1243,7 @@ Answers a specific question the recommended Cellpose-SAM checkpoint alone can't:
    - Runs `do_3D` inference at the recommended epoch plus **N checkpoints below and above it** (default 2 and 2 — a 5-epoch × 5-cell = 25-inference sweep by default), best-IoU-matches each prediction against its GT cell, and averages.
    - Reports a table plus a plain confirm/disagree verdict against the recommended epoch.
 
-This can take a while — each `do_3D` call is a few minutes, so a default 5×5 sweep is roughly 30 minutes to a couple of hours. **Stop Sweep** cancels between checkpoints (not mid-inference). Unlike Launch Training, this does **not** run as a detached process and does **not** survive closing napari. Tick **"Email me when done"** if you'd rather not watch — see [Section 10h](#10h-email-notification-optional).
+This can take a while — each `do_3D` call is a few minutes, so a default 5×5 sweep is roughly 30 minutes to a couple of hours. **Stop Sweep** cancels between checkpoints (not mid-inference). Unlike Launch Training, this does **not** run as a detached process and does **not** survive closing napari. You get an email when it finishes or fails — see [Section 10h](#10h-email-notification-optional).
 
 If the sweep disagrees with the recommendation, applying it — rewriting the recommended-checkpoint pointer to the sweep-confirmed epoch and loading that checkpoint as Tab 2's active Cellpose-SAM model — now requires **"This is verified ground truth"** (off by default, same one-shot rule as every other sweep tool here) to be ticked for that run. Left unticked, a disagreement is still reported in full, it just doesn't swap the active model out from under you on the strength of GT labels you haven't actually confirmed are correct.
 
@@ -1324,24 +1325,24 @@ Same auto-apply and floor-recalibration behavior as [9b](#10b-verify-bg-threshol
 
 ### 10h. Email notification (optional) {#10h-email-notification-optional}
 
-Not a sweep — a General-category utility, alongside Score Against GT, since it isn't tied to one pipeline. This panel configures **one shared set of credentials**, used by an **"Email me when done"** checkbox next to every long-running tool in the plugin — configure it once here, then opt in per tool wherever you actually want a notification:
+Not a sweep — a General-category utility, alongside Score Against GT, since it isn't tied to one pipeline. This panel holds **the plugin's one email switch** and the SMTP settings behind it. There are no per-tool email checkboxes:
 
-- Tab 1 — **Run Skin-Remover**
-- Tab 2 — **Run Cellpose-SAM Segmentation**
-- Tab 5 — **Launch Training** (MONAI and Cellpose-SAM, each has its own checkbox: "Email me when this training run stops")
-- Tab 6 — **Calibrate Cellprob + Krendl Merge Parameters + Min size + Large-contact (GT Sweep)** and **Verify Best Epoch (GT Sweep)**
+- **Email me when a job finishes or fails** (default: **on**) — any job the plugin runs in the background (Run Skin-Remover, Create Labels, Cellpose-SAM Segmentation, every Edit MG Labels correction, Generate Statistics, every GT sweep and calibration, Build GT-Correction Package, patch extraction, …) sends one email when it ends, success or failure.
+- **only if it ran longer than** (default: **10 min**) — jobs shorter than this never email, so quick edits stay silent. `0` emails after every job.
 
-These are the plugin's operations that can realistically run 30+ minutes; the other, faster sweep/utility tools don't have this option since there's rarely anything to wait for.
+The email's subject says the job and whether it **finished** or **FAILED**; the body gives start/end time, duration, and the job's own result or error message. A tool that chains stages (Cellpose-SAM Segmentation → auto-correct → sanding, or Auto-correct Labels → sanding) sends **one** email for the whole chain, timed from the first click. GT Toolkit Tuning sends one email at the end, not one per step. **Training runs (Tab 5)** always email when they stop while the switch is on — no threshold, since they run for hours — even if napari is closed by then (see below).
 
-**Fields:** **Notify email**, **SMTP server**/**port**, **SMTP username**, **SMTP password**. Leave **Notify email** blank to disable the feature entirely regardless of which checkboxes are ticked elsewhere — that's the default. Free with any Gmail account, no other signup needed. **See Section 13a for the full step-by-step setup** (turning on 2-Step Verification, generating a Google App Password, and what to type into each field) — the short version: server `smtp.gmail.com`, port `465`, username = your Gmail address, password = a Google App Password, not your normal Gmail password, which won't work here.
+**Nothing breaks without email set up.** With **Notify email** blank (the default) nothing is sent. If it is filled in but the SMTP username/password is missing, or the server can't be reached, the job still runs and finishes normally; the plugin only prints a one-line note to the console. A training launch in that state starts anyway and says "no email will be sent" in its status line.
 
-**All four fields are saved between napari sessions** — set this up once and every "Email me when done" checkbox works without re-entering anything. The **password specifically is saved encrypted in your OS's credential store** (Windows Credential Manager / macOS Keychain / Linux Secret Service, via the `keyring` package) rather than the plugin's own plaintext `config.json` — real encryption at rest with an OS-managed key, not something the plugin manages itself. This is reasonable to persist at all because a Gmail App Password is a separate, revocable credential Google issues specifically for unattended third-party use like this, not your real account password. If **Notify email** is filled in but username/password is missing, any tool with its checkbox ticked refuses to start until you either fill both in or untick that tool's checkbox.
+**Fields:** **Notify email**, **SMTP server**/**port**, **SMTP username**, **SMTP password**. Leave **Notify email** blank to send nothing — that's the default. Free with any Gmail account, no other signup needed. **See Section 13a for the full step-by-step setup** (turning on 2-Step Verification, generating a Google App Password, and what to type into each field) — the short version: server `smtp.gmail.com`, port `465`, username = your Gmail address, password = a Google App Password, not your normal Gmail password, which won't work here.
+
+**All fields are saved between napari sessions** (each one when you finish editing it), along with the switch and the threshold — set this up once. The **password specifically is saved encrypted in your OS's credential store** (Windows Credential Manager / macOS Keychain / Linux Secret Service, via the `keyring` package) rather than the plugin's own plaintext `config.json` — real encryption at rest with an OS-managed key, not something the plugin manages itself. This is reasonable to persist at all because a Gmail App Password is a separate, revocable credential Google issues specifically for unattended third-party use like this, not your real account password.
 
 **On Linux, the OS credential store needs a running, *unlocked* Secret Service session** (GNOME Keyring or KWallet) — present on a normal desktop login, but not guaranteed over SSH, on a headless machine, or before you've logged into the desktop once. This is common enough on Linux workstations used mainly over SSH/tmux (confirmed directly on this project's own machine) that the plugin has a second layer for it: if the OS store isn't reachable, the password is saved instead to a local file encrypted with Fernet/AES (via `cryptography`), keyed by a machine-local key file the plugin generates once — no password prompt, no plaintext on disk, works the same way every session. This is a **weaker guarantee than the OS store**, worth being honest about: the key protecting that file lives right next to it, on the same machine and account, so it defends against casual exposure (an accidental `cat config.json`-style leak, a stray backup of just one file, a screen-share) rather than someone with full read access to your home directory. You'll see a one-line note printed to the console the first time this fallback kicks in ("OS credential store unavailable -- saved to a local encrypted file instead"). Only if *both* the OS store and this fallback fail (e.g. the config directory itself is unwritable) does the plugin give up and not persist the value at all. Windows and macOS almost always have a working OS-level backend, so this mostly matters on Linux.
 
-**Send Test Email** — verifies your SMTP settings actually work without waiting on any real 30+ minute operation. Fills in the same fields above, then click it: sends one email immediately with a fixed test subject/body, using the exact same code path every "Email me when done" checkbox uses. Runs in a background thread (a misconfigured host/port can hang for up to the 30-second SMTP timeout rather than fail instantly) so napari stays responsive while it tries. Reports "Sent to ... — check your inbox" or the specific SMTP error (wrong password, unreachable host, etc.) right there — the fastest way to confirm setup before relying on it for a long run.
+**Send Test Email** — verifies your SMTP settings actually work without waiting on a real long job. Fill in the fields above, then click it: sends one email immediately with a fixed test subject/body, using the same SMTP settings and send call every job email uses. Runs in a background thread (a misconfigured host/port can hang for up to the 30-second SMTP timeout rather than fail instantly) so napari stays responsive while it tries. Reports "Sent to ... — check your inbox" or the specific SMTP error (wrong password, unreachable host, etc.) right there — the fastest way to confirm setup before relying on it for a long run.
 
-**Why Tab 5's training notifications still work even if napari is closed the whole time:** unlike the other five tools (which run in a background thread inside napari itself, so they need napari to stay open the whole time regardless of email), a launched training run's notification isn't sent by the GUI's live polling — instead, when its checkbox is ticked, the launched background process itself is a small wrapper that runs the real training command, waits for it to finish, *then* sends the email, before exiting. That wrapper is what's detached and survives napari closing, exactly like the training script itself, so the email still arrives on schedule whether or not you ever reopen napari to see it. Clicking **Stop Training** kills the whole thing (wrapper included) before it reaches the email step, so a manual stop doesn't send one — only unattended completions/crashes do.
+**Why Tab 5's training notifications still work even if napari is closed the whole time:** unlike every other job (which runs in a background thread inside napari itself, so it needs napari to stay open the whole time regardless of email), a launched training run's notification isn't sent by the GUI's live polling — instead, when the switch is on and SMTP is set up at launch time, the launched background process itself is a small wrapper that runs the real training command, waits for it to finish, *then* sends the email, before exiting. That wrapper is what's detached and survives napari closing, exactly like the training script itself, so the email still arrives on schedule whether or not you ever reopen napari to see it. Clicking **Stop Training** kills the whole thing (wrapper included) before it reaches the email step, so a manual stop doesn't send one — only unattended completions/crashes do.
 
 ---
 
@@ -1675,7 +1676,7 @@ In **Tab 4 — Statistics**:
 
 ### 13a. Setting up email notification (Gmail App Password)
 
-The **Email notification** panel in **Tab 6 — Sweeps & Utilities** (Section 10h) configures the credentials behind every "Email me when done" checkbox in the plugin. It works with any SMTP-over-SSL provider, but Gmail is the easiest and free path — this walks through it end to end. If you'd rather use a different provider (Outlook/Office365, a work email server, etc.), skip to **Using a non-Gmail provider** at the bottom.
+The **Email notification** panel in **Tab 6 — Sweeps & Utilities** (Section 10h) holds the plugin's one email switch and the SMTP credentials behind it. It works with any SMTP-over-SSL provider, but Gmail is the easiest and free path — this walks through it end to end. If you'd rather use a different provider (Outlook/Office365, a work email server, etc.), skip to **Using a non-Gmail provider** at the bottom.
 
 **Step 1 — Turn on 2-Step Verification (if not already on)**
 
@@ -1705,9 +1706,9 @@ In **Tab 6 — Sweeps & Utilities**, General category, the **Email notification 
 3. **port:** leave as `465` (the default).
 4. **SMTP username:** your full Gmail address (e.g. `you@gmail.com`).
 5. **SMTP password:** paste the 16-character App Password from Step 2 — *not* your normal Gmail password.
-6. Tick the **"Email me when done"** checkbox (or, for training, **"Email me when this training run stops"**) next to whichever tool you want notified about — see the list in Section 10h. You should get one email the next time that run stops (finishes, crashes, or gets early-stopped).
+6. Leave **Email me when a job finishes or fails** ticked (the default) and set **only if it ran longer than** (default 10 min). From then on, every job that runs past the threshold emails when it finishes or fails, and every training run emails when it stops — see Section 10h.
 
-> **All four fields are saved between sessions; the password specifically is saved encrypted in your OS's credential store** (Windows Credential Manager / macOS Keychain / Linux Secret Service via `keyring`), not the plugin's own plaintext `config.json` — set this up once and it works for every checkbox from then on, no re-entering per session. An App Password is a separate, revocable credential Google issues specifically for this kind of unattended use, not your real account password. (The Statistics tab's OpenAI/Claude API keys, Section 13, use the same encrypted storage now, but those are billing-linked with no equivalent "app-scoped" variant, so they're a somewhat different risk — see the note there.) On Linux, this needs an unlocked Secret Service session (GNOME Keyring/KWallet) to actually persist — if unavailable, the password still works for the current session, it just won't be remembered next time; see [Section 10h](#10h-email-notification-optional) for the fallback behavior in detail.
+> **All fields are saved between sessions; the password specifically is saved encrypted in your OS's credential store** (Windows Credential Manager / macOS Keychain / Linux Secret Service via `keyring`), not the plugin's own plaintext `config.json` — set this up once, no re-entering per session. An App Password is a separate, revocable credential Google issues specifically for this kind of unattended use, not your real account password. (The Statistics tab's OpenAI/Claude API keys, Section 13, use the same encrypted storage now, but those are billing-linked with no equivalent "app-scoped" variant, so they're a somewhat different risk — see the note there.) On Linux, the OS store needs an unlocked Secret Service session (GNOME Keyring/KWallet); without one, the password is saved to a local encrypted file instead — see [Section 10h](#10h-email-notification-optional) for that fallback in detail.
 
 **Using a non-Gmail provider**
 
@@ -2081,7 +2082,6 @@ The active layer's name must end in `_ExtRm` (Cellpose-SAM) or `_NoBG` (Pixel Cl
 | Erosion | 0 | Strips voxels from mask edge |
 | Background | Option 2 | Removes background globally (best for labels) |
 | BG Threshold | 1.025 | Fine-tunes background removal level (Background mode 2 only) |
-| Email me when done | Unchecked | Uses Tab 6's shared Email notification credentials (Section 10h) — useful on CPU/MPS, where this can run 30-60 min |
 
 ### Tab 2 — Create MG Labels
 
@@ -2116,7 +2116,6 @@ Shown automatically based on active layer suffix — `_ExtRm` → Cellpose-SAM, 
 | Safe-merge max gap | 3.52 µm | Max physical gap allowed when merging fragments |
 | Safe-merge min contact | 1 vox | Min touching surface required to merge |
 | Large-contact merge | 10 vox | Second merge pass for thick-junction splits |
-| Email me when done | Unchecked | Uses Tab 6's shared Email notification credentials (Section 10h) — do_3D can run hours on a full-size fish |
 | Re-run This Cell Only | — | Fixes one label without redoing the whole fish — crops, re-runs do_3D + cleanup on just that label, splices the result back in Works on the selected labels layer (any name), or finds `<image>_cellpose_labels` / `<image>_labels` for the selected volume |
 
 ### Tab 3 — Edit MG Labels
@@ -2190,7 +2189,6 @@ Always shown — a banner at the top warns if your GPU is missing or under the r
 
 | Control | Default | What it does |
 |---------|---------|--------------|
-| Email me when this training run stops | Unchecked | Per-launcher opt-in — uses the shared credentials from Tab 6's Email notification panel (Section 10h); email still arrives if napari never reopens |
 | n_val / n_test | 5 / 5 | (MONAI) fish held out for val/test in Prepare Training Data |
 | epochs | 1500 | (MONAI) training length |
 | n_epochs | 200 | (Cellpose-SAM) training length |
@@ -2214,14 +2212,16 @@ Nine tools consolidated from Tabs 1, 2, 4, and 5, each individually collapsible 
 | Verify MONAI Threshold / Erosion (GT Sweep) | 5x5 grid, Sieve on by default | (Tab 1) Confirms current values against a hand-corrected GT brain mask — MONAI runs once, rest is cheap — **cross-fish average auto-applied to the sliders and saved** |
 | Verify BG Threshold / Erosion (GT Sweep) | 5x5 grid, Sieve on by default | (Tab 1/2) Confirms current BG Threshold/Erosion against real GT IoU, and measures Min volume + Min hole size as never-rising floors from GT — CPU-OK, doesn't survive closing napari — **cross-fish average + Min volume + Min hole size floors auto-applied and saved** |
 | Verify Smooth σ XY / σ Z (GT Sweep) | grid, Sieve on by default | (Tab 2) Confirms current Smooth σ XY/Z against real GT IoU, BG Threshold/Erosion held fixed — CPU-OK, doesn't survive closing napari — **cross-fish average + Min volume + Min hole size floors auto-applied and saved** |
-| Calibrate Cellprob + Krendl Merge Parameters + Min size + Large-contact (GT Sweep) | 5 calibration steps, Sieve on by default, full fish, ~3h total | (Tab 2) Confirms against whole-fish GT — do_3D's network pass runs exactly once (~3h on a full-size fish, GPU-preferred), reused for Cellprob, then max_gap/min_contact, Min size, and Large-contact are each calibrated from that same cached pass with no extra inference — **this fish's own Cellprob + the pooled cross-fish recommendations for all four others auto-applied to the sliders and saved**. Has an "Email me when done" checkbox (~3h is well past the 30-min mark) |
-| Verify Best Epoch (GT Sweep) | 5 cells, ±2 checkpoints | (Tab 5, Cellpose-SAM) confirms the recommendation against real GT IoU/Dice, not just test_loss — doesn't survive closing napari — **if the sweep disagrees, rewrites the pointer to the confirmed epoch and loads it as Tab 2's active model**. Has an "Email me when done" checkbox (can run 30 min to a couple hours) |
+| Calibrate Cellprob + Krendl Merge Parameters + Min size + Large-contact (GT Sweep) | 5 calibration steps, Sieve on by default, full fish, ~3h total | (Tab 2) Confirms against whole-fish GT — do_3D's network pass runs exactly once (~3h on a full-size fish, GPU-preferred), reused for Cellprob, then max_gap/min_contact, Min size, and Large-contact are each calibrated from that same cached pass with no extra inference — **this fish's own Cellprob + the pooled cross-fish recommendations for all four others auto-applied to the sliders and saved**. |
+| Verify Best Epoch (GT Sweep) | 5 cells, ±2 checkpoints | (Tab 5, Cellpose-SAM) confirms the recommendation against real GT IoU/Dice, not just test_loss — doesn't survive closing napari — **if the sweep disagrees, rewrites the pointer to the confirmed epoch and loads it as Tab 2's active model**. |
 | Calibrate Correct-Label Contrast | 400 samples (20 cells x 20 slices) | (Tab 3, Edit MG Labels) the canonical best_lo sweep every autosweep-driven tool (Protect Skin as Label, Auto-correct Labels) correlates to — finds the lower-contrast value that best reproduces the active Labels layer's own shapes (mean IoU), not independent GT — reads its Signal/Labels layers from Tab 3's shared selector, **auto-applies the winning value to the chosen signal layer's contrast limits (low = winning value, high = an adaptive percentile of this fish's own real signal)** |
 | Score Against GT | any 2 Labels layers | Whole-fish Hungarian-matched TP/FP/FN/Score/MeanIoU/MeanDice between any two Labels layers — synchronous, no GPU needed |
 | Drift View in 3D | — | (Tab 6, General) Start/Stop button + Speed slider — slowly, continuously tumbles the 3D camera around whatever's in view, switching to 3D display automatically; camera-only, never touches layer data |
 | Autosave Labels Layer | Checked, every 30 min | (Tab 6, General) Periodically saves ONLY the Labels layer selected in Tab 3's own shared selector to `<output>/<name>_recovery.tif` — a crash loses at most one interval's worth of manual editing. Interval is minutes/hours, editable; brain_mask layers are never included |
 | Build GT-Correction Package | — | (Tab 2/3) Zips the most-advanced correction stage available (sanded > auto-corrected > Krendl-only) + stats CSV + creation guide + brain_mask.tif and raw signal channel (both needed for Protect Skin as Label on the reviewer's end) + the auto-correct report (.txt) for external manual correction — browsing Source image auto-fills the rest |
-| Email notification (optional) | *(blank = off)* | Shared SMTP credentials (address, server, port, username, password — password saved **encrypted** via the OS credential store) for every "Email me when done" checkbox in the plugin; configuring it here doesn't itself send anything — see Section 10h |
+| Email notification (optional) | *(blank = off)* | Shared SMTP credentials (address, server, port, username, password — password saved **encrypted** via the OS credential store); nothing is sent while Notify email is blank — see Section 10h |
+| Email me when a job finishes or fails | On | The plugin's one email switch: every background job, success or failure; training runs email whenever they stop |
+| only if it ran longer than | 10 min | Shorter jobs never email; `0` = every job |
 | Send Test Email | — | Sends one email immediately (no GPU, no waiting) to confirm SMTP settings before relying on them for a long run |
 
 ---
