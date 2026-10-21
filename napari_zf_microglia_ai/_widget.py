@@ -635,6 +635,7 @@ class ZFMicrogliaAIWidget(QWidget):
         # Pixel Classifier and Cellpose-SAM tools visible at once if they
         # use both pipelines across different fish.
         self._t5_category_groups = {}
+        self._t5_groups = {}
         t5fg = QGroupBox("Show tools for...")
         t5fl = QVBoxLayout()
         t5fl.setSpacing(4)
@@ -772,8 +773,7 @@ class ZFMicrogliaAIWidget(QWidget):
 
         gtkg.setLayout(gtkl)
         gtkg = _make_collapsible(gtkg)
-        t5.addWidget(gtkg)
-        t5.addWidget(_sep())
+        self._t5_groups["gt_toolkit"] = gtkg
         self._t5_category_groups.setdefault("general", []).append(gtkg)
 
         self._gtk_job = {"queue": [], "step_index": 0, "timer": None, "running": False}
@@ -1121,7 +1121,7 @@ class ZFMicrogliaAIWidget(QWidget):
 
         bsg.setLayout(bsl)
         bsg = _make_collapsible(bsg)
-        t5.addWidget(bsg)
+        self._t5_groups["monai_sweep"] = bsg
         self._t5_category_groups.setdefault("skin", []).append(bsg)
 
         self._brain_sweep_job = {"thread": None, "cancel_event": None, "timer": None}
@@ -1617,7 +1617,7 @@ class ZFMicrogliaAIWidget(QWidget):
 
         psg.setLayout(psl)
         psg = _make_collapsible(psg)
-        t5.addWidget(psg)
+        self._t5_groups["bg_sweep"] = psg
         self._t5_category_groups.setdefault("pixel", []).append(psg)
 
         self._pixel_sweep_job = {"thread": None, "cancel_event": None, "timer": None}
@@ -1804,7 +1804,7 @@ class ZFMicrogliaAIWidget(QWidget):
 
         sgg.setLayout(sgl)
         sgg = _make_collapsible(sgg)
-        t5.addWidget(sgg)
+        self._t5_groups["sigma_sweep"] = sgg
         self._t5_category_groups.setdefault("pixel", []).append(sgg)
 
         self._sigma_sweep_job = {"thread": None, "cancel_event": None, "timer": None}
@@ -2303,7 +2303,7 @@ class ZFMicrogliaAIWidget(QWidget):
 
         krg.setLayout(krl)
         krg = _make_collapsible(krg)
-        t5.addWidget(krg)
+        self._t5_groups["cellprob_sweep"] = krg
         self._t5_category_groups.setdefault("cellpose", []).append(krg)
 
         self._krendl_sweep_job = {"thread": None, "cancel_event": None, "timer": None}
@@ -2470,7 +2470,7 @@ class ZFMicrogliaAIWidget(QWidget):
 
         gtpg.setLayout(gtpl)
         gtpg = _make_collapsible(gtpg)
-        t5.addWidget(gtpg)
+        self._t5_groups["gt_package"] = gtpg
         self._t5_category_groups.setdefault("cellpose", []).append(gtpg)
 
         self._gt_package_job = {"thread": None, "timer": None}
@@ -3450,7 +3450,7 @@ class ZFMicrogliaAIWidget(QWidget):
 
         gtg.setLayout(gtl)
         gtg = _make_collapsible(gtg)
-        t5.addWidget(gtg)
+        self._t5_groups["score_gt"] = gtg
         self._t5_category_groups.setdefault("general", []).append(gtg)
 
         # ── Email notification (optional, shared by both Tab 4 training ── #
@@ -3550,7 +3550,7 @@ class ZFMicrogliaAIWidget(QWidget):
 
         ng.setLayout(nl)
         ng = _make_collapsible(ng)
-        t5.addWidget(ng)
+        self._t5_groups["notify"] = ng
         self._t5_category_groups.setdefault("general", []).append(ng)
 
         # ── Drift View in 3D ────────────────────────────────────────── #
@@ -3591,7 +3591,7 @@ class ZFMicrogliaAIWidget(QWidget):
 
         dfg.setLayout(dfl)
         dfg = _make_collapsible(dfg)
-        t5.addWidget(dfg)
+        self._t5_groups["drift"] = dfg
         self._t5_category_groups.setdefault("general", []).append(dfg)
 
         self._drift_timer = None
@@ -3645,7 +3645,7 @@ class ZFMicrogliaAIWidget(QWidget):
 
         asg.setLayout(asvl)
         asg = _make_collapsible(asg)
-        t5.addWidget(asg)
+        self._t5_groups["autosave"] = asg
         self._t5_category_groups.setdefault("general", []).append(asg)
 
         # ── Calibrate Correct-Label Contrast ──────────────────────────── #
@@ -3755,7 +3755,7 @@ class ZFMicrogliaAIWidget(QWidget):
 
         ccg.setLayout(ccl)
         ccg = _make_collapsible(ccg)
-        t5.addWidget(ccg)
+        self._t5_groups["contrast_calib"] = ccg
         self._t5_category_groups.setdefault("general", []).append(ccg)
 
         t3.addStretch()
@@ -4732,8 +4732,26 @@ class ZFMicrogliaAIWidget(QWidget):
 
         esg.setLayout(esl)
         esg = _make_collapsible(esg)
-        t5.addWidget(esg)
+        self._t5_groups["epoch_sweep"] = esg
         self._t5_category_groups.setdefault("cellpose", []).append(esg)
+
+        # Display order, independent of where each group is built above:
+        # the one-shot tuning tool first, then the individual GT sweeps in
+        # pipeline order (skin removal -> segmentation -> label correction
+        # -> training checkpoint), then the GT utilities, then the general
+        # session utilities.
+        _t5_order = (
+            "gt_toolkit",
+            "monai_sweep", "bg_sweep", "sigma_sweep", "cellprob_sweep",
+            "contrast_calib", "epoch_sweep",
+            "score_gt", "gt_package",
+            "autosave", "notify", "drift",
+        )
+        assert set(_t5_order) == set(self._t5_groups), "Tab 5 order out of sync"
+        for key in _t5_order:
+            t5.addWidget(self._t5_groups[key])
+            if key == "gt_toolkit":
+                t5.addWidget(_sep())
 
         # Now that every Tab 5 tool has registered its category, wire the
         # filter checkboxes built at the top of this tab and apply their
