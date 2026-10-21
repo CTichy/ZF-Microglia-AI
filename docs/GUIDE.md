@@ -36,7 +36,7 @@
     - [10d. Verify Best Epoch (GT Sweep)](#10d-verify-best-epoch-gt-sweep)
     - [10e. Score Against GT](#10e-score-against-gt)
     - [10f. Build GT-Correction Package](#10f-build-gt-correction-package)
-    - [10g. Verify Smooth σ XY / σ Z (GT Sweep)](#10g-verify-smooth-sigma-xy-sigma-z-gt-sweep)
+    - [10g. Verify Smooth σ XY / σ Z (GT Sweep)](#10g-verify-smooth-σ-xy--σ-z-gt-sweep)
     - [10h. Email notification (optional)](#10h-email-notification-optional)
     - [10i. Calibrate Correct-Label Contrast](#10i-calibrate-correct-label-contrast)
     - [10j. Drift View in 3D](#10j-drift-view-in-3d)
@@ -401,7 +401,7 @@ The old behavior, unconditional hole-filling regardless of size, could silently 
 
 > Leave this at 0 unless you have actually seen real internal holes disappearing from your labels, or a GT sweep/GT-verified Statistics run has measured a recommended value from ground truth. There is no universal correct number — real GT checked during development showed a sharp split between 1–2 voxel gaps (near-certainly annotation noise) and 400+ voxel gaps (clearly real structure), with nothing in between, so a value anywhere in that gap works for that fish; a different fish may look different.
 >
-> Measured by every GT-sweep tool that has a GT labels volume available (both Pixel Classifier sweeps, [9b](#10b-verify-bg-threshold--erosion-gt-sweep)/[9g](#10g-verify-smooth-sigma-xy-sigma-z-gt-sweep)), by a GT-verified Generate Statistics run (Tab 4), and by the GT Toolkit Tuning Tool's own first step (Tab 6) — all folded into the same never-rising floor. The Cellprob + Krendl calibration sweep ([10c](#10c-calibrate-cellprob--krendl-merge-parameters--min-size--large-contact-gt-sweep)) measures this fish's own value internally for its own mask-formation calls, but — like `gt_min` above — doesn't push that measurement into this shared floor on its own; run it through the GT Toolkit Tuning Tool for that.
+> Measured by every GT-sweep tool that has a GT labels volume available (both Pixel Classifier sweeps, [9b](#10b-verify-bg-threshold--erosion-gt-sweep)/[9g](#10g-verify-smooth-σ-xy--σ-z-gt-sweep)), by a GT-verified Generate Statistics run (Tab 4), and by the GT Toolkit Tuning Tool's own first step (Tab 6) — all folded into the same never-rising floor. The Cellprob + Krendl calibration sweep ([10c](#10c-calibrate-cellprob--krendl-merge-parameters--min-size--large-contact-gt-sweep)) measures this fish's own value internally for its own mask-formation calls, but — like `gt_min` above — doesn't push that measurement into this shared floor on its own; run it through the GT Toolkit Tuning Tool for that.
 
 #### Final min-size fraction — both routes
 
@@ -450,7 +450,7 @@ This rounds jagged pixel edges and fills tiny gaps within a given cross-section.
 
 > Do not confuse with Smooth σ Z. They serve completely different purposes.
 
-A read-only **Recommended Smooth σ XY** line sits underneath — updated only by a GT-verified **Verify Smooth σ XY / σ Z (GT Sweep)** run (Tab 6, [9g](#10g-verify-smooth-sigma-xy-sigma-z-gt-sweep)).
+A read-only **Recommended Smooth σ XY** line sits underneath — updated only by a GT-verified **Verify Smooth σ XY / σ Z (GT Sweep)** run (Tab 6, [9g](#10g-verify-smooth-σ-xy--σ-z-gt-sweep)).
 
 ---
 
@@ -1141,7 +1141,7 @@ Both "Launch Training" buttons (MONAI and Cellpose-SAM) start a **detached backg
 
 Several tools, gathered here so Tabs 1-4 stay focused on running the pipeline rather than tuning it. Each is individually collapsible: click a section's title checkbox to hide its contents, so you can keep only the one you're actively using expanded. Every tool below operates on its own Tab 1-4 sliders/fields and auto-applies its findings back there — this tab is where the sweep runs, not where its results live. Five are GT-*sweep* tools (test a small parameter grid against a handful of proxy cells or one mask, as a fast approximation); the rest (Score Against GT, Build GT-Correction Package, Calibrate Correct-Label Contrast, and the General-category utilities below) are related tools that don't fit that "sweep against ground truth" shape.
 
-**On-screen order, top to bottom:** the "Show tools for..." filter, then the **GT Toolkit Tuning Tool** (runs every applicable sweep in one shot), then the individual GT sweeps in pipeline order — **Verify MONAI Threshold / Erosion** ([10a](#10a-verify-monai-threshold--erosion-gt-sweep)), **Verify BG Threshold / Erosion** ([10b](#10b-verify-bg-threshold--erosion-gt-sweep)), **Verify Smooth σ XY / σ Z** ([10g](#10g-verify-smooth-sigma-xy-sigma-z-gt-sweep)), **Calibrate Cellprob + Krendl + Min size + Large-contact** ([10c](#10c-calibrate-cellprob--krendl-merge-parameters--min-size--large-contact-gt-sweep)), **Calibrate Correct-Label Contrast** ([10i](#10i-calibrate-correct-label-contrast)), **Verify Best Epoch** ([10d](#10d-verify-best-epoch-gt-sweep)) — then the GT utilities, **Score Against GT** ([10e](#10e-score-against-gt)) and **Build GT-Correction Package** ([10f](#10f-build-gt-correction-package)), and last the session utilities, **Autosave Labels Layer** ([10k](#10k-autosave-labels-layer)), **Email notification** ([10h](#10h-email-notification-optional)) and **Drift View in 3D** ([10j](#10j-drift-view-in-3d)).
+**On-screen order, top to bottom:** the "Show tools for..." filter, then the **GT Toolkit Tuning Tool** (runs every applicable sweep in one shot), then the individual GT sweeps in pipeline order — **Verify MONAI Threshold / Erosion** ([10a](#10a-verify-monai-threshold--erosion-gt-sweep)), **Verify BG Threshold / Erosion** ([10b](#10b-verify-bg-threshold--erosion-gt-sweep)), **Verify Smooth σ XY / σ Z** ([10g](#10g-verify-smooth-σ-xy--σ-z-gt-sweep)), **Calibrate Cellprob + Krendl + Min size + Large-contact** ([10c](#10c-calibrate-cellprob--krendl-merge-parameters--min-size--large-contact-gt-sweep)), **Calibrate Correct-Label Contrast** ([10i](#10i-calibrate-correct-label-contrast)), **Verify Best Epoch** ([10d](#10d-verify-best-epoch-gt-sweep)) — then the GT utilities, **Score Against GT** ([10e](#10e-score-against-gt)) and **Build GT-Correction Package** ([10f](#10f-build-gt-correction-package)), and last the session utilities, **Autosave Labels Layer** ([10k](#10k-autosave-labels-layer)), **Email notification** ([10h](#10h-email-notification-optional)) and **Drift View in 3D** ([10j](#10j-drift-view-in-3d)).
 
 **"Show tools for..." filter** — with this many tools stacked in one tab and no indication of which pipeline each belongs to, it isn't obvious at a glance what any given tool is even for. Four checkboxes at the top of the tab let you hide the ones you don't need:
 
@@ -1309,7 +1309,7 @@ The statistics CSV is deliberately minimal (label, volume, centroid, bounding bo
 
 ---
 
-### 10g. Verify Smooth σ XY / σ Z (GT Sweep) {#10g-verify-smooth-sigma-xy-sigma-z-gt-sweep}
+### 10g. Verify Smooth σ XY / σ Z (GT Sweep)
 
 Checks the Pixel Classifier's pre-threshold Gaussian smoothing (**Smooth σ XY** / **Smooth σ Z**, Tab 2 — currently default to 2.60/1.00, from the first GT-sweep pass across every fish swept so far) against real ground truth, the same way every other GT-sweep tool here checks its own parameter(s).
 
@@ -1324,7 +1324,7 @@ Same auto-apply and floor-recalibration behavior as [9b](#10b-verify-bg-threshol
 
 ---
 
-### 10h. Email notification (optional) {#10h-email-notification-optional}
+### 10h. Email notification (optional)
 
 Not a sweep — a General-category utility, alongside Score Against GT, since it isn't tied to one pipeline. This panel holds **the plugin's one email switch** and the SMTP settings behind it. There are no per-tool email checkboxes:
 
@@ -1347,7 +1347,7 @@ The email's subject says the job and whether it **finished** or **FAILED**; the 
 
 ---
 
-### 10i. Calibrate Correct-Label Contrast {#10i-calibrate-correct-label-contrast}
+### 10i. Calibrate Correct-Label Contrast
 
 Finds the lower-contrast value [Correct Label](#correct-label) (Tab 3 — Edit MG Labels) should start from — automatically, instead of by dragging the contrast slider until a silhouette "looks right" by eye. Unlike every other Tab 6 sweep, this one is **not** checked against independent ground truth — it finds whichever value best **reproduces what the active Labels layer already segmented**, since that's the actual question Correct Label needs answered before a user nudges it further for one specific problem cell.
 
@@ -1365,7 +1365,7 @@ Click **Run Contrast Calibration Sweep**. On success, the report below shows eve
 
 ---
 
-### 10j. Drift View in 3D {#10j-drift-view-in-3d}
+### 10j. Drift View in 3D
 
 A General-category utility with nothing to do with any GT sweep or pipeline — a small quality-of-life extra for looking at a 3D result hands-free. Click **Start Drift** and the camera slowly, continuously tumbles around whatever's currently in the viewer, like drifting past it in space; switches the viewer to 3D display automatically if it wasn't already. **Speed** (1–100, default 20) scales how fast it turns — adjust it at any time, even while already drifting, no need to stop first. Click the same button (now labeled **Stop Drift**) to freeze the camera exactly where it is, at whatever orientation it's currently at.
 
@@ -1375,7 +1375,7 @@ Purely a camera effect — it only ever changes `viewer.camera.angles`, never to
 
 ---
 
-### 10k. Autosave Labels Layer {#10k-autosave-labels-layer}
+### 10k. Autosave Labels Layer
 
 A General-category safety net for manual label editing (Correct Label, Correct Adjacent Labels, Split/Join Labels, etc.), independent of anything else in the plugin — a crash loses at most one interval's worth of work, not the whole session.
 
