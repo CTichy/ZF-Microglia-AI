@@ -7,3 +7,7 @@ build/
 .eggs/
 *.egg
 .DS_Store
+
+# Runtime logs
+cufile.log
+napari_zf_microglia_ai/training_scripts/logs/
