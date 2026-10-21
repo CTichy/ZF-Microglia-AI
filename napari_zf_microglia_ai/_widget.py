@@ -2895,7 +2895,7 @@ class ZFMicrogliaAIWidget(QWidget):
             "Auto-sweep to calculate best_lo from the active labels; set "
             "Reduce best_lo by (0-6) to subtract that amount from the "
             "swept value and capture slightly more signal (e.g. "
-            "best_lo=107 minus 3 corrects at 104). Uncheck Auto-sweep to skip the "
+            "best_lo=107 minus 2 corrects at 105). Uncheck Auto-sweep to skip the "
             "sweep and use the Signal layer's own current contrast low "
             "limit instead -- Reduce best_lo by is then ignored. To "
             "change how many cells/slices the sweep samples, the edge "
@@ -2916,7 +2916,7 @@ class ZFMicrogliaAIWidget(QWidget):
         self._ac_reduce_slider = QLabeledSlider(Qt.Horizontal)
         self._ac_reduce_slider.setMinimum(0)
         self._ac_reduce_slider.setMaximum(6)
-        self._ac_reduce_slider.setValue(3)
+        self._ac_reduce_slider.setValue(2)
         ac_reduce_row.addWidget(self._ac_reduce_slider)
         lcg.addLayout(ac_reduce_row)
 
@@ -6481,6 +6481,24 @@ class ZFMicrogliaAIWidget(QWidget):
                 fh.write("\n" + report_text + "\n")
         except Exception as exc:
             print(f"[Sanding] could not append to the report {path}: {exc}")
+
+    def _raw_channel_layer(self, layer_name: str):
+        """The raw imported channel Image layer behind a processed layer
+        name ("<stem>_brain_only_ExtRm" -> "<stem>"), or the layer itself
+        when its name carries no _BG_SUFFIX/"_brain_only" suffix. None
+        when that raw layer isn't open in the viewer."""
+        raw_name = layer_name
+        for suffix in _BG_SUFFIX.values():
+            if suffix and raw_name.endswith(suffix):
+                raw_name = raw_name[: -len(suffix)]
+                break
+        if raw_name.endswith("_brain_only"):
+            raw_name = raw_name[: -len("_brain_only")]
+        if raw_name in self._viewer.layers:
+            lyr = self._viewer.layers[raw_name]
+            if isinstance(lyr, napari.layers.Image):
+                return lyr
+        return None
 
     def _resolve_skin_signal_image(self, signal_layer_name: str, out_dir: Path):
         """
@@ -10368,6 +10386,31 @@ class ZFMicrogliaAIWidget(QWidget):
                 )
                 return
 
+        # Auto-correct always runs on the RAW channel, never on the
+        # _ExtRm/_NoBG input Cellpose-SAM segments: the contrast sweep,
+        # the per-cell correction and skin protection all threshold raw
+        # signal, and the calibrated contrast is shown on the raw layer.
+        # A zeroed-outside-brain image also drags the sweep's candidate
+        # range down to 0, leaving a grid too coarse to land on the real
+        # threshold.
+        ac_signal_layer = target
+        if self._cp_autocorrect_cb.isChecked():
+            ac_signal_layer = self._raw_channel_layer(target.name)
+            if ac_signal_layer is None:
+                self._cp_status_lbl.setText(
+                    f"ERROR: auto-correct is on, which needs the raw channel "
+                    f"layer of '{target.name}' open in the viewer (the same "
+                    f"name without the _brain_only/_ExtRm/_NoBG/_RndFill "
+                    f"suffix) -- open it, or uncheck auto-correct."
+                )
+                return
+            if ac_signal_layer.data.shape != volume.shape:
+                self._cp_status_lbl.setText(
+                    f"ERROR: raw channel '{ac_signal_layer.name}' shape "
+                    f"{ac_signal_layer.data.shape} != volume shape {volume.shape}."
+                )
+                return
+
         cellprob      = self._cp_cellprob_slider.value()
         flow          = _FLOW_THRESHOLD_FIXED
         max_gap       = self._cp_maxgap_slider.value()
@@ -10529,15 +10572,16 @@ class ZFMicrogliaAIWidget(QWidget):
 
             self._cp_status_lbl.setText(base_status + " Auto-correcting labels via contrast sweep...")
             self._run_auto_correction_stage(
-                stem=stem, lname=lname, volume=volume, labels=labels, scale=scale,
-                brain_mask=brain_mask, signal_layer=target,
+                stem=stem, lname=lname, volume=np.asarray(ac_signal_layer.data),
+                labels=labels, scale=scale,
+                brain_mask=brain_mask, signal_layer=ac_signal_layer, seg_layer=target,
                 out_dir=out_dir, base_status=base_status, base_email=base_email,
             )
 
         timer2.timeout.connect(_poll2)
         timer2.start(500)
 
-    def _run_auto_correction_stage(self, stem, lname, volume, labels, scale, brain_mask, signal_layer, out_dir, base_status, base_email):
+    def _run_auto_correction_stage(self, stem, lname, volume, labels, scale, brain_mask, signal_layer, out_dir, base_status, base_email, seg_layer=None):
         """
         Second stage chained onto a Cellpose-SAM Segmentation run, gated
         by self._cp_autocorrect_cb: self-referential contrast calibration
@@ -10696,10 +10740,16 @@ class ZFMicrogliaAIWidget(QWidget):
             # Existing Labels' own contrast assignment for the real
             # traceback and why an unguarded crash here looks like a hang.
             contrast_hi = _adaptive_contrast_high(volume, new_labels, best_lo)
-            try:
-                signal_layer.contrast_limits = (best_lo, contrast_hi)
-            except Exception as exc:
-                print(f"Cellpose-SAM auto-correct: could not set the signal layer's contrast limits: {exc}")
+            # Display only: the segmentation input layer (_ExtRm/_NoBG)
+            # gets the same window so both read alike; the correction
+            # itself ran on the raw channel (signal_layer).
+            for lyr_c in (signal_layer, seg_layer):
+                if lyr_c is None or (lyr_c is seg_layer and seg_layer is signal_layer):
+                    continue
+                try:
+                    lyr_c.contrast_limits = (best_lo, contrast_hi)
+                except Exception as exc:
+                    print(f"Cellpose-SAM auto-correct: could not set '{lyr_c.name}' contrast limits: {exc}")
 
             skin_rep = report["skin_report"]
             touching_ids = sorted({i for ids in skin_rep.get("foreign_touching", {}).values() for i in ids})
