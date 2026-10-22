@@ -569,7 +569,7 @@ def auto_contrast_correct_stack(
                 "no interior/complex-enough cells found for contrast calibration "
                 "-- can't auto-correct this stack"
             )
-        lo_candidates = default_lo_candidates(image, samples, pad, n_steps=n_lo_steps)
+        lo_candidates = default_lo_candidates(labels, image, samples, pad, n_steps=n_lo_steps)
 
         def _sweep_progress(msg: str) -> None:
             _report(f"Auto-correct: {msg}")

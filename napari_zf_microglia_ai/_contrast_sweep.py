@@ -141,6 +141,7 @@ def select_calibration_samples(
 
 
 def default_lo_candidates(
+    labels: np.ndarray,
     image: np.ndarray,
     samples: "list[tuple[int, int]]",
     pad: int,
@@ -152,13 +153,22 @@ def default_lo_candidates(
     padded bbox neighborhoods only, not the whole fish) rather than a
     hardcoded [0, 255]-style guess that would badly misfit a different
     channel/bit-depth/normalization.
+
+    Each sample's neighborhood is the same window _intensity_correct_2d()
+    crops during the sweep: the label's own 2D bounding box on that
+    slice, grown by `pad` pixels and clipped to the image. A slice the
+    label doesn't occupy contributes nothing.
     """
     values = []
     for label_id, z in samples:
-        image_z = image[z]
-        # crude neighborhood: same padded window _intensity_correct_2d
-        # would use, without needing the labels array here too
-        values.append(image_z.astype(np.float32).ravel())
+        ys, xs = np.nonzero(labels[z] == label_id)
+        if ys.size == 0:
+            continue
+        y0 = max(int(ys.min()) - pad, 0)
+        y1 = min(int(ys.max()) + pad + 1, image.shape[1])
+        x0 = max(int(xs.min()) - pad, 0)
+        x1 = min(int(xs.max()) + pad + 1, image.shape[2])
+        values.append(image[z, y0:y1, x0:x1].astype(np.float32).ravel())
     if not values:
         raise ValueError("No calibration samples given -- nothing to sweep")
     pooled = np.concatenate(values)
@@ -176,6 +186,7 @@ def sweep_contrast_lower_value(
     lo_candidates: "list[float]",
     pad: int = 15,
     progress_cb=None,
+    refine: bool = True,
 ) -> dict:
     """
     For each candidate lower-contrast value, score how closely
@@ -186,6 +197,14 @@ def sweep_contrast_lower_value(
     jointly (not each sample's own independent best, which would let
     outlier samples pull the result around).
 
+    With refine=True (the default), a second, fine pass follows the
+    coarse one: every value within one coarse step either side of the
+    coarse winner, at a spacing of 1 for an integer image (the finest
+    spacing that can change `image >= lo`) or a tenth of the coarse step
+    otherwise. The mean-IoU peak is sharp -- on a real fish it falls
+    from 0.92 to 0.86 two intensity units away -- so a coarse grid alone
+    makes best_lo depend on where its points happen to land.
+
     Samples that error out at a given candidate (e.g. the threshold
     leaves nothing connected to the label's existing footprint) score
     IoU=0 for that candidate rather than aborting the whole sweep --
@@ -193,7 +212,7 @@ def sweep_contrast_lower_value(
     project's other sweep tools already use.
 
     Returns a dict:
-        candidates    -- lo values tried, ascending
+        candidates    -- lo values tried (coarse and fine), ascending
         mean_iou      -- mean IoU per candidate, same order
         per_sample    -- {(label_id, z): [iou per candidate]}
         best_lo       -- the candidate maximizing mean_iou
@@ -204,9 +223,6 @@ def sweep_contrast_lower_value(
         raise ValueError("No calibration samples given -- nothing to sweep")
     if not lo_candidates:
         raise ValueError("No candidate lo values given -- nothing to sweep")
-
-    per_sample: "dict[tuple[int, int], list[float]]" = {s: [] for s in samples}
-    mean_iou = []
 
     # Calibration counts MICROGLIA ONLY. Any non-positive label (Protect Skin
     # as Label's -1) is treated as plain background here: otherwise the
@@ -220,12 +236,11 @@ def sweep_contrast_lower_value(
             lz = labels[z]
             labels_by_z[z] = np.where(lz > 0, lz, lz.dtype.type(0)) if (lz < 0).any() else lz
 
-    for idx, lo in enumerate(lo_candidates):
+    def _score(lo):
         ious = []
         for (label_id, z) in samples:
             labels_z = labels_by_z[z]
             image_z = image[z]
-            existing = labels_z == label_id
             try:
                 corrected, crop_existing, _ = _intensity_correct_2d(
                     labels_z, image_z, label_id, lo, pad
@@ -237,20 +252,51 @@ def sweep_contrast_lower_value(
                 union = np.logical_or(corrected, crop_existing).sum()
                 iou = float(inter / union) if union > 0 else 0.0
             ious.append(iou)
-            per_sample[(label_id, z)].append(iou)
-        mean_iou.append(float(np.mean(ious)))
-        if progress_cb:
-            progress_cb(
-                f"Contrast sweep: {idx + 1}/{len(lo_candidates)} candidates "
-                f"tested (lo={lo:.4g}, mean IoU={mean_iou[-1]:.3f})"
-            )
+        return float(np.mean(ious)), ious
 
+    def _run(candidates, stage):
+        for idx, lo in enumerate(candidates):
+            m, ious = _score(lo)
+            scored[float(lo)] = (m, ious)
+            if progress_cb:
+                progress_cb(
+                    f"Contrast sweep{stage}: {idx + 1}/{len(candidates)} candidates "
+                    f"tested (lo={lo:.4g}, mean IoU={m:.3f})"
+                )
+
+    scored: "dict[float, tuple[float, list[float]]]" = {}
+    coarse = sorted(float(v) for v in lo_candidates)
+    _run(coarse, "")
+
+    if refine and len(coarse) > 1:
+        coarse_best = max(coarse, key=lambda v: scored[v][0])
+        coarse_step = (coarse[-1] - coarse[0]) / (len(coarse) - 1)
+        if np.issubdtype(image.dtype, np.integer):
+            fine_step = 1.0
+            first = np.ceil(coarse_best - coarse_step)
+        else:
+            fine_step = coarse_step / 10.0
+            first = coarse_best - coarse_step
+        fine = []
+        if fine_step > 0:
+            v = first
+            while v <= coarse_best + coarse_step + 1e-9:
+                if float(v) not in scored:
+                    fine.append(float(v))
+                v += fine_step
+        _run(fine, " (fine pass)")
+
+    candidates = sorted(scored)
+    mean_iou = [scored[lo][0] for lo in candidates]
+    per_sample: "dict[tuple[int, int], list[float]]" = {
+        s: [scored[lo][1][i] for lo in candidates] for i, s in enumerate(samples)
+    }
     best_idx = int(np.argmax(mean_iou))
     return {
-        "candidates": list(lo_candidates),
+        "candidates": candidates,
         "mean_iou": mean_iou,
         "per_sample": per_sample,
-        "best_lo": float(lo_candidates[best_idx]),
+        "best_lo": float(candidates[best_idx]),
         "best_mean_iou": float(mean_iou[best_idx]),
         "n_samples": len(samples),
     }

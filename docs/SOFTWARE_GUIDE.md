@@ -692,11 +692,11 @@ Answers "which `lo` best *reproduces* what Cellpose-SAM already segmented" — s
 
 **`select_calibration_samples(labels, scale_zyx, n_cells, slices_per_cell, edge_margin_um)`**: picks the `n_cells` most morphologically complex cells (skeleton branch count) whose centroid sits ≥ `edge_margin_um` from the volume's own edge (a proxy for "not already touching skin"), each axis's margin capped at 30% of that axis's own extent so an un-capped physical-µm margin doesn't collapse Z's own thin window to nothing. For each, draws `slices_per_cell` Z-slices spread across the middle 60% of its own Z-extent (avoiding thin top/bottom cross-sections).
 
-**`default_lo_candidates(image, samples, pad, n_steps)`**: auto-scales the candidate range from the 1st–99.5th percentile of intensity *around the actual samples*, not a hardcoded guess — robust to a different channel/bit-depth/normalization.
+**`default_lo_candidates(labels, image, samples, pad, n_steps)`**: auto-scales the candidate range from the 1st–99.5th percentile of intensity *around the actual samples* — each sample's own 2D bounding box on its slice, grown by `pad` px (the same window the sweep crops), never the whole slice — not a hardcoded guess — robust to a different channel/bit-depth/normalization.
 
-**`sweep_contrast_lower_value(labels, image, samples, lo_candidates, pad)`**:
+**`sweep_contrast_lower_value(labels, image, samples, lo_candidates, pad, refine=True)`**:
 ```
-for each candidate lo:
+for each candidate lo (coarse pass, then fine pass):
     for each (label_id, z) sample:
         corrected ← _intensity_correct_2d(..., lo) result (IoU=0 on error,
                      doesn't abort the whole sweep)
@@ -705,8 +705,13 @@ for each candidate lo:
                                                   # own independent best —
                                                   # stops one outlier sample
                                                   # from swinging the result
-best_lo ← argmax(mean_iou)
+fine pass (refine=True): every lo within one coarse step either side of
+    the coarse winner, spaced 1 apart on an integer image (the finest
+    spacing that changes image >= lo) or a tenth of the coarse step
+    otherwise, not already tried
+best_lo ← argmax(mean_iou over coarse + fine candidates)
 ```
+The fine pass exists because the mean-IoU peak is sharp (on a real fish, 0.92 at its best `lo` and 0.86 two intensity units away): a coarse grid alone makes `best_lo` depend on where its points happen to land.
 Any non-positive label (skin `-1`) is treated as plain background during this sweep — otherwise the correction-under-test would see skin as foreign territory and exclude it, making the calibrated `lo` depend on whether skin happened to already be protected.
 
 ### `_auto_correction.py` — the full unattended per-cell pipeline

@@ -5918,7 +5918,7 @@ class ZFMicrogliaAIWidget(QWidget):
                         "margin, or check this fish actually has labeled cells "
                         "away from the volume boundary."
                     )
-                candidates = default_lo_candidates(image, samples, pad, n_steps=n_steps)
+                candidates = default_lo_candidates(labels, image, samples, pad, n_steps=n_steps)
                 sweep = sweep_contrast_lower_value(
                     labels, image, samples, candidates, pad=pad, progress_cb=_progress
                 )
@@ -8902,7 +8902,7 @@ class ZFMicrogliaAIWidget(QWidget):
                                 "no interior/complex-enough cells found for contrast calibration"
                             )
                         candidates = default_lo_candidates(
-                            image, samples, sweep_params["sample_pad"],
+                            labels, image, samples, sweep_params["sample_pad"],
                             n_steps=sweep_params["n_lo_steps"],
                         )
                         sweep = sweep_contrast_lower_value(
