@@ -45,7 +45,7 @@ per-cell CSV (shape, branching, spatial, intensity, optional LLM description)
 Two more subsystems sit alongside this straight-line pipeline, not inside it:
 
 - **Stage 5 — AI Tools**: builds and trains the two models Stages 1 and 2 depend on (MONAI for skin removal, Cellpose-SAM for label creation), plus the ground-truth annotation tool that produces the training data in the first place.
-- **Stage 6 — Sweeps & Utilities**: GT-verification tools that check a pipeline parameter against real ground truth and (when confirmed) recalibrate it — this is how the "recommended" defaults quoted throughout GUIDE.md were actually found, not guessed.
+- **Stage 6 — Sweeps & Utilities**: GT-verification tools that check a pipeline parameter against real ground truth, and the GT Toolkit Tuning Tool that runs them for one fish and (only when the GT is marked verified) recalibrates the shared values.
 
 ### Where state lives
 
@@ -148,7 +148,7 @@ Every channel is returned separately so the caller (`_reader.py`, or `_widget.py
 
 ### `_reader.py` — napari File-menu integration
 
-Registers this plugin as a napari reader (`nape2`/`napari.yaml` "readers" contribution) so `.tif`/`.ims` files opened via napari's own File → Open work correctly, not just via this plugin's own Open button.
+Registers this plugin as a napari reader (npe2 `napari.yaml` "readers" contribution, `*.tif`/`*.tiff`/`*.ims`) so `.tif`/`.ims` files opened via napari's own File → Open work correctly, not just via this plugin's own Open button.
 
 ```
 get_reader(path):
@@ -250,14 +250,14 @@ run_sieve(run_stage_fn, lo, hi, coarse_step, refine_steps, progress_cb, cancel_c
 
 ### `_widget.py`'s own shared helpers
 
-A handful of small functions used throughout `_build_ui()` (the ~10,000-line method that constructs every tab — see §9), not tied to any one pipeline stage:
+A handful of small functions used throughout `_build_ui()` (the ~4,200-line method that constructs every tab — see §9), not tied to any one pipeline stage:
 
 - **`_add_reliable_spinbox(row_layout, slider, min, max, step, decimals=None)`** — every numeric slider in this plugin is paired with a real `QSpinBox`/`QDoubleSpinBox` synced bidirectionally (`slider.valueChanged → spin.setValue`, `spin.valueChanged → slider.setValue`), replacing `superqt`'s own built-in numeric label whose width reset unpredictably on first show. Returns the spinbox.
 - **`_set_layout_widgets_visible(layout, visible)`** — recursively walks a `QVBoxLayout`/`QHBoxLayout` tree (rows mix `addWidget` and nested `addLayout` calls) and calls `setVisible()` on every real widget found, since only widgets (not layouts) support it directly.
-- **`_make_collapsible(groupbox, start_expanded=True)`** — turns any already-built `QGroupBox` into a collapsible section: makes its own title bar checkable, and toggling it calls `_set_layout_widgets_visible` on the group's contents. Every group box in every tab goes through this.
+- **`_make_collapsible(groupbox, start_expanded=True)`** — turns any already-built `QGroupBox` into a collapsible section: makes its own title bar checkable, and toggling it calls `_set_layout_widgets_visible` on the group's contents. Most group boxes go through this; Tab 2's Common Settings and Tab 3's selector, Correction Settings, Sanding and Contrast-calibration groups don't (always open).
 - **`_wrap_scroll(widget)`** — wraps a fully-built tab page in a vertical-only `QScrollArea` (`setWidgetResizable(True)`, horizontal scrollbar forced off) so a tab taller than the napari window stays fully reachable.
 - **`_add_recommended_label(layout, initial, unit, noun)`** — the read-only "Recommended: X" line under a GT-sweepable slider, kept separate from the slider's own editable value so a GT-confirmed sweep's finding is never silently overwritten by the user nudging the slider to test something else.
-- **`_add_gt_checkbox(layout, hint, visible=True)`** — the "This is verified ground truth" one-shot opt-in every sweep tool has: off by default, un-checks itself after every run, and is the only thing that lets a sweep move a shared recommended value (Min volume, a slider's own "Recommended" line, etc.) rather than just reporting a result.
+- **`_add_gt_checkbox(layout, hint, visible=True)`** — the "This is verified ground truth" one-shot opt-in: off by default, un-checked by the tool's own poll after every run, and the only thing that lets a sweep move a shared recommended value (Min volume, a slider's own "Recommended" line, etc.) rather than just reporting a result. Built with `visible=False` for the four sweeps folded into the GT Toolkit Tuning Tool (MONAI, BG Threshold, Sigma, Cellprob) and for Calibrate branch_radius — those boxes exist but are only ever ticked programmatically by `_gtk_launch_step()`; Verify Best Epoch keeps a visible one.
 
 ---
 
@@ -341,7 +341,7 @@ result ← volume.copy(); result[to_zero] ← 0
 ```
 *(Note: as actually wired in `_widget.py`'s `_on_run`, Mode 1's saved `brain_only` is `volume × eroded_mask` directly — the entire exterior zeroed, not `remove_outside_brain`'s more selective "background-only" result — see §9.)*
 
-**Mode 2 — `remove_global`** (`_NoBG` suffix): zero every background-threshold pixel in the *whole* stack, inside the brain included — this is the input the Pixel Classifier route needs (background must be zero everywhere for its own threshold/union-find pipeline to find clean isolated blobs).
+**Mode 2 — `remove_global`** (`_NoBG` suffix): zero every background-threshold pixel in the *whole* stack, inside the brain included — this is the input the Pixel Classifier route needs (background must be zero everywhere for its own `volume > 0` → smooth → 3D connected-components pipeline to find clean isolated blobs).
 ```
 bg_mask ← _threshold(...)
 if signal_erosion_voxels > 0:
@@ -363,7 +363,7 @@ result[outside brain] ← uniform_random(bg_mode - tol, bg_mode + tol), one valu
 
 **`_on_open()`** — background-thread wrapper around `_io.load_file(path)`; on completion, adds every returned channel as its own `Image` layer (`_add_channels`) and reports channel count + shape.
 
-**`_on_load_labels()`** — loads a saved `.tif` directly as a `Labels` layer: reads with `tifffile.imread(...).astype(int32)`, scales it to match whatever stack is already open (`self._state["metadata"]["scale"]`, warning if none is open yet), and names it `<active Image layer>_labels` — the same convention Stage 2's own label-creation tools use, so a reloaded file fits the rest of the plugin's naming scheme.
+**`_on_load_labels()`** — loads a saved `.tif` directly as a `Labels` layer: reads with `tifffile.imread(...).astype(int32)`, scales it to match whatever stack is already open (`self._state["metadata"]["scale"]`, else (1,1,1) with a warning), and names it `<active Image layer>_labels` (the file's own stem if no Image layer is open), replacing a same-named layer — the same convention the Pixel Classifier's Create Labels uses.
 
 **`_on_run()`** — the main button:
 ```
@@ -378,19 +378,23 @@ background thread, wrapped in capture_live_output (surfaces MONAI's tqdm bar +
     if bg_mode == 2 (_NoBG):   brain_only ← remove_global(volume, eroded_mask, ...) × eroded_mask
     if bg_mode == 3 (_RndFill): brain_only ← fill_outside_brain_random(volume, eroded_mask)
     # bg_mode == 0 (Off): brain_only stays exactly run_inference()'s own (volume × eroded_mask)
-on completion: add brain_mask/brain_only as new Labels/Image layers (suffix per _BG_SUFFIX),
-    save the ticked output files, end the job (email if it ran past the threshold)
+on completion: add <stem>_brain_mask (Labels, cyan, opacity 0.4) and
+    <stem>_brain_only<suffix> (Image) layers (suffix per _BG_SUFFIX), replacing stale ones;
+    save the ticked outputs (zlib); if bg_mode != 0 ALSO always save the raw input
+    as <stem>_original.tif (the raw signal skin protection needs — every brain_only
+    variant is masked); end the job (email if it ran past the threshold)
 ```
+`<stem>` is the processed layer's own name; the folder is `_output_dir()` (§9).
 
 ---
 
 ## 4. Stage 2 — Label creation
 
-**UI**: Tab 2 — Create MG Labels. Two independent routes, auto-shown/hidden by the active layer's background-mode suffix (`_NoBG` → Pixel Classifier, `_ExtRm` → Cellpose-SAM): **Pixel Classifier** (`_labeling.py`'s `create_labels`, a plain 3D connected-components engine) and **Cellpose-SAM** (`_cellpose_seg.py`'s `run_full_pipeline`, a trained-network `do_3D` segmentation + several correction stages). Both finish with an optional **Sanding** pass (`_sanding.py`). **Goal**: turn `brain_only` into a `Labels` layer, one integer ID per cell.
+**UI**: Tab 2 — Create MG Labels. Two independent routes, each shown whenever an Image layer with its background-mode suffix exists anywhere in the viewer (`_NoBG` → Pixel Classifier, `_ExtRm` → Cellpose-SAM; both can show at once): **Pixel Classifier** (`_labeling.py`'s `create_labels`, a plain 3D connected-components engine) and **Cellpose-SAM** (`_cellpose_seg.py`'s `run_full_pipeline`, a trained-network `do_3D` segmentation + several correction stages). The Cellpose-SAM route can chain the Stage 3 auto-correction (§5) and then a **Sanding** pass (`_sanding.py`); the Pixel Classifier route chains nothing. **Goal**: turn `brain_only` into a `Labels` layer, one integer ID per cell.
 
 ### `_labeling.py` — Pixel Classifier: true 3D connected components
 
-Despite older project history calling this a "union-find" engine, the current implementation is a plain 3D connected-components labeling, not a per-slice-then-stitch union-find — `create_labels()` dispatches to whichever of 3 backends is fastest (detected once at import time: **CUDA** via CuPy/cupyx > **Apple MPS** → falls back to threaded CPU, since MPS itself has no `ndimage` ops > **CPU**, `scipy.ndimage` + a `ThreadPoolExecutor` at 50% of cores). All three backends implement the identical 6-step algorithm; only the array library and slice-loop parallelism strategy differ.
+The engine is a plain 3D connected-components labeling (the UI group is titled "Pixel Classifier — 3D Connected-Component Labels") — `create_labels()` dispatches to whichever of 3 backends is fastest (detected once at import time: **CUDA** via CuPy/cupyx > **Apple MPS** → falls back to threaded CPU, since MPS itself has no `ndimage` ops > **CPU**, `scipy.ndimage` + a `ThreadPoolExecutor` at 50% of cores). All three backends implement the identical 6-step algorithm; only the array library and slice-loop parallelism strategy differ.
 
 **`create_labels(volume, sigma_xy, sigma_z, min_volume, min_hole_size, final_min_fraction)`**:
 ```
@@ -504,32 +508,36 @@ return masks, total_merges
 1. dP, cellprob_map, shape ← predict_flows(...) or reuse precomputed_flows /
    a matching on-disk flow_cache_path (see save/load_flow_cache above)
 2. masks ← masks_from_flows(...)                              # raw prediction
+   delete flow_cache_path once this succeeds
    raw_masks ← masks.copy()  # kept in stats['raw_masks'] — this is what
-                              # _widget.py always auto-saves as <stem>_cp_masks.tif
+                              # _widget.py always auto-saves as <stem>_cp.tif
 3. masks, gmm_cutoff, gmm_removed ← gmm_cleanup(masks)
 4. masks, safe_merges ← krendl_safe_merge(masks, max_gap, min_contact, gt_min, scale_zyx)
-                         # this is what _widget.py always auto-saves as
-                         # <stem>_cp_masks_corrected.tif
 5. masks, lc_merges ← large_contact_merge(masks, large_contact)
 6. masks, final_removed ← final_min_size_cleanup(masks, gt_min, final_min_fraction)
 7. masks, n_final ← relabel_sequential(masks)
+                         # the returned masks are what _widget.py always
+                         # auto-saves as <stem>_cp_krendl.tif
 return masks, stats{n_raw, n_after_gmm, n_after_safe_merge, n_after_large_contact,
                      n_after_final_min_size, n_final, gmm_cutoff_vox, gmm_removed,
                      safe_merges, large_contact_merges, final_min_threshold_vox,
                      final_min_removed, raw_masks}
 ```
 
-**`rerun_single_cell(volume, labels, label_id, model_path, ..., pad_z=15, pad_xy=40)`** — "fix one mis-segmented cell" without a full-fish re-run: crops to that label's own padded bounding box, re-runs the *entire* `run_full_pipeline()` on just the crop (safe to reuse unmodified — GMM cleanup already no-ops below 3 objects, and the merge/cleanup stages use a fixed `gt_min` floor, not crop-local population statistics), then splices back only the crop-result objects that actually overlap the original label's own footprint — anything else the crop's own `do_3D` pass happens to also detect (e.g. a neighboring cell caught by the padding) is discarded, never duplicated into the full volume. If the crop genuinely reveals more than one real cell where there was one label before, all of them are kept as brand-new label IDs appended after the current max.
+**`rerun_single_cell(volume, labels, label_id, model_path, ..., pad_z=15, pad_xy=40)`** — "fix one mis-segmented cell" without a full-fish re-run: crops to that label's own padded bounding box, re-runs the *entire* `run_full_pipeline()` on just the crop (safe to reuse unmodified — GMM cleanup already no-ops below 3 objects, and the merge/cleanup stages use a fixed `gt_min` floor, not crop-local population statistics), then zeroes the old label everywhere and splices back only the crop-result objects that actually overlap the original label's own footprint — anything else the crop's own `do_3D` pass happens to also detect (e.g. a neighboring cell caught by the padding) is discarded, never duplicated into the full volume. If the crop genuinely reveals more than one real cell where there was one label before, all of them are kept as brand-new label IDs appended after the current max. The splice is foreign-protected: a kept object is written only into voxels that are background once the old label is cleared, so a neighbouring label or skin (-1) in the crop is never overwritten; the voxels left to a neighbour are counted in `info["n_protected_vox"]` and reported in the status line, and a piece with nothing left to write gets no ID.
 
-### `_sanding.py` — sigma-softening pass, chained after any label-regenerating tool
+### `_sanding.py` — cavity fill + sigma-softening pass, chained after any label-regenerating tool
 
-Runs *after* a label's shape has already been rebuilt (auto-correction, Correct Label, etc.) — purely geometric, no image/intensity involved: each label's own binary mask is Gaussian-blurred and re-thresholded at 0.5, rounding off small jagged/blocky voxel-scale steps without meaningfully reshaping the cell. Same foreign-label protection as every Correct Label tool in this plugin — a neighbor's already-claimed voxels can never be grown into.
+Runs *after* a label's shape has already been rebuilt (auto-correction, Correct Label, etc.). Two per-label steps, both foreign-protected (a neighbor's already-claimed voxels are never taken): first (optional, on by default) **`fill_label_holes()`** fills every 3D-enclosed cavity inside the label — a real vesicle the intensity threshold excluded as "not signal" — then **`sand_label()`** Gaussian-blurs the label's own binary mask and re-thresholds at 0.5, rounding off small jagged/blocky voxel-scale steps without meaningfully reshaping the cell. Purely geometric, no image/intensity involved.
 
-**`sanding_pad(sigma_xy, sigma_z)`**: `max(10, round(3 × max(sigma_xy, sigma_z)) + 3)` — enough bbox padding for the blur to round a boundary without being clipped by the crop edge.
+**`sanding_pad(sigma_xy, sigma_z)`**: `max(10, round(3 × max(sigma_xy, sigma_z)) + 3)` — enough bbox padding for the blur to round a boundary without being clipped by the crop edge. **`fill_holes_pad()`**: a fixed 10 voxels (no blur, so less room needed).
 
-**`sand_labels_stack(labels, sigma_xy=0.7, sigma_z=0.7, pad, min_volume, final_min_fraction=0.618, skin_label_id, progress_cb)`**:
+**`sand_labels_stack(labels, sigma_xy=0.7, sigma_z=0.7, pad=None, min_volume, final_min_fraction=0.618, skin_label_id, fill_holes=True, progress_cb)`**:
 ```
-for each positive label ID in the volume:
+for each positive label ID in the volume (skin -1 is never filled or sanded):
+    if fill_holes:
+        new_labels, hole_info ← fill_label_holes(new_labels, lid, pad=fill_holes_pad())
+        record voxels filled + the Z slices they landed on
     new_labels, info ← sand_label(new_labels, lid, sigma_xy, sigma_z, pad)
                         # per-label Gaussian blur + re-threshold + foreign-
                         # label exclusion (see _labeling.sand_label, §5)
@@ -543,21 +551,23 @@ if min_volume given:
                                                             # fragments swept
                                                             # too, if present
 return new_labels, report{sigma_xy, sigma_z, n_cells_total, n_cells_sanded,
-                           skipped_cells, n_debris_fragments_removed}
+                           n_cells_holes_filled, n_cavity_voxels_filled,
+                           holes_filled_detail, skipped_cells,
+                           n_debris_fragments_removed}
 ```
-Deliberately kept as its own small default (0.7/0.7 voxels), much smaller than the Pixel Classifier's own Smooth σXY/σZ (1.5/3.0) — that pair decides whether raw blobs *merge* into one 3D instance before labels even exist; sanding runs after labels already exist and is foreign-protected (structurally can't merge two cells), so its only job is polishing edges, not reshaping.
+Deliberately kept as its own small default (0.7/0.7 voxels), much smaller than the Pixel Classifier's own Smooth σXY/σZ (2.6/1.0 by default) — that pair decides whether raw blobs *merge* into one 3D instance before labels even exist; sanding runs after labels already exist and is foreign-protected (structurally can't merge two cells), so its only job is polishing edges, not reshaping.
 
 ### `_widget.py` — Tab 2 handlers
 
-**Route auto-detection**: the Pixel Classifier and Cellpose-SAM sections (plus downstream tools — Resort/Split/Save) show or hide based on whether a `_NoBG` or `_ExtRm`-suffixed layer exists anywhere in the viewer, not just whichever layer is currently active — both can be shown together (e.g. comparing routes on the same fish).
+**Route auto-detection** (`_update_labels_section_visibility()`): the Pixel Classifier and Cellpose-SAM sections show or hide based on whether a `_NoBG` or `_ExtRm`-suffixed Image layer exists anywhere in the viewer, not just whichever layer is currently active — both can be shown together (e.g. comparing routes on the same fish). The Edit MG Labels tools (Tab 3) are shown whenever any Labels layer exists.
 
-**`_on_create_labels()`** (Pixel Classifier): background-thread wrapper reading Smooth σXY/σZ, Min volume, Min hole size sliders, calling `create_labels()` (3D Gaussian smooth → re-threshold → per-slice hole-fill → true 3D connected components → volume filter → renumber — no per-slice overlap-linking step), adding the result as a new `Labels` layer named `<image>_labels`.
+**`_on_create_labels()`** (Pixel Classifier): background-thread wrapper running on `_active_layer()` (the selected Image layer, else the topmost), reading Smooth σXY/σZ, the Min hole size slider, Final min-size fraction and the config-held Min volume (`_current_min_volume()`), calling `create_labels()` (3D Gaussian smooth → re-threshold → per-slice hole-fill → true 3D connected components → volume filter → renumber — no per-slice overlap-linking step), adding the result as a new `Labels` layer named `<image>_labels` (not saved to disk).
 
-**`_on_run_cellpose_seg()`** (Cellpose-SAM Segmentation): validates the checkpoint file (`_is_valid_cellpose_checkpoint()` — checks it's a zip archive, the format `torch.save()` uses, to catch a wrongly-selected non-checkpoint file before a multi-hour run rather than deep inside `torch.load()`), auto-selects the matching `<stem>_brain_mask` layer if the "Auto-correct" checkbox needs skin protection, then runs `run_full_pipeline()` in a background thread wrapped in `capture_live_output` (surfaces Cellpose's own otherwise-silent flow-following/hole-fill/small-object-removal step into the GUI log). On completion: adds the result as a `Labels` layer, **unconditionally** (no checkbox) writes `<stem>_cp_masks.tif` (`raw_masks`) and `<stem>_cp_masks_corrected.tif` (post-safe-merge) alongside the fish's other outputs, and — if "Auto-correct labels via contrast sweep after segmentation" is ticked — chains into the Stage 3 auto-correction pipeline (see §5) as a further background stage.
+**`_on_run_cellpose_seg()`** (Cellpose-SAM Segmentation): reads its input from the section's own **Signal layer** combo (`_cp_signal_combo`, pre-selecting the first `_ExtRm` layer) — never the active layer; validates the checkpoint file (`_is_valid_cellpose_checkpoint()` — checks it's a zip archive, the format `torch.save()` uses, to catch a wrongly-selected non-checkpoint file before a multi-hour run rather than deep inside `torch.load()`); when "Auto-correct" is ticked, also requires the Brain mask combo's layer (same shape) and the raw channel layer (`_raw_channel_layer()`: the signal layer's name with its `_BG_SUFFIX` and `_brain_only` stripped, open in the viewer, same shape) — all before segmentation starts. Then runs `run_full_pipeline()` in a background thread wrapped in `capture_live_output` (surfaces Cellpose's own otherwise-silent flow-following/hole-fill/small-object-removal step into the GUI log), with `flow_cache_path = <output>/<stem>_cp_flow_cache.npz`. On completion: adds the result as `<stem>_cellpose_labels`, **unconditionally** (no checkbox) writes `<stem>_cp.tif` (`raw_masks`) and `<stem>_cp_krendl.tif` (the final result) alongside the fish's other outputs, and — if "Auto-correct labels via contrast sweep after segmentation" is ticked — chains `_run_auto_correction_stage()` (the Stage 3 auto-correction pipeline, §5, run on the **raw channel** layer's data) as a further background stage, then `_run_sanding_stage()` if sanding is on.
 
 **`_on_rerun_single_cell()`**: resolves the correct source Image layer and target Labels layer via `_resolve_rerun_layers()` (selected Labels layer wins if any name; else `<image>_cellpose_labels` → `<image>_labels` → a single same-shape Labels layer; ambiguity is reported, never guessed — fixes a real earlier bug where a labels layer not literally named `<stem>_cellpose_labels` was rejected), then calls `rerun_single_cell()` in a background thread and splices the result back into the live layer.
 
-**Sanding UI**: one shared checkbox + Sigma XY/Z pair (Common Settings) drives sanding at every call site that regenerates a label's shape (Correct Label 2D/3D, Correct Adjacent Labels, and — chained as its own stage — the Cellpose-SAM auto-correct pipeline), not a separate control per tool.
+**Sanding UI**: one shared checkbox (Tab 2 Common Settings, plus the Fill-interior-cavities checkbox there) and one Sigma XY/Z pair (Tab 3's Sanding group) drive sanding at every call site that regenerates a label's shape (Correct Label 2D/3D, Correct Adjacent Labels, and — chained as its own stage — both auto-correct entry points), not a separate control per tool.
 
 ---
 
@@ -620,7 +630,8 @@ walk z from zmid down to z_orig_min, then from zmid+1 up to z_orig_max:
                   # Pasted only into empty background or skin (-1), never
                   # a different real label's territory.
     _correct_slice_full(z):
-        if another real label is present in z's own local area:
+        if another label (a real cell, or skin -1) is present in z's own local area
+        and resolve_adjacent is True:
             jointly re-derive via the same marker-seeded watershed
             Correct Adjacent Labels uses (_correct_label_group_2d_core,
             focus_ids=[label_id]) — only label_id's OWN resulting side
@@ -643,13 +654,15 @@ Every slice's own correction is *locally anchored* — re-derived fresh from whe
 
 No missing-slice repair pass here, unlike `correct_label_2d_stack()` below: `_or_seed()` guarantees any slice within `[z_orig_min, z_orig_max]` starts from non-empty content whenever either Z-neighbor has real content, and `_correct_one_slice()`'s snapshot/restore means even a failed attempt only ever reverts to that already-non-empty state, never to zero — confirmed by reading both mechanisms together, not assumed. Only this fully-independent, no-cross-slice-seeding 2D engine can leave a slice genuinely empty after a single flaky attempt.
 
+**`fill_label_holes(labels, label_id, pad=10)`** — the cavity fill behind §4's sanding pass: `binary_fill_holes` on the label's own 3D mask inside its padded bbox; only voxels that are currently background (0) become the label, so a different label sitting inside an apparent cavity is never absorbed. Returns which absolute Z slices received filled voxels.
+
 **`sand_label(labels, label_id, sigma_xy, sigma_z, pad)`** — the per-label engine behind §4's sanding pass: 3D Gaussian-blur the label's own binary mask, re-threshold at 0.5, foreign-excluded; skips (reports why) if the result collapses to nothing or loses contact with the original footprint.
 
 **`_intensity_correct_2d` / `_intensity_grow_2d`** — the shared single-slice threshold core every 2D tool above calls into: crop to `seed_mask`'s bbox+pad, `candidate = image >= lo` minus foreign territory, fill the *whole* crop (not connectivity-restricted to the seed).
 
 **`correct_adjacent_labels_2d(labels, image, label_a, label_b, z, lo, pad, sigma)`** — corrects two touching labels on one slice *simultaneously*, boundary placed by a **marker-seeded** watershed (`markers = each label's own existing footprint`, not auto-detected peaks — Split Label's blind peak-finding was tried and rejected here, since a combined region can have more than one real intensity dip and lock onto the wrong one). The working rectangle is sized from `label_a` alone (+pad), not the union — `label_b` only participates via whatever falls inside that rectangle.
 
-**`correct_label_group_2d` / `_correct_label_group_2d_core`** — the N-label generalization of the above, used by Correct Adjacent Labels' own group-correction and (crop-only, no full-volume copy) by `correct_label_from_intensity_3d`'s per-slice joint branch. `focus_ids` optionally scopes the working rectangle to a subset of the group (mirrors `label_a`-only scoping); markers are always each label's own existing footprint, watershed runs unmasked over the whole crop then intersects with the real candidate signal so a diagonally-touching island still gets an owner.
+**`correct_label_group_2d` / `_correct_label_group_2d_core`** — the N-label generalization of the above, used by `grow_correct_label_2d()` (Correct Label 2D with auto-grow, Correct Adjacent Labels with auto-grow or until-stable) and (crop-only, no full-volume copy) by `correct_label_from_intensity_3d`'s per-slice joint branch. `focus_ids` optionally scopes the working rectangle to a subset of the group (mirrors `label_a`-only scoping); markers are always each label's own existing footprint, watershed runs unmasked over the whole crop then intersects with the real candidate signal so a diagonally-touching island still gets an owner.
 
 **`touching_groups_for_stack`** (general-purpose utility, not on the current pipeline's own critical path — replaced there by the per-cell engine's own adjacency resolution): per-Z-slice union-find of mutually-touching label clusters (`_touching_pairs_on_slice` + `_union_find_groups`).
 
@@ -716,12 +729,13 @@ Any non-positive label (skin `-1`) is treated as plain background during this sw
 
 ### `_auto_correction.py` — the full unattended per-cell pipeline
 
-`auto_contrast_correct_stack(labels, image, scale_zyx, brain_mask, skin_image, ...)` — chained onto the end of Cellpose-SAM Segmentation (§4) when its "Auto-correct" checkbox is ticked, or run standalone via "Auto-correct Existing Labels" against any Labels layer. Six steps:
+`auto_contrast_correct_stack(labels, image, scale_zyx, brain_mask, skin_image, ...)` — chained onto the end of Cellpose-SAM Segmentation (§4) when its "Auto-correct" checkbox is ticked, or run standalone via the **Auto-correct Labels** button against any Labels layer. Both widget call sites pass `pad` = Correction Settings' Bbox padding for every cell **and** as `skin_pad` (the function's own `skin_pad=25` default is never used by the UI), plus the Calibrate tool's Cells/Slices/Edge margin/Sweep steps and its Bbox padding as `sample_pad` — the sweep's own sample-crop padding (`None` falls back to `pad`), the same one Protect Skin as Label's sweep uses. Six steps:
 
 ```
 1. best_lo ← sweep_contrast_lower_value(...) via select_calibration_samples/
-             default_lo_candidates (or lo_override, skipping the sweep
-             entirely, minus an optional lo_adjustment subtracted after)
+             default_lo_candidates, minus lo_adjustment ("Reduce best_lo by")
+             — or lo_override (Auto-sweep off: the signal layer's current
+             contrast low), which skips the sweep and is used as given
 
 2. if skin (-1) already present in `labels`: REUSE it exactly as-is,
        never re-seed/re-trim (protects any prior manual correction)
@@ -778,35 +792,35 @@ Both widget call sites save that text: `_on_autocorrect_labels` to `<output fold
 
 **`_on_resort_labels()`**: reads sort-by/reverse from the UI, calls `resort_labels()` in a background thread, writes the result back in place (`layer.data[:] = result; layer.refresh()` — not `layer.data = result`, which was found to race with napari's own async thumbnail update and crash; see §9).
 
-**`_on_remove_debris()`**: reads Min volume/Min hole size from Common Settings, calls `remove_debris()`.
+**`_on_remove_debris()`**: threshold ← `max(1, round(Final min-size fraction × Min volume))` (Min volume from config, `_current_min_volume()`), calls `remove_debris(labels, threshold, skin_label_id=-1)`.
 
-**`_on_split_label()`**: reads target label, N splits, σ, min distance, mode (2D/3D), calls `split_label()`, adds the new IDs to the layer.
+**Label A/B validation**: both spinboxes have minimum -1; module-level `_edit_label_id_error(label_id)` returns an error string for 0 (background) or any ID below -1, else `None`. Split Label, Join Labels, Correct Label, Copy Label to Adjacent Slice and Correct Adjacent Labels call it on every label they read and stop with "ERROR: Label A/B: …" in their status line; the two "Use selected" buttons (`_on_use_selected_label_a/b`) use it to refuse a selected 0 or other negative ID.
 
-**`_on_join_labels()`**: reads Label A/B (each with a "Use selected" button reading `layer.selected_label`), calls `join_labels()`.
+**`_on_split_label()`**: reads Label A, N splits, σ, min distance, mode (2D/3D; 2D also needs the shared Signal layer and uses the current slice), calls `split_label()`, writes the result back in place.
 
-**`_on_correct_label()`**: reads the signal layer's live `contrast_limits` for `lo`, target label, pad, mode (2D uses the current slice; 3D disabled outright for label `-1`, since a 3D correction of skin would walk nearly the whole fish — see `correct_label_from_intensity_3d`'s own note), auto-grow/until-stable checkboxes; calls `grow_correct_label_2d`/`3d` accordingly; sands the result afterward if Sanding is enabled (§4).
+**`_on_join_labels()`**: reads Label A/B (each with a "Use selected" button reading `layer.selected_label`), refuses A == B, calls `join_labels()`.
 
-**`_on_correct_adjacent_labels()`**: reads Label A/B + current slice, calls `grow_correct_label_2d(label_ids=[A, B], ...)`, sands both labels afterward if enabled.
+**`_on_correct_label()`**: reads the shared Signal layer's live `contrast_limits` for `lo`, Label A, Correction Settings, mode (2D uses the current slice; 3D disabled outright for label `-1`, since a 3D correction of skin would walk nearly the whole fish — see `correct_label_from_intensity_3d`'s own note). 2D: `grow_correct_label_2d()` if Auto-grow is on (no until-stable in 2D), else `correct_label_from_intensity()`. 3D: `grow_correct_label_3d()` if Auto-grow **or** Keep-until-stable is on, else `correct_label_from_intensity_3d()`. Afterward, if sanding is enabled (§4), fills cavities (if that checkbox is on) and sands every label of the resulting group.
+
+**`_on_correct_adjacent_labels()`**: reads Label A/B (must differ) + current slice; `grow_correct_label_2d(label_ids=[A, B], ...)` if Auto-grow or Keep-until-stable is on, else `correct_adjacent_labels_2d()`; fills cavities and sands every label of the group afterward if enabled.
 
 **`_on_copy_label_to_adjacent_slice()`**: reads label + direction, calls `copy_label_to_adjacent_slice()`.
 
-**`_on_protect_skin()`**: runs the contrast sweep (§ above, "Calibrate Correct-Label Contrast" is the canonical source — every other autosweep tool in the plugin reuses its result rather than re-sweeping) to get `best_lo`, then `seed_skin_label` + `trim_skin_label`; refuses ("Skin is ALREADY protected…") if `skin_voxel_count() > 0` already. Populates the "Reduce best_lo by" reduction slider's own section.
+**`_on_protect_skin()`**: refuses ("Skin is ALREADY protected…") if `skin_voxel_count() > 0` already. With Auto-sweep on, runs its own contrast sweep on the Signal layer — the same functions and sample parameters as "Calibrate Correct-Label Contrast" (`_lo_sweep_sample_params()`, including that tool's Bbox padding), not a reused result — and subtracts "Reduce best_lo by"; with Auto-sweep off (or if no samples can be found) it uses the Signal layer's current contrast low. Then `seed_skin_label` + `trim_skin_label` (Correction Settings, `brain_mask` passed for the missing-slice repair) on the skin image from `_resolve_skin_signal_image()` (the raw channel behind an `_ExtRm`/`_NoBG`/`_RndFill` Signal layer, else the Signal layer itself), then `remove_debris(..., skin_label_id=-1)`. On completion sets the Signal layer's contrast to `(lo, _adaptive_contrast_high(...))` when the sweep ran, and fills the skin report box. 30-minute hang watchdog.
 
 **`_on_remove_skin_label()`**: calls `remove_label(labels, -1)`.
 
-**`_on_auto_correct_existing_labels()`**: background-thread wrapper around `auto_contrast_correct_stack()` against whatever Labels/Image/brain-mask layers are selected — the same pipeline Cellpose-SAM Segmentation's own "Auto-correct" checkbox chains into, exposed as its own standalone button so it can be re-run against any existing Labels layer, not just fresh segmentation output. Wrapped in the hang watchdog (`_hang_watch_start`/`stop`, 30-minute `faulthandler.dump_traceback_later()`) given how long a full-fish run can take.
+**`_on_autocorrect_labels()`**: background-thread wrapper around `auto_contrast_correct_stack()` against the shared selector's Labels/Signal/Brain-mask layers (skin image from `_resolve_skin_signal_image()`) — the same pipeline Cellpose-SAM Segmentation's own "Auto-correct" checkbox chains into, exposed as its own standalone button so it can be re-run against any existing Labels layer, not just fresh segmentation output. On completion writes the labels back in place, sets the Signal layer's contrast, fills the skin report box, saves the report to `<output>/<layer>_autocorrect_report.txt`, and chains `_run_sanding_stage_ac()` (fill cavities + sand, report appended; never saves the labels) if sanding is on. Wrapped in the hang watchdog (`_hang_watch_start`/`stop`, 30-minute `faulthandler.dump_traceback_later()`) given how long a full-fish run can take.
 
-**`_on_sand_label()`** (interactive single-label sanding, when not chained automatically): reads σXY/σZ from the shared Sanding section, calls `sand_label()`.
+**"Hide skin label" toggle** (`_on_toggle_skin_visibility()`): a purely visual `DirectLabelColormap` swap on the shared selector's Labels layer (never touches `layer.data`) making skin render transparent — a `_FastDirectLabelColormap` subclass bypasses napari's own slower numba-dict backend selection for this one colormap (a real ~2x measured fix for 3D-display slowness), verified to produce byte-identical output to the base class.
 
-**"Hide skin label" toggle**: a purely visual `DirectLabelColormap` swap (never touches `layer.data`) making skin render transparent — a `_FastDirectLabelColormap` subclass bypasses napari's own slower numba-dict backend selection for this one colormap (a real ~2x measured fix for 3D-display slowness), verified to produce byte-identical output to the base class.
-
-**"Drift View in 3D"**: Start/Stop + speed slider driving a `QTimer`-ticked camera rotation (`viewer.camera.angles`, composed via a real `scipy.Rotation` each tick rather than incrementing 3 Euler angles independently — napari's own camera API restricts its middle axis to ±90°, which an increment-based approach visibly stalls against). Camera-only; never touches any layer's data.
+**"Drift View in 3D"** (`_on_toggle_drift()`, a Tab 6 General tool): Start/Stop + speed slider (1–100, default 20) driving a ~30 fps `QTimer`-ticked camera rotation (`viewer.camera.angles`, composed via a real `scipy.Rotation` each tick rather than incrementing 3 Euler angles independently — napari's own camera API restricts its middle axis to ±90°, which an increment-based approach visibly stalls against). Camera-only; never touches any layer's data.
 
 ---
 
 ## 6. Stage 4 — Statistics
 
-**UI**: Tab 4 — Statistics, with a scrollable per-column output checklist (defaults matching core microglia morphology; several columns Nathalie's review flagged as marginal/unvalidated default OFF — see §9). **Module**: `_statistics.py`, one function (`compute_stats`) producing a `pandas.DataFrame`, one row per label, up to 51 columns. **Goal**: turn a corrected Labels layer into a per-cell CSV.
+**UI**: Tab 4 — Statistics, with a scrollable per-column output checklist (defaults matching core microglia morphology; several columns Nathalie's review flagged as marginal/unvalidated default OFF — see §9). **Module**: `_statistics.py`, one function (`compute_stats`) producing a `pandas.DataFrame`, one row per label, 46 columns always and up to 51 with the optional intensity/region inputs (`_widget.py` adds `is_volume_outlier`, so the CSV has up to 52). **Goal**: turn a corrected Labels layer into a per-cell CSV.
 
 ### Three-phase pipeline (`compute_stats`)
 
@@ -909,11 +923,9 @@ All three network backends catch their own request errors and return an inline `
 
 **Per-column checkboxes**: `_COL_GROUPS` maps one checkbox to multiple CSV columns where they're conceptually one unit (e.g. `centroid_vox` → all three `centroid_z/y/x_vox` columns; `bbox_vox` → all six bbox corner columns; `nn_1st`/`nn_2nd` → the label+distance pair each). Validation warns (doesn't crash) if brain-region or intensity columns are checked but no Shapes/Image layer is selected, and just skips those columns.
 
-**`_refresh_stats_layers()`**: repopulates the Image/Shapes layer combos on every napari layer add/remove event, preserving the current selection across the refresh (`blockSignals()` guard).
+**`_refresh_stats_layers()`**: on every napari layer add/remove event, repopulates every layer combo in the plugin (Statistics' Image/Shapes, Tab 3's Signal/Labels/Brain-mask selector, Cellpose-SAM's Signal and Brain-mask, Score Against GT's pair), preserving the current selection across the refresh (`blockSignals()` guard), then runs the auto-fill rules (§9 "Layer resolution") for combos that are still empty.
 
-**`_on_generate_stats()`**: reads the active Labels layer's own scale from `self._state["metadata"]` first (the value Tab 1's Open button set), falling back to the Labels layer's own napari `scale` only if no stack metadata is on record — a real historical bug had this backwards (defaulting to the Labels layer's own possibly-unset scale), silently making `centroid_um`/`volume_um3` identical to their voxel-unit counterparts whenever a labels `.tif` was loaded without its own embedded scale. Extracts region-boundary polylines from the selected Shapes layer via `_extract_region_lines_um()` (accepts both `"line"` and multi-vertex `"path"` shape types), calls `compute_stats()` in a background thread, filters the returned DataFrame down to only the checked columns before writing the CSV.
-
-**GT-verification checkbox** ("This is verified ground truth"): when ticked, also measures the active layer's own smallest/largest real cell volume and smallest real hole directly from this GT, updating the shared cross-fish Min/Max-volume and Min-hole-size histories (`_update_gt_history`) other tools throughout the plugin read from — the same one-shot, self-unticking pattern every GT-sweep tool in §5/§8 uses.
+**`_on_generate_stats()`**: measures `_active_labels_layer()` (the selected Labels layer, else the topmost). Takes the scale from `self._state["metadata"]` first (the value Tab 1's Open button set), falling back to the Labels layer's own napari `scale` (or the active Image layer's, if the Labels layer has none / (1,1,1)) only if no stack metadata is on record — a real historical bug had this backwards (defaulting to the Labels layer's own possibly-unset scale), silently making `centroid_um`/`volume_um3` identical to their voxel-unit counterparts whenever a labels `.tif` was loaded without its own embedded scale. Extracts region-boundary polylines from the selected Shapes layer via `_extract_region_lines_um()` (accepts both `"line"` and multi-vertex `"path"` shape types), calls `compute_stats()` in a background thread, adds `is_volume_outlier` (`volume_vox` above config `max_volume_recommended_vox` or below `min_volume_recommended_vox`; an unset bound flags nothing), filters the DataFrame down to only the checked columns, and writes `<output>/<opened file stem>_statistics.csv` (the Labels layer's name if no file was opened). Statistics only ever *reads* those bounds; they are written exclusively by the GT Toolkit Tuning Tool (§8).
 
 ---
 
@@ -970,7 +982,7 @@ generate_masks(viewer, image_layer, input_path):
 
 ### `_xzyz_patches.py` — 2D orientation-slice crop generation (current training methodology)
 
-Generates the actual crop set every real Cellpose-SAM training run since May 2026 has used — **not** the older bbox-based single/double/triple/quadruple crop approach a separate, still-available tool ports from an April-2026 script that was abandoned after failing (catastrophic forgetting on too little data).
+Generates the crop set the plugin's Cellpose-SAM training uses: random 2D crops in all three orientations (the only crop extractor the plugin ships).
 
 ```
 stretch_z(slice_2d, anisotropy): bilinear zoom of the Z axis by
@@ -1138,27 +1150,29 @@ write_best_checkpoint_pointer(models_dir, model_name, best_epoch):
 
 ### `_ai_tools.py` — argv builders
 
-Pure argument-list construction (`build_prepare_data_argv` / `build_monai_train_argv` / `build_cellpose_train_argv`) for the three training scripts, which ship *inside the installed package* (`training_scripts/`, declared as package data) rather than as sibling folders in this project's private monorepo — a real historical bug: a monorepo-sibling path only ever existed on the original dev machine, so anyone else installing via `pip install git+https://...` got "script not found" at launch. Package placement means they travel into `site-packages` on both editable and normal installs. Always overridable via a Browse button.
+Pure argument-list construction (`build_prepare_data_argv` / `build_monai_train_argv` / `build_cellpose_train_argv`) for the three training scripts, which ship *inside the installed package* (`training_scripts/`, declared as package data) so they travel into `site-packages` on both editable and normal installs. The script paths are overridable only through config keys (`monai_prepare_script_path`, `monai_train_script_path`, `cellpose_train_script_path`); there is no browse button. The conda env each runs in comes from `monai_conda_env` (default `zf-microglia-ai`, used for prepare_data and MONAI training) and `cellpose_conda_env` (default `cellpose`).
 
 ### `_widget.py` — Tab 5 (AI Tools) handlers
 
 **GT Annotation section**: buttons wrapping `interpolate_shapes()`/`generate_masks()` directly — synchronous (both are fast: pure numpy/shape rasterization, no model inference), errors shown in the status label rather than crashing.
 
-**Extract Training Crops** (two tools, side by side): the older bbox-based single/double/triple/quadruple extractor (kept for anyone still using that approach) and `generate_xzyz_patches()` (the current default), both background-thread wrapped with a cancel button (`cancel_event`) since a full-fish run can take a while. "Clean crop truncation" is on by default as part of the XZYZ extractor's own run (not a separate button to remember), per explicit instruction that Cellpose-SAM should train only on near-complete cells (≥90%) going forward.
+**Extract X/Y/Z Patches** (`_on_xz_run()`): background-thread wrapper around `generate_xzyz_patches()` (anisotropy = Z µm / XY µm from its own scale fields), followed in the same thread by `clean_crop_truncation()` when "Clean truncated labels" is ticked (the default; threshold = "Min visible fraction", default 0.90). No cancel button.
 
-**Calibrate branch_radius (from GT)**: background-thread wrapper around `recommend_branch_radius()`, with the same one-shot "This is verified ground truth" gating pattern (§2/§5/§8) before it's allowed to update the shared `branch_radius` config value.
+**Combine Crops into Shared Training Folder** (`_on_cc_run()`): wraps `combine_crop_folder()` (fish_stem left to its default, the crop folder's parent name); on success stores the combined folder in config and fills Train Cellpose-SAM's Data dir.
 
-**Train MONAI U-Net / Train Cellpose-SAM** buttons: build the argv via `_ai_tools.py`, call `launch_detached()`; poll `is_running`/`tail_log`/`patience_exceeded` on a `QTimer` while napari stays open, and **reconnect automatically on napari reopen** by reading the persisted PID + log path from config — a dead PID found on reopen finalizes immediately (best checkpoint reported, pointer written, stale PID cleared), so a job that finished while napari was closed is reported the moment napari reopens. "Stop Training" calls `kill_process_tree`. An optional Email-notification panel (SMTP fields, password via `_secrets.py`) threads a `notify` dict through to `launch_detached`.
+**Calibrate branch_radius (from GT)**: background-thread wrapper around `recommend_branch_radius()`, gated by a hidden "This is verified ground truth" checkbox — run here it only reports; only the GT Toolkit Tuning Tool (§8) ticks that box, and only then is the shared `branch_radius` ceiling (`_update_gt_history(..., mode="max")`) updated and applied.
+
+**Train MONAI U-Net / Train Cellpose-SAM** buttons: build the argv via `_ai_tools.py` (MONAI's own `--patience` is always passed as 999999 so only the GUI's patience check stops a run), call `launch_detached()` with the log at `<model dir>/gui_launch_<session>.log` (MONAI) or `<data dir>/logs/gui_launch_<session>.log` (Cellpose-SAM); poll `is_running`/`tail_log`/`patience_exceeded` on an 8-second `QTimer` while napari stays open, and **reconnect automatically on napari reopen** by reading the persisted PID + log path from config — a dead PID found on reopen finalizes immediately (best checkpoint reported, Cellpose-SAM pointer written, stale PID cleared), so a job that finished while napari was closed is reported the moment napari reopens. "Stop Training" calls `kill_process_tree`. When Tab 6's email switch is on, `_build_notify_cfg()` threads a `notify` dict (SMTP settings, password via `_secrets.py`) through to `launch_detached`.
 
 ---
 
 ## 8. Stage 6 — Sweeps & Utilities
 
-**UI**: Tab 6 — Sweeps & Utilities. **Modules**: `_sieve.py` (generic coarse-to-fine engine, already covered in §2), `_brain_sweep.py`, `_pixel_sweep.py`, `_krendl_sweep.py`, `_epoch_sweep.py` (the four GT-verified parameter sweeps), `_gt_score.py` (the whole-fish scorer they build on), `_gt_package.py` (packaging for external manual correction), `_gt_toolkit.py` (single-folder auto-discovery tying them together). **Goal**: check a pipeline parameter against real ground truth and, once confirmed, recalibrate the "recommended" defaults quoted throughout §3–§5 — this is how those defaults were actually found, not guessed.
+**UI**: Tab 6 — Sweeps & Utilities. **Modules**: `_sieve.py` (generic coarse-to-fine engine, already covered in §2), `_brain_sweep.py`, `_pixel_sweep.py`, `_krendl_sweep.py`, `_epoch_sweep.py` (the GT-verified parameter sweeps; `_pixel_sweep.py` holds two), `_gt_score.py` (the whole-fish scorer), `_gt_package.py` (packaging for external manual correction), `_gt_toolkit.py` (single-folder auto-discovery behind the GT Toolkit Tuning Tool). **Goal**: check a pipeline parameter against real ground truth and, once confirmed, recalibrate the "recommended" values quoted throughout §3–§5.
 
 ### `_gt_score.py` — the whole-fish scoring methodology
 
-`score_against_gt(pred_labels, gt_labels, iou_threshold=0.5)` is the project's single, validated instance-matching methodology (used, in different guises, by every sweep in this section):
+`score_against_gt(pred_labels, gt_labels, iou_threshold=0.5)` is the project's whole-fish instance-matching methodology, behind Tab 6's Score Against GT (the sweeps use their own simpler best-IoU match per cell, `_epoch_sweep._best_gt_match`, or mask-level Dice):
 ```
 pred_info, gt_info ← per-object volume/centroid/bbox (_get_info from _cellpose_seg.py)
 build a (n_gt x n_pred) IoU cost matrix, but only for pairs whose BBOXES
@@ -1177,7 +1191,7 @@ Verified against this project's own historical result tables (e.g. `TP=34/FP=8/F
 
 ### `_brain_sweep.py` — MONAI Threshold x Erosion (Tab 1's own mask)
 
-The cheapest of the four sweeps: `predict_probability()` (the expensive network pass) runs **once**; every candidate `(threshold, erosion)` combination is then a cheap re-threshold via `postprocess_probability()` + a `binary_erosion`, scored as a whole-volume Dice/IoU/precision/recall against a hand-corrected GT brain mask (from GT Annotation, §7) — no per-cell matching needed, since brain segmentation is one global object.
+The cheapest of the sweeps: `predict_probability()` (the expensive network pass) runs **once**; every candidate `(threshold, erosion)` combination is then a cheap re-threshold via `postprocess_probability()` + a `binary_erosion`, scored as a whole-volume Dice/IoU/precision/recall against a hand-corrected GT brain mask (from GT Annotation, §7) — no per-cell matching needed, since brain segmentation is one global object.
 ```
 pred_prob ← predict_probability(volume, model_path, device)   # once, or
              reused via precomputed= across sieve stages
@@ -1191,7 +1205,7 @@ best_point ← the (threshold, erosion) with highest Dice
 
 ### `_pixel_sweep.py` — the Pixel Classifier route's two sweeps + GT-measured floors
 
-Deliberately does **not** re-run MONAI inference per grid point (neither Signal Erosion nor BG Threshold change what MONAI predicted) — takes a pre-computed, un-eroded `brain_mask.tif` as input, making the whole sweep union-find-bound (minutes, no GPU needed) rather than GPU-inference-bound.
+Deliberately does **not** re-run MONAI inference per grid point (neither Signal Erosion nor BG Threshold change what MONAI predicted) — takes a pre-computed, un-eroded `brain_mask.tif` as input, making the whole sweep `create_labels()`-bound (minutes, no GPU needed) rather than GPU-inference-bound.
 
 **`run_pixel_sweep(image_path, brain_mask_path, gt_labels_path, bg_thresholds, erosions, ...)`**:
 ```
@@ -1244,36 +1258,20 @@ best_epoch ← highest average IoU
 ```
 `pick_sweep_epochs(recommended_epoch, save_every, available_epochs, n_below=2, n_above=2)`: centers the candidate epoch list on the `test_loss`-recommended epoch, stepping by the training run's own checkpoint interval, clipped to whatever actually exists on disk.
 
-### `_krendl_sweep.py` — Cellprob x Large-contact + real-data merge-parameter calibration
+### `_krendl_sweep.py` — Cellprob + real-data merge / Min size / Large-contact calibration
 
-The most involved sweep module — three related but distinct calibration tools.
+The most involved sweep module: one cellprob sweep plus three measure/recommend pairs, chained by Tab 6's **Calibrate Cellprob + Krendl Merge Parameters + Min size + Large-contact** (`_on_kr_run_sweep()`, see the end of this section). `gt_min_from_labels` is simply `_pixel_sweep.min_volume_from_gt` under a second name — `gt_min` and the Pixel Classifier's `min_volume` are the same quantity (the smallest GT cell's voxel count).
 
-**`run_krendl_sweep(volume, gt_labels, model_path, cellprobs, large_contacts, ...)`** — the original instance-matched sweep, scored via `score_against_gt()` on the *fully corrected* result:
+**`run_cellprob_voxel_sweep(volume, gt_labels, model_path, cellprobs, anisotropy, gpu, min_size, min_hole_size, niter, progress_cb, cancel_event, precomputed)`** — scores cellprob on **pure voxel-level Dice/IoU/precision/recall** against binarized GT (instance identity ignored entirely), deliberately independent of `max_gap`/`min_contact`/`large_contact` so the cellprob pick isn't entangled with not-yet-calibrated merge parameters — mirrors `_brain_sweep.run_brain_sweep()`'s mask-level approach for MONAI Threshold:
 ```
-model, dP, cellprob_map, shape ← predict_flows(...)   # ONE network pass —
-     cellprob_threshold only feeds the cheap masks_from_flows() step
-     (confirmed directly from cellpose/models.py's own eval()/_compute_masks()
-     split), so re-running the expensive GPU pass per cellprob value would
-     be needless; a multi-stage sieve narrowing can reuse this same pass
-     across every stage via precomputed=
-for each cellprob:
-    masks ← masks_from_flows(..., cellprob)
-    masks ← gmm_cleanup(masks); masks ← krendl_safe_merge(masks, max_gap,
-             min_contact, gt_min)                       # once per cellprob
-    for each large_contact:                              # cheap on top of
-             the same intermediate result
-        merged ← large_contact_merge(masks, large_contact)
-        merged ← final_min_size_cleanup(merged, gt_min, final_min_fraction)
-        labels ← relabel_sequential(merged)
-        results[(cellprob, large_contact)] ← score_against_gt(labels, gt_labels)
-best_point ← highest Score, ties broken by mean_iou then mean_dice, EXCLUDING
-             any point with tp==0 (a point that detects nothing can still
-             "tie" a genuinely-detecting-but-noisy point on Score — never a
-             usable winner) unless literally every point detected nothing
+model, dP, cellprob_map, shape ← precomputed or predict_flows(...)   # ONE network pass
+for each cellprob (cancel_event checked between values):
+    masks ← masks_from_flows(..., cellprob, min_size, min_hole_size)
+    results[cellprob] ← voxel Dice/IoU/precision/recall of (masks > 0) vs (gt > 0)
+best_cellprob ← highest Dice
+return {results, best_cellprob, cancelled, precomputed}   # precomputed lets sieve
+                                                           # stages reuse the pass
 ```
-`gt_min` (Krendl safe-merge's "already a whole cell" floor) and `min_hole_size`, if not given, are each measured from the real `gt_labels` passed in (`min_volume_from_gt`/`min_hole_size_from_gt`, imported from `_pixel_sweep.py` — the same measurement, since `gt_min` and the Pixel Classifier's `min_volume` turned out to be literally the same quantity, unified after being tracked as two separate config histories by historical accident).
-
-**`run_cellprob_voxel_sweep(volume, gt_labels, model_path, cellprobs, ...)`** — breaks a real circularity in the tool above: scoring cellprob against the *fully corrected* result entangles "best cellprob" with whatever `max_gap`/`min_contact`/`large_contact` happen to already be set to. This sweep scores cellprob on **pure voxel-level Dice/IoU** against binarized GT (instance identity ignored entirely) — mirrors `_brain_sweep.run_brain_sweep()`'s identical mask-level approach for MONAI Threshold. The documented correct calibration order: this sweep picks cellprob on signal quality alone → generate real `cp_masks` at that cellprob → the two functions below calibrate the merge parameters from that real prediction → optionally cross-check with `run_krendl_sweep`'s instance-matched Score using the now-non-circular calibrated parameters.
 
 **`measure_merge_params_from_prediction(cp_masks, gt_labels, scale_zyx, min_overlap_vox=5, search_pad_um=3.0)`** — measures `max_gap`/`min_contact` from a real raw (pre-GMM, pre-Krendl) prediction rather than pure-GT geometry (which has a real ambiguity: is the smallest gap between two GT cells real biology, or just how an annotator drew the shared boundary?). Sidesteps that by using GT only to *label* which raw fragments belong to which real cell, then measuring the network's own actual fragmentation:
 ```
@@ -1304,11 +1302,34 @@ for every candidate (max_gap, min_contact) pair:
     total_error ← missed + false
 best ← the (max_gap, min_contact) pair minimizing total_error
 ```
-Optimizes for **fewest total manual corrections**, not zero risk of one error direction — an explicit, user-confirmed design choice: an over-merge is trivially fixable with Split Label, an under-merge with Join Labels (§5), so neither failure is silent or catastrophic; a defensively-clamped earlier version that minimized false-merges alone caught close to none of the real should-merge cases on real test data.
+Optimizes for **fewest total manual corrections**, not zero risk of one error direction: an over-merge is trivially fixable with Split Label, an under-merge with Join Labels (§5), so neither failure is silent or catastrophic. Returns `{max_gap_um, contact_vox, missed_merges, false_merges, n_should_merge, n_should_not_merge}` (both values `None` when there are no samples).
+
+**`measure_min_size_from_prediction(cp_masks_unfiltered, gt_labels, min_overlap_vox=5)`** — on masks formed with `min_size=0` (any positive min_size would already have deleted the fragments to be measured): every fragment whose best GT overlap is ≥ `min_overlap_vox` counts as a **real** fragment (its size recorded), every other fragment as **noise**. **`recommend_min_size(stats_list, miss_weight=1000)`** pools the sizes across fish and tries every observed size as the threshold, minimizing `1000 × real fragments discarded + noise fragments surviving` (ties → the largest candidate) — asymmetric on purpose, since a discarded real fragment can't be restored while surviving noise still meets three later filters.
+
+**`measure_large_contact_from_prediction(post_safe_merge_masks, gt_labels, min_overlap_vox=5, bbox_margin_vox=2)`** — on masks after GMM + safe-merge (exactly what `large_contact_merge()` receives): for each GT cell still split into ≥2 objects, each object's **largest** contact with a same-cell sibling is a should-merge sample; the contact between bbox-close objects assigned to **different** GT cells is a should-not-merge sample. **`recommend_large_contact(stats_list, miss_weight=1.0)`** tries every observed contact as the threshold, minimizing missed + false merges (symmetric; ties → the largest candidate).
+
+**The widget's five-step chain (`_on_kr_run_sweep()`):**
+```
+min_hole_size ← min_hole_size_from_gt(gt_labels)            # used by every mask formation below
+1. run_cellprob_voxel_sweep (sieve-narrowed if on), Tab 2's Min size
+   — if cancelled or no winner, stop here
+2. raw_cp_masks ← masks_from_flows(cached flows, best_cellprob, Tab 2's Min size)
+3. merge_stats ← measure_merge_params_from_prediction(raw_cp_masks, gt, scale)
+4. unfiltered ← masks_from_flows(cached flows, best_cellprob, min_size=0)
+   minsize_stats ← measure_min_size_from_prediction(unfiltered, gt)
+5. post ← krendl_safe_merge(gmm_cleanup(raw_cp_masks), this fish's merge
+          recommendation (or Tab 2's current values if none), gt_min_from_labels(gt))
+   lc_stats ← measure_large_contact_from_prediction(post, gt)
+apply (only when its hidden GT box was ticked by the GT Toolkit):
+   Cellprob ← _update_gt_history("cellpose_cellprob", fish, best, "mean")
+   max_gap/min_contact, Min size, Large-contact ← recommend_*() over the
+       samples pooled across every fish (_update_*_stats_history), each left
+       unchanged if still None
+```
 
 ### `_gt_package.py` — packaging for external manual correction
 
-`build_gt_package(stem, out_dir, image_path, corrected_masks_path, raw_cellpose_masks_path=None, brain_mask_path=None, raw_signal_path=None, autocorrect_report_path=None, ...)` — automates a manual packaging step repeated by hand for every fish sent out for GT correction: first deletes any file it is about to write from a previous build in the same package folder (so an optional input left empty never ships a stale copy), then copies the source image, the most-advanced correction stage available (as the correction starting point), the raw pre-merge masks (reference only), the brain mask and the raw unmasked signal channel (re-written zlib-compressed as `<stem>_original.tif`, rejected unless 3D) — both needed for the reviewer to use Protect Skin as Label — the auto-correct report `.txt`, and `GROUND_TRUTH_CREATION_GUIDE.md`, plus a lightweight per-cell CSV (`_cell_statistics_csv` — label/volume/centroid/bbox only, deliberately not the full ~51-column Tab 4 output), all zipped into `<stem>_GT_package.zip`.
+`build_gt_package(stem, out_dir, image_path, corrected_masks_path, raw_cellpose_masks_path=None, brain_mask_path=None, raw_signal_path=None, autocorrect_report_path=None, scale_zyx, guide_path=None, progress_cb)` — automates a manual packaging step repeated by hand for every fish sent out for GT correction, into `<out_dir>/<stem>_GT_package/`: first deletes any file it is about to write from a previous build in the same package folder (so an optional input left empty never ships a stale copy), then copies the source image (as `<stem>_brain_only_ExtRm.tif`), the corrected masks (as `<stem>_cp_corrected.tif`, the correction starting point), the raw pre-merge masks (`<stem>_cp_masks_3D.tif`, reference only), the brain mask (`<stem>_brain_mask.tif`) and the raw unmasked signal channel (re-written zlib-compressed as `<stem>_original.tif`, rejected unless 3D) — both needed for the reviewer to use Protect Skin as Label — the auto-correct report (`<stem>_autocorrect_report.txt`), and `GROUND_TRUTH_CREATION_GUIDE.md` (`DEFAULT_GT_GUIDE_PATH` = the repo's `docs/` copy unless overridden; missing → error), plus a lightweight per-cell CSV (`_cell_statistics_csv` — label/volume/centroid/bbox only, largest first, deliberately not the full Tab 4 output), all zipped into `<out_dir>/<stem>_GT_package.zip`. The widget passes `_get_layer_scale()` as the CSV's scale.
 
 ### `_gt_toolkit.py` — single-folder auto-discovery ("GT Toolkit Tuning Tool")
 
@@ -1337,25 +1358,49 @@ best_corrected_masks(found): the most-advanced stage present, priority
 
 step_preconditions(found): {step_key: (can_run: bool, reason: str)} for
     each of the 5 folded-in steps (monai/bg/sigma/cellprob/branch_radius)
-    — e.g. the MONAI sweep needs BOTH _original.tif AND _brain_mask.tif to
-    exist, since their joint presence is what signals this fish went
-    through GT Annotation (a raw MONAI-predicted brain_mask.tif alone
-    isn't real ground truth to sweep against)
+    — monai: _original + brain_mask_is_hand_corrected(); bg: (original or
+    ext_rm) + brain_mask + ground_truth; sigma: the same + no_bg; cellprob:
+    ext_rm + ground_truth; branch_radius: ground_truth.
+
+brain_mask_is_hand_corrected(found): (ok, reason). Run Skin-Remover and GT
+    Annotation both write *_brain_mask.tif (and *_original.tif), so the
+    name proves nothing. GT Annotation's Generate Masks also writes
+    <stem>_brain_polygons_interpolated.npz (SUFFIXES key "brain_polygons")
+    in the same call, so:
+        no brain_mask or no polygons file          -> not hand-corrected
+        polygons stem != brain_mask stem           -> not hand-corrected
+        mask mtime - polygons mtime > 300 s        -> overwritten later
+                                                      (_HAND_MASK_MAX_LAG_S)
+        otherwise                                  -> hand-corrected
 ```
 
 ### `_widget.py` — Tab 6 (Sweeps & Utilities) handlers
 
-Every sweep tool shares: a **Sieve checkbox** (§2's `_add_sieve_controls()` — coarse full-range pass, then 1–2 narrowing stages around the winner) wired to `run_sieve()`; a one-shot **"This is verified ground truth"** checkbox (off by default, self-unticking after every run) gating whether the result is allowed to auto-apply to a live slider/config value or just reported; a **cancel button** wired to a `threading.Event` checked between grid points; and, once a sweep confirms a value, a call to `_update_gt_history(config_key, fish_key, value, mode)` — the shared never-rising/never-falling cross-fish floor/ceiling mechanism every "recommended" default in this plugin is tracked through (§9).
+Every sweep tool shares: a **Sieve checkbox** (§2's `_add_sieve_controls()` — coarse full-range pass, then 2 narrowing stages around the winner; not on Verify Best Epoch) wired to `run_sieve()`; a one-shot **"This is verified ground truth"** checkbox (off by default, un-ticked by the tool's own poll after every run) gating whether the result is allowed to apply to a live slider/config value or just reported — hidden on the MONAI/BG/Sigma/Cellprob sweeps (and Calibrate branch_radius), visible only on Verify Best Epoch; a **Stop** button wired to a `threading.Event` checked between grid points; and, once a value is applied, a call to `_update_gt_history(config_key, fish_key, value, mode)` (or one of the pooled `_update_*_stats_history` variants) — the shared cross-fish mechanism every "recommended" value in this plugin is tracked through (§9).
 
-**GT Toolkit Tuning Tool**: a single file/folder picker driving `discover_fish_files()` + `step_preconditions()`, pre-filling every other sweep tool's own file fields with whatever it found and greying out (with a reason shown) any step this fish's files can't support.
+**GT Toolkit Tuning Tool** (`_on_gtk_scan()` / `_on_gtk_run()` / `_gtk_poll()` / `_on_gtk_stop()`): **Scan** runs `discover_fish_files()`, shows `format_discovery_report()` and fills every folded-in tool's path fields (`_gtk_autofill()`: MONAI image = `_original`, BG/Sigma image = `_original` or `_ExtRm`, Cellprob image = `_ExtRm`, GT = `_GROUND_TRUTH`, plus Calibrate branch_radius and the GT-package fields). **Run** scans again, reads and un-ticks its own visible "verified" box, then:
+```
+step 0 (instant, if _GROUND_TRUTH.tif exists): min/max cell voxel counts +
+    min_hole_size_from_gt(); if verified → _update_gt_history for
+    min_volume_vox (min), max_volume_vox (max), min_hole_size_vox (min),
+    applied to the Common Settings values/slider and the Statistics ceiling
+queue ← the steps step_preconditions() allows, in order
+        monai → bg → sigma → cellprob → branch_radius (skipped ones reported)
+for each queued step (polled every 500 ms, one at a time):
+    tick that tool's hidden GT checkbox to match "verified", click its Run
+    wait until its thread AND its own poll timer have finished
+    append its status line to the report
+_notify_outer_job is set for the whole queue, so only the toolkit emails
+Stop: cancels the running step, truncates the queue after it
+```
 
-**Build GT-Correction Package**: background-thread wrapper around `build_gt_package()`, auto-selecting `best_corrected_masks()` and the matching `_cp.tif`/`_brain_mask.tif`/`_original.tif`/newest `_autocorrect_report.txt` when a fish folder is picked via the GT Toolkit discovery above.
+**Build GT-Correction Package**: background-thread wrapper around `build_gt_package()`; browsing **Source image** runs `discover_fish_files()` on it and fills stem, `best_corrected_masks()`, `_cp.tif`, `_brain_mask.tif`, `_original.tif`, the newest `_autocorrect_report.txt` and the output folder (the GT Toolkit's Scan fills the same fields). Missing brain mask / raw signal / report don't block the build; the status line warns what the reviewer will lack.
 
 ---
 
 ## 9. `_widget.py` — application shell
 
-At 10,810 lines and 145 functions, `_widget.py` is both the biggest file in the plugin and the least algorithmically interesting one — the vast majority of it is straightforward Qt widget construction (`_build_ui()`, ~4,000 lines) and thin handler functions that read a few widgets, call into one of the modules covered in §3–§8, and write the result back to a napari layer via the threading pattern in §1. Rather than re-describe every handler a second time, this section covers the parts of the file that are genuinely its own infrastructure — construction, config persistence, cross-fish history, layer resolution, the hang watchdog, and email notification — and then indexes every handler by which pipeline-stage section already documents it.
+At about 12,000 lines and 165 functions/methods, `_widget.py` is both the biggest file in the plugin and the least algorithmically interesting one — the vast majority of it is straightforward Qt widget construction (`_build_ui()`, ~4,200 lines) and thin handler functions that read a few widgets, call into one of the modules covered in §3–§8, and write the result back to a napari layer via the threading pattern in §1. Rather than re-describe every handler a second time, this section covers the parts of the file that are genuinely its own infrastructure — construction, config persistence, cross-fish history, layer resolution, the hang watchdog, and email notification — and then indexes every handler by which pipeline-stage section already documents it.
 
 ### Class structure
 
@@ -1378,7 +1423,7 @@ class ZFMicrogliaAIWidget(QWidget):
     __init__(napari_viewer)
     _build_ui()            — constructs every tab's every widget
     _connect_signals()      — wires every button/combo/layer-event to its handler
-    <145 methods total>     — handlers, one section per tab, plus shell helpers
+    <~150 methods total>    — handlers, one section per tab, plus shell helpers
 ```
 
 ### `__init__` and startup sequence
@@ -1395,6 +1440,7 @@ cellpose_model_path ← saved config only — no bundled default (project-specif
              not shipped with the plugin)
 self._state ← {model_path, cellpose_model_path, last_file_path, metadata, config}
 self._skin_hidden_state ← None   # see _on_toggle_skin_visibility, §5
+self._notify_settings ← {enabled: False}; _notify_outer_job ← None   # email, below
 
 _build_ui()
 _connect_signals()             # also fires the initial-visibility calls and
@@ -1408,7 +1454,7 @@ _start_recovery_timer()
 
 ### `_build_ui()` — organization, not algorithm
 
-One long method building six `QTabWidget` pages in order (Skin Remover / Create MG Labels / Edit MG Labels / Statistics / AI Tools / Sweeps & Utilities), each wrapped in `_wrap_scroll()` and built from `_make_collapsible()` group boxes. There's no real control flow here worth pseudocode — every group follows the same shape: a `QGroupBox`, a `QVBoxLayout`, a slider+`_add_reliable_spinbox()` pair per numeric parameter, a status label, a run button. The one thing worth naming explicitly is the **Common Settings** group (Tab 2): Min volume and Min hole size are deliberately *read-only labels*, not editable sliders — both are empirical GT-measured facts (§8's `min_volume_from_gt`/`min_hole_size_from_gt`), not tunable knobs a user should be able to accidentally drift away from a measured value.
+One long method building six `QTabWidget` pages in order (Skin Remover / Create MG Labels / Edit MG Labels / Statistics / AI Tools / Sweeps & Utilities), each wrapped in `_wrap_scroll()` and built mostly from `_make_collapsible()` group boxes. The Tab 6 (Sweeps & Utilities) layout is created first, so groups built inside the other tabs' code (each GT sweep, Score Against GT, Build GT-Correction Package, Email notification, Drift View, Autosave, Calibrate Correct-Label Contrast) register themselves in `self._t5_groups` (+ a category list for the "Show tools for..." filter) and are placed by one `_t5_order` tuple at the end, guarded by an assert that every registered group is listed. There's no real control flow here worth pseudocode — every group follows the same shape: a `QGroupBox`, a `QVBoxLayout`, a slider+`_add_reliable_spinbox()` pair per numeric parameter, a status label, a run button. The one thing worth naming explicitly is the **Common Settings** group (Tab 2): **Min volume** and **Max volume** are deliberately *read-only labels*, not editable sliders — both are empirical GT-measured facts (§8), not tunable knobs; Min hole size and Final min-size fraction are ordinary sliders.
 
 ### Config persistence
 
@@ -1446,16 +1492,18 @@ _update_gt_history(config_key, fish_key, value, mode):
                                                             # optimum, no safe
                                                             # direction to bias
 ```
-`_update_merge_stats_history(fish_key, merge_stats)` is the one exception, storing a whole *sample-list dict* per fish (not a scalar) and re-running `recommend_merge_params()` (§8) over the freshly-pooled set from every fish calibrated so far, rather than averaging a per-fish scalar.
+`_update_merge_stats_history`, `_update_minsize_stats_history` and `_update_largecontact_stats_history` are the exceptions, storing a whole *sample-list dict* per fish (not a scalar) and re-running `recommend_merge_params()` / `recommend_min_size()` / `recommend_large_contact()` (§8) over the freshly-pooled set from every fish calibrated so far, rather than averaging a per-fish scalar.
 
 ### Layer resolution
 
 Three different "which layer" resolvers, each deliberately scoped to a different part of the plugin (see §1's "Layer-selection philosophy"):
 - **`_active_layer()`**: active selection if it's an `Image` layer, else the topmost `Image` layer, else `None` — the plugin's original, still-used-for-Tab-1 fallback.
-- **`_active_labels_layer()`**: same pattern for `Labels` layers — used by a few route-agnostic tools (Split/Join/Save) that predate the Edit MG Labels tab's shared selector.
-- **`_edit_labels_layer()`**: reads the *explicit* combo the user set in Edit MG Labels' own "Layers and label(s) being edited" section — every Stage-3 tool (§5) uses this one, never a fallback, so the layer being edited is never guessed.
+- **`_active_labels_layer()`**: same pattern for `Labels` layers — used by Generate Statistics and Re-run This Cell Only's "Use selected" button.
+- **`_edit_labels_layer()`**: reads the *explicit* combo the user set in Edit MG Labels' own "Layers and label(s) being edited" section — every Stage-3 tool (§5), Calibrate Correct-Label Contrast and Autosave use this one, never a fallback, so the layer being edited is never guessed. It also forces `n_edit_dimensions = 2` on that layer each call (a guard for napari's own paint/fill tools); `_refresh_stats_layers()` calls it after every layer change for exactly that side effect.
+- **Auto-fill** (inside `_refresh_stats_layers()`, only for combos still on "None"): anchor = the selected Image layer ending in `_brain_only_ExtRm/_NoBG/_RndFill/_brain_only`, else the topmost such layer; `stem` = anchor minus that suffix. Signal ← the layer named exactly `stem` (the raw channel; never the anchor), Brain mask ← `<stem>_brain_mask`, Labels ← `<anchor>_cellpose_labels` or `<anchor>_labels`, else the selected/topmost Labels layer not ending in `_brain_mask`. Cellpose-SAM's Signal combo ← the first `_ExtRm` layer; its Brain-mask combo ← `<stem>_brain_mask` of the active layer.
+- **`_raw_channel_layer(name)`** / **`_resolve_skin_signal_image(name, out_dir)`**: strip one `_BG_SUFFIX` and then `_brain_only` from a layer name to find the raw channel — the first returns that open Image layer (used by the chained Cellpose-SAM auto-correct, which requires it); the second, used for skin's own trim, returns that layer's data, else `<out_dir>/<raw>_original.tif`, else `None` (caller falls back to the signal layer) with a note saying which.
 
-`_get_layer_scale()`: metadata from the last Open-button load, else the active layer's own napari `scale`, else `(1,1,1)` — the one function nearly every physical-unit calculation in the plugin ultimately calls. `_output_dir()`: `<original file's parent>/<original file's stem>`, created on first use — the one folder convention every saved output file in the plugin follows (and that §8's `_gt_toolkit.py` reverse-engineers to auto-discover a fish's files). `_current_min_volume()` / `_lo_sweep_sample_params()`: thin config readers so every route/sweep launcher shares one source of truth instead of each hardcoding its own possibly-diverging copy.
+`_get_layer_scale()`: metadata from the last Open-button load, else the active layer's own napari `scale`, else `(1,1,1)`. `_output_dir()`: `<original file's parent>/<original file's stem>`, created on first use — the original file being the last one opened with the plugin's Open button, else the first layer whose napari `source.path` is set (cached), else the current working directory (with a printed warning). The one folder convention every saved output file in the plugin follows (and that §8's `_gt_toolkit.py` reverse-engineers to auto-discover a fish's files). `_current_min_volume()` / `_lo_sweep_sample_params()`: thin config readers so every route/sweep launcher shares one source of truth instead of each hardcoding its own possibly-diverging copy.
 
 ### The hang watchdog
 
@@ -1470,7 +1518,7 @@ _hang_watch_start(what, after_s=600):
 _hang_watch_stop():
     faulthandler.cancel_dump_traceback_later()
 ```
-Wrapped around Protect Skin as Label, Auto-correct, and the Cellpose-SAM-chained auto-correct stage — the slowest operations in the plugin, extended to 30 minutes (from an original 10) after real full-fish runs were found to legitimately take that long.
+Wrapped around Protect Skin as Label, Auto-correct Labels, and the Cellpose-SAM-chained auto-correct stage — the slowest operations in the plugin — with `after_s=1800` (30 minutes).
 
 ### Email notification
 
@@ -1493,15 +1541,15 @@ _finish_notify_job(job, ok, subject=None, body=""):     # any thread, never rais
 
 Worker threads never read Qt widgets: `_sync_notify_settings()` keeps a GUI-thread snapshot of the panel (`self._notify_settings`) updated on every edit, and `_finish_notify_job` reads only that. Fields are persisted on edit-finished (`_persist_notify_fields`, password via `_secrets.py`, never plaintext); the switch and threshold on change.
 
-### The 10-minute recovery timer
+### The recovery (autosave) timer
 
-`_start_recovery_timer()` — the one `QTimer` in the plugin meant to live for the whole session (every other background-work `QTimer` calls `deleteLater()` once its job finishes; a real historical OOM leak came from `QTimer`s that didn't, keeping their connected closures — often a full label-array copy — pinned in memory for the rest of the session). Every 10 minutes, saves every current `Labels` layer to `<output_dir>/<layer_name>_recovery.tif` in a background thread, overwriting the previous save — a crash loses at most ~10 minutes of manual label editing, not the whole session.
+`_start_recovery_timer()` — the one `QTimer` in the plugin meant to live for the whole session (every other background-work `QTimer` calls `deleteLater()` once its job finishes, so its closure — often a full label-array copy — isn't pinned in memory for the rest of the session). Its interval comes from Tab 6's **Autosave Labels Layer** (default 30 minutes; minutes or hours; `_current_recovery_interval_ms()`), and `_on_autosave_settings_changed()` persists the setting and restarts the timer so a new interval takes effect immediately. Each tick, `_do_recovery_save()` does nothing if the checkbox is off or no Labels layer is picked in Tab 3's shared selector; otherwise it saves **only that one layer** to `<output_dir>/<layer_name>_recovery.tif` (int32) in a background thread, overwriting the previous save — a crash loses at most one interval of manual label editing.
 
 ### `_refresh_*` family — keeping the UI in sync with the viewer
 
 Each wired to `viewer.layers.events.inserted`/`.removed` (and, for the active-selection-dependent ones, `.selection.events.changed`), so the UI never goes stale as layers are added/removed/renamed elsewhere:
 - **`_refresh_layer_info()`** / **`_update_labels_section_visibility()`**: shows/hides the Pixel Classifier vs. Cellpose-SAM Segmentation groups based on whether a matching `_NoBG`/`_ExtRm`-suffixed Image layer *exists anywhere in the viewer* — not just whether it's the currently active layer (a real historical bug: the old active-layer-only check could hide a route's tools the moment the user selected the Labels layer itself, exactly what "Use selected" requires).
-- **`_refresh_stats_layers()`**: repopulates Tab 4's Image/Shapes combos (§6).
+- **`_refresh_stats_layers()`**: repopulates every layer combo and runs the auto-fill rules above (§6).
 - **`_refresh_gt_layers()`**: repopulates Tab 5's GT Annotation Image combo (§7).
 - **`_refresh_meta_lbl()`**: updates the Z/Y/X µm + anisotropy display under Tab 1's Open button.
 
@@ -1512,11 +1560,11 @@ Every button/combo handler in the file is documented, with real behavior, in the
 | Tab | Section | Representative handlers |
 |---|---|---|
 | 1 — Skin Remover | §3 | `_on_open`, `_on_load_labels`, `_on_run`, `_on_browse_model`, `_on_bg_mode_changed` |
-| 2 — Create MG Labels | §4 | `_on_create_labels`, `_on_run_cellpose_seg`, `_on_rerun_single_cell`, `_resolve_rerun_layers`, `_on_browse_cp_model`, `_run_auto_correction_stage`, `_run_sanding_stage` |
-| 3 — Edit MG Labels | §5 | `_on_resort_labels`, `_on_remove_debris`, `_on_split_label`, `_on_join_labels`, `_on_correct_label`, `_on_correct_adjacent_labels`, `_on_copy_label_to_adjacent_slice`, `_on_protect_skin`, `_on_remove_skin_label`, `_on_toggle_skin_visibility`, `_on_autocorrect_labels`, `_on_save_labels`, `_on_run_contrast_sweep`, `_on_toggle_drift`, `_on_use_selected_label_a/b/rerun`, `_on_correct_label_id_changed` |
-| 4 — Statistics | §6 | `_on_generate_stats`, `_on_stats_backend_changed`, `_on_gtscore_run` |
-| 5 — AI Tools | §7 | `_on_gt_interpolate`, `_on_gt_generate_masks`, `_on_gt_image_changed`, `_on_prepare_monai_data`, `_on_mt_launch_training`, `_on_mt_stop_training`, `_resume_monai_job_if_active`, `_start_monai_polling`, `_on_ct_launch_training`, `_on_ct_stop_training`, `_resume_cellpose_job_if_active`, `_start_cellpose_polling`, `_on_ct_calib_run` (branch_radius), `_on_es_run_sweep` (epoch sweep), `_on_xz_run` (XZYZ patches), `_write_cellpose_best_pointer` |
-| 6 — Sweeps & Utilities | §8 | `_on_gtk_scan`/`_on_gtk_run` (GT Toolkit), `_on_bs_run_sweep` (brain/MONAI), `_on_ps_run_sweep` (BG Threshold/Erosion), `_on_sg_run_sweep` (Sigma), `_on_kr_run_sweep` (Cellprob/Large-contact), `_on_gtp_run` (GT package) |
+| 2 — Create MG Labels | §4 | `_on_create_labels`, `_on_run_cellpose_seg`, `_on_rerun_single_cell`, `_resolve_rerun_layers`, `_on_use_selected_label_rerun`, `_on_browse_cp_model`, `_run_auto_correction_stage`, `_run_sanding_stage` |
+| 3 — Edit MG Labels | §5 | `_on_resort_labels`, `_on_remove_debris`, `_on_split_label`, `_on_join_labels`, `_on_correct_label`, `_on_correct_adjacent_labels`, `_on_copy_label_to_adjacent_slice`, `_on_protect_skin`, `_on_remove_skin_label`, `_on_toggle_skin_visibility`, `_on_autocorrect_labels`, `_run_sanding_stage_ac`, `_on_save_labels`, `_on_use_selected_label_a/b`, `_on_correct_label_id_changed` |
+| 4 — Statistics | §6 | `_on_generate_stats`, `_on_stats_backend_changed` |
+| 5 — AI Tools | §7 | `_on_ai_tools_mode_changed`, `_on_gt_interpolate`, `_on_gt_generate_masks`, `_on_gt_image_changed`, `_on_prepare_monai_data`, `_on_mt_launch_training`, `_on_mt_stop_training`, `_resume_monai_job_if_active`, `_start_monai_polling`, `_on_ct_launch_training`, `_on_ct_stop_training`, `_resume_cellpose_job_if_active`, `_start_cellpose_polling`, `_on_ct_calib_run` (branch_radius), `_on_xz_run` (XZYZ patches), `_on_cc_run` (combine crops), `_write_cellpose_best_pointer` |
+| 6 — Sweeps & Utilities | §8 | `_on_gtk_scan`/`_on_gtk_run`/`_gtk_poll`/`_on_gtk_stop` (GT Toolkit), `_on_bs_run_sweep` (brain/MONAI), `_on_ps_run_sweep` (BG Threshold/Signal Erosion), `_on_sg_run_sweep` (Sigma), `_on_kr_run_sweep` (Cellprob + merge/min size/large-contact), `_on_es_run_sweep`/`_on_es_read_recommended` (epoch sweep), `_on_run_contrast_sweep` (Calibrate Correct-Label Contrast), `_on_gtscore_run` (Score Against GT), `_on_gtp_run` (GT package), `_on_send_test_email`, `_on_toggle_drift`, `_on_autosave_settings_changed` |
 | Shell (this section) | §9 | `__init__`, `_build_ui`, `_connect_signals`, `_status`, `_save_cfg`, `_update_gt_history`, `_update_merge_stats_history`, `_hang_watch_start/stop`, `_get_notify_creds`, `_build_notify_cfg`, `_sync_notify_settings`, `_persist_notify_fields`, `_new_notify_job`, `_start_notify_job`, `_job_thread`, `_finish_notify_job`, `_on_send_test_email`, `_start_recovery_timer`, `_output_dir`, `_get_layer_scale`, `_active_layer`, `_active_labels_layer`, `_edit_labels_layer`, `_refresh_*`, `_current_min_volume`, `_lo_sweep_sample_params`, `_on_ai_tools_mode_changed`, `_update_labels_section_visibility` |
 
 ---
@@ -1525,33 +1573,33 @@ Every button/combo handler in the file is documented, with real behavior, in the
 
 | File | Lines | Purpose | Guide section |
 |---|---|---|---|
-| `_widget.py` | 10,810 | Application shell — all 6 tabs, every button handler, config, layer resolution | §3–§9 |
-| `_labeling.py` | 2,883 | Pixel Classifier connected-components engine + every label-editing primitive (resort, debris, split, join, correct, copy, skin protection) | §4, §5 |
-| `_auto_correction.py` | 993 | 6-step unattended per-cell auto-correction pipeline, chained after Cellpose-SAM Segmentation | §5 |
-| `_cellpose_seg.py` | 808 | Cellpose-SAM `do_3D` inference + GMM cleanup + Krendl safe-merge + large-contact merge + final safety net | §4 |
+| `_widget.py` | 12,052 | Application shell — all 6 tabs, every button handler, config, layer resolution | §3–§9 |
+| `_labeling.py` | 3,281 | Pixel Classifier connected-components engine + every label-editing primitive (resort, debris, split, join, correct, copy, skin protection) | §4, §5 |
+| `_auto_correction.py` | 1,021 | 6-step unattended per-cell auto-correction pipeline, chained after Cellpose-SAM Segmentation | §5 |
+| `_cellpose_seg.py` | 820 | Cellpose-SAM `do_3D` inference + GMM cleanup + Krendl safe-merge + large-contact merge + final safety net | §4 |
 | `_statistics.py` | 764 | Per-label morphology/spatial/intensity statistics + natural-language descriptions | §6 |
-| `_krendl_sweep.py` | 719 | Cellprob x Large-contact GT sweep + real-prediction merge-parameter calibration | §8 |
+| `_krendl_sweep.py` | 842 | Cellprob voxel-level GT sweep + real-prediction max_gap/min_contact, Min size and Large-contact calibration | §8 |
 | `_pixel_sweep.py` | 609 | BG Threshold x Signal Erosion / Smooth σXY x σZ GT sweeps + GT-measured floors (`min_volume_from_gt`, `min_hole_size_from_gt`, `min_intercell_gap_um`) | §8 |
 | `_io.py` | 284 | Metadata-aware `.tif`/`.ims` loading, voxel-scale resolution | §2 |
-| `_grow_correct.py` | 493 | Auto-grow / until-stable orchestration around Correct Label's 2D and 3D engines | §5 |
+| `_grow_correct.py` | 540 | Auto-grow / until-stable orchestration around Correct Label's 2D and 3D engines | §5 |
 | `_training_jobs.py` | 378 | Cross-platform detached-process training job management (launch, poll, kill, patience early-stop, email) | §7 |
 | `_gt_annotation.py` | 322 | Polygon-based hand-drawn GT annotation (brain/skin masks) | §7 |
 | `_combine_crops.py` | 85 | Symlinks one fish's crop folder into a shared multi-fish training pool | §7 |
 | `_epoch_sweep.py` | 275 | GT-verified Cellpose-SAM checkpoint (epoch) sweep, bbox-restricted | §8 |
-| `_contrast_sweep.py` | 275 | Self-referential Correct-Label contrast (`lo`) calibration against Cellpose-SAM's own output | §5 |
+| `_contrast_sweep.py` | 321 | Self-referential Correct-Label contrast (`lo`) calibration against Cellpose-SAM's own output | §5 |
 | `_background.py` | 193 | Population-mode background estimation + 3 background-removal modes | §3 |
 | `_xzyz_patches.py` | 187 | Orientation-slice (XY/XZ/YZ) 2D training-crop generation, the current Cellpose-SAM training methodology | §7 |
-| `_gt_toolkit.py` | 180 | Single-folder auto-discovery of a fish's files + step preconditions ("GT Toolkit Tuning Tool") | §8 |
-| `_gt_package.py` | 167 | Zips a GT-correction package (source image, correction starting point, guide, stats CSV) for external manual review | §8 |
+| `_gt_toolkit.py` | 248 | Single-folder auto-discovery of a fish's files + step preconditions ("GT Toolkit Tuning Tool") | §8 |
+| `_gt_package.py` | 209 | Zips a GT-correction package (source image, correction starting point, guide, stats CSV) for external manual review | §8 |
 | `_brain_sweep.py` | 165 | GT-verified MONAI Threshold x Erosion sweep for the brain mask | §8 |
 | `_secrets.py` | 188 | Two-tier (OS keyring → local Fernet-encrypted file) secret storage | §2 |
 | `_crop_truncation.py` | 146 | Zeros out incidentally-truncated neighbor labels in training crops | §7 |
 | `_branch_calibration.py` | 134 | Measures real branch radius from GT to recalibrate the branch-weighted training loss | §7 |
-| `_gt_score.py` | 126 | Whole-fish Hungarian-matched TP/FP/FN/Score/IoU/Dice scoring — the shared methodology every sweep builds on | §8 |
+| `_gt_score.py` | 126 | Whole-fish Hungarian-matched TP/FP/FN/Score/IoU/Dice scoring, behind Score Against GT | §8 |
 | `_live_progress.py` | 116 | Captures MONAI's/Cellpose's own otherwise-invisible progress output into the GUI log | §2 |
 | `_sieve.py` | 105 | Generic coarse-to-fine sweep-narrowing engine, shared by every continuous-axis GT sweep | §2 |
 | `_ai_tools.py` | 89 | argv builders + default script-path resolution for the 3 training scripts | §7 |
-| `_sanding.py` | 134 | Sigma-softening (contour polishing) pass, chained after any label-regenerating correction | §4 |
+| `_sanding.py` | 209 | Cavity fill + sigma-softening (contour polishing) pass, chained after any label-regenerating correction | §4 |
 | `_reader.py` | 58 | napari File-menu integration (`.tif`/`.ims` reader registration) | §2 |
 | `_gpu_check.py` | 55 | GPU/VRAM classification (informational banner, never a hard gate) | §2 |
 | `__main__.py` | 53 | CLI entry point / pre-loading a file at launch | — |

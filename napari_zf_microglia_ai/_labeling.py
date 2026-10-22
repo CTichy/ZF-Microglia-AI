@@ -2570,11 +2570,10 @@ def seed_skin_label(
 
     This is only a bulk SEED -- it fills the WHOLE outside-brain
     region unconditionally, including empty background far from any
-    real tissue. Follow up with correct_label_from_intensity_3d() on
-    the returned skin_label_id (same as any other label, but pass
-    resolve_adjacent=False -- see that parameter's own docstring for
-    why) to trim it down to just the real, signal-supported skin
-    territory.
+    real tissue. Follow up with trim_skin_label() on the returned
+    skin_label_id, which corrects it slice by slice in 2D (Correct
+    Label's own grow_correct_label_2d() engine) down to just the real,
+    signal-supported skin territory.
 
     labels, brain_mask : (Z, Y, X) arrays, same shape. brain_mask is
                           boolean-like (nonzero = brain, kept).

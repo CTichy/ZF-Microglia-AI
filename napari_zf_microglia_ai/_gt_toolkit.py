@@ -14,22 +14,28 @@ stem --
 
   <parent>/<stem>.ims                          (raw source, sits BESIDE
                                                   the folder, not in it)
-  <parent>/<stem>/<stem>_original.tif           (GT Annotation only --
-                                                  a normal Tab 1 run
-                                                  never writes this)
+  <parent>/<stem>/<stem>_original.tif           (raw signal channel --
+                                                  written by GT
+                                                  Annotation, and by
+                                                  Run Skin-Remover as
+                                                  <layer>_original.tif
+                                                  in every Background
+                                                  mode except Off)
   <parent>/<stem>/<stem>_brain_mask.tif         (raw un-eroded MONAI
                                                   mask -- or hand-
                                                   corrected, if this
                                                   fish went through GT
                                                   Annotation; the two
                                                   are indistinguishable
-                                                  by filename alone, so
-                                                  _original.tif's
-                                                  presence -- which
-                                                  ONLY GT Annotation
-                                                  writes -- is used as
-                                                  the signal that this
-                                                  one is hand-corrected)
+                                                  by filename alone)
+  <parent>/<stem>/<stem>_brain_polygons_interpolated.npz
+                                                (GT Annotation only --
+                                                  written in the same
+                                                  Generate Masks call
+                                                  as its brain mask;
+                                                  see
+                                                  brain_mask_is_hand_
+                                                  corrected())
   <parent>/<stem>/<stem>_brain_only_ExtRm.tif   (Background mode 1)
   <parent>/<stem>/<stem>_brain_only_NoBG.tif    (Background mode 2 --
                                                   Pixel Classifier route)
@@ -65,6 +71,7 @@ from pathlib import Path
 SUFFIXES = {
     "original":            "_original.tif",
     "brain_mask":          "_brain_mask.tif",
+    "brain_polygons":      "_brain_polygons_interpolated.npz",
     "ext_rm":              "_brain_only_ExtRm.tif",
     "no_bg":               "_brain_only_NoBG.tif",
     "rnd_fill":            "_brain_only_RndFill.tif",
@@ -149,6 +156,50 @@ def format_discovery_report(folder, stem, found) -> str:
     return "\n".join(lines)
 
 
+# Generate Masks (GT Annotation) writes the interpolated polygons and the
+# brain mask a few seconds apart; a brain mask written later than this
+# after its polygons came from something else (e.g. Run Skin-Remover
+# writing the same filename) and is no longer the hand-drawn one.
+_HAND_MASK_MAX_LAG_S = 300.0
+
+
+def brain_mask_is_hand_corrected(found):
+    """Whether this fish's discovered brain mask is the one GT
+    Annotation drew, not a MONAI prediction. Both write
+    <stem>_brain_mask.tif, so the filename alone can't tell; GT
+    Annotation also writes <stem>_brain_polygons_interpolated.npz in the
+    same Generate Masks call, so the mask counts as hand-corrected only
+    when that file exists beside it with the same stem and the mask was
+    not written more than _HAND_MASK_MAX_LAG_S seconds after it.
+
+    Returns (ok: bool, reason: str)."""
+    mask = found.get("brain_mask")
+    polys = found.get("brain_polygons")
+    if mask is None:
+        return False, "no <stem>_brain_mask.tif found."
+    if polys is None:
+        return False, (
+            "no <stem>_brain_polygons_interpolated.npz beside the brain mask -- "
+            "the mask can't be shown to come from GT Annotation, so it is "
+            "treated as a MONAI prediction."
+        )
+    mask_stem = mask.name[: -len(SUFFIXES["brain_mask"])]
+    poly_stem = polys.name[: -len(SUFFIXES["brain_polygons"])]
+    if mask_stem != poly_stem:
+        return False, (
+            f"the brain mask ({mask.name}) and the GT Annotation polygons "
+            f"({polys.name}) belong to different stems."
+        )
+    lag = mask.stat().st_mtime - polys.stat().st_mtime
+    if lag > _HAND_MASK_MAX_LAG_S:
+        return False, (
+            f"{mask.name} was written {lag / 60:.0f} min after GT Annotation's "
+            f"polygons -- it was overwritten after annotation (e.g. by Run "
+            f"Skin-Remover) and is no longer the hand-drawn mask."
+        )
+    return True, "brain mask written by GT Annotation (polygons file beside it)."
+
+
 def step_preconditions(found):
     """Which of the 5 folded-in GT-sweep/calibration steps can run
     against this fish's discovered files, and why not for the ones that
@@ -163,14 +214,14 @@ def step_preconditions(found):
     have_ext_rm = found["ext_rm"] is not None
     have_brain_mask = found["brain_mask"] is not None
     have_raw_or_ext = have_original or have_ext_rm
+    hand_mask, hand_reason = brain_mask_is_hand_corrected(found)
 
     return {
         "monai": (
-            have_original and have_brain_mask,
-            "needs <stem>_original.tif + <stem>_brain_mask.tif -- both only "
-            "exist if this fish went through GT Annotation (Tab 4), which is "
-            "also what makes brain_mask.tif hand-corrected rather than a raw "
-            "MONAI prediction."
+            have_original and hand_mask,
+            "needs <stem>_original.tif + a hand-corrected <stem>_brain_mask.tif "
+            "from GT Annotation (AI Tools), proven by <stem>_brain_polygons_"
+            "interpolated.npz beside it -- " + hand_reason
         ),
         "bg": (
             have_raw_or_ext and have_brain_mask and have_gt,

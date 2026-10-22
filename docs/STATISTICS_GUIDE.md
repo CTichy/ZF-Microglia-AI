@@ -1,8 +1,8 @@
-# Statistics Guide — algorithms and methods behind Tab 3
+# Statistics Guide — algorithms and methods behind Tab 4
 
-This document explains **how** each column in the Tab 3 "Generate Statistics" CSV is computed — the specific algorithm, library, and formula behind it — not just what the number means. For a plain-English, biology-oriented explanation of each column instead, see [GUIDE.md, Section 11](GUIDE.md#11-statistics-csv--all-columns-explained). This document is the companion reference for anyone extending `_statistics.py`, auditing a result, or writing up the method (e.g. a Methods section).
+This document explains **how** each column in the Tab 4 (Statistics) "Generate Statistics" CSV is computed — the specific algorithm, library, and formula behind it — not just what the number means. For a plain-English, biology-oriented explanation of each column instead, see [GUIDE.md, Section 12](GUIDE.md#12-statistics-csv--all-columns-explained). This document is the companion reference for anyone extending `_statistics.py`, auditing a result, or writing up the method (e.g. a Methods section).
 
-All of this lives in one module, `napari_zf_microglia_ai/_statistics.py`, entered through a single function, `compute_stats()`.
+All of this lives in one module, `napari_zf_microglia_ai/_statistics.py`, entered through a single function, `compute_stats()` — except `is_volume_outlier` (§7.5) and the column filtering, which `_widget.py` applies afterward. `compute_stats()` returns 46 columns always and 51 with both optional inputs; with `is_volume_outlier` the CSV has up to 52. The tab's **Output columns** checklist decides which of them are written.
 
 ---
 
@@ -38,7 +38,7 @@ All of this lives in one module, `napari_zf_microglia_ai/_statistics.py`, entere
 
 **GPU backend detection** (`_detect_stats_backend()`): tries importing `cupy` + `cucim.skimage.measure`, then runs a 4×4×4 smoke-test `regionprops_table` call to confirm the CUDA JIT actually compiles and runs (not just that the import succeeded) before committing to the GPU path for the whole run. Falls back to CPU (`skimage.measure.regionprops_table`) on any failure — including cuCIM being unavailable on Windows, since it has no native Windows wheels (see README/GUIDE's Windows install notes).
 
-**Thread count**: `_N_THREADS = max(1, os.cpu_count() // 2)` — half the logical cores, leaving headroom for the GPU-bound phase and the main thread rather than saturating every core.
+**Thread count**: `_N_THREADS = max(1, (os.cpu_count() or 4) // 2)` — half the logical cores, leaving headroom for the GPU-bound phase and the main thread rather than saturating every core.
 
 ---
 
@@ -162,7 +162,7 @@ From that branch table:
 
 ## 6. Phase 2b — Intensity statistics (optional)
 
-Only computed when `compute_stats()` is called with an `image` array (Tab 3's Image-layer selector). `_intensity_stats_worker` crops both the label mask and the source image to the label's bounding box, then:
+Only computed when `compute_stats()` is called with an `image` array (Tab 4's Image-layer selector). `_intensity_stats_worker` crops both the label mask and the source image to the label's bounding box, then:
 
 ```
 mean_intensity        = mean(image[mask])
@@ -228,7 +228,7 @@ E[NND] = Γ(4/3) · (3 / (4π·ρ))^(1/3)
 Unlike every other column on this page, `is_volume_outlier` is not produced inside `compute_stats()` at all — it's appended afterward, in `_widget.py`'s `_on_generate_stats()`, once the DataFrame comes back. It exists to hand the two "is this cell real?" edge cases GT sweeps and pipeline stages can't resolve on their own back to a human:
 
 - **Too big** — could be two touching cells the pipeline's merge/split logic left joined instead of separating.
-- **Too small** — could be genuine debris, or could be a real but unusually small microglia; below the deletion threshold, both routes already remove it outright (see [GUIDE.md §6a, Final min-size fraction](GUIDE.md#6a-which-tool-is-active--pixel-classifier-or-cellpose-sam) — Cellpose-SAM's final safety-net stage, the Pixel Classifier's own volume filter cutoff), but the gray zone between that threshold and the confirmed floor survives untouched on purpose on both routes.
+- **Too small** — could be genuine debris, or could be a real but unusually small microglia; below the deletion threshold, both routes already remove it outright (see [GUIDE.md, Final min-size fraction](GUIDE.md#final-min-size-fraction--both-routes) — Cellpose-SAM's final safety-net stage, the Pixel Classifier's own volume filter cutoff), but the gray zone between that threshold and the confirmed floor survives untouched on purpose on both routes.
 
 ```python
 too_big   = df["volume_vox"] > max_ceiling if max_ceiling is not None else False
@@ -236,13 +236,13 @@ too_small = df["volume_vox"] < min_floor   if min_floor   is not None else False
 df["is_volume_outlier"] = too_big | too_small
 ```
 
-`max_ceiling` (`max_volume_recommended_vox` in config) and `min_floor` (`min_volume_recommended_vox`, the same field Common Settings' informative Min volume display reads) are both cross-fish histories tracked the same way as every Tab 5 sweep's recommendations — see `_update_gt_history()` in `_widget.py`. `min_floor` is a never-rising floor (`mode="min"`); `max_ceiling` is its never-falling mirror (`mode="max"`, the same direction used for `branch_radius`). Both only move when Tab 3's **"This is verified ground truth"** checkbox is ticked for the run that measured them — an unverified/uncorrected prediction can widen neither bound, though every run, verified or not, is still flagged against whichever bounds were last confirmed.
+`max_ceiling` (`max_volume_recommended_vox` in config) and `min_floor` (`min_volume_recommended_vox`; Common Settings' informative Min volume display shows the related `min_volume_vox`, which the same runs set to the same value) are both cross-fish histories tracked the same way as every Tab 6 sweep's recommendations — see `_update_gt_history()` in `_widget.py`. `min_floor` is a never-rising floor (`mode="min"`); `max_ceiling` is its never-falling mirror (`mode="max"`, the same direction used for `branch_radius`). Statistics never writes either bound. Both are set only by the **GT Toolkit Tuning Tool** with its "This is verified ground truth" box ticked — the max ceiling from its first step (largest cell in `<stem>_GROUND_TRUTH.tif`), the min floor from that same step and from its BG Threshold and Smooth σ sweep steps. While a bound is unset, it flags nothing; every run, verified or not, is flagged against whichever bounds were last confirmed.
 
 ---
 
 ## 8. Post-assembly — Brain region assignment (optional)
 
-Only computed when Tab 3 is given a Shapes layer of boundary lines/polylines (drawn by the user, one curve per boundary between two anatomical regions) and a list of region names.
+Only computed when Tab 4 is given a Shapes layer of boundary lines/polylines (drawn by the user, one curve per boundary between two anatomical regions; only `line` and `path` shapes are used) and, optionally, a list of region names (blank → `Region 1`, `Region 2`, …).
 
 ### 8.1 Geometric primitive: point-to-polyline projection
 
@@ -250,7 +250,7 @@ Only computed when Tab 3 is given a Shapes layer of boundary lines/polylines (dr
 
 1. For every consecutive vertex pair `(a, b)` in the polyline, project the point onto the **infinite line** through `a`→`b`, then clamp the projection parameter `t` to `[0, 1]` — this restricts the projection to the actual segment, not the infinite line (standard point-to-segment-distance technique).
 2. Track the minimum distance across all segments — that segment is the "nearest segment."
-3. At that nearest segment, compute the 2D cross product `dx_seg·(cy − ay) − dy_seg·(cx − ax)`. Its **sign** tells you which side of the segment's direction the point is on: this project's fish are oriented head (small X) → tail (large X), with boundary curves drawn top→bottom (increasing Y) by convention (see GUIDE.md §7a), so a negative cross product means the point is posterior to (right of) that boundary.
+3. At that nearest segment, compute the 2D cross product `dx_seg·(cy − ay) − dy_seg·(cx − ax)`. Its **sign** tells you which side of the segment's direction the point is on: this project's fish are oriented head (small X) → tail (large X), with boundary curves drawn top→bottom (increasing Y) by convention (see [GUIDE.md, Brain regions](GUIDE.md#brain-regions-optional)), so a negative cross product means the point is posterior to (right of) that boundary.
 
 ### 8.2 Region index from multiple boundaries
 
@@ -264,7 +264,7 @@ for boundary in boundaries_sorted_anterior_to_posterior:
 region = region_names[idx]
 ```
 
-With *k* boundary curves this naturally produces *k+1* regions (e.g. 1 boundary → anterior/posterior; 2 boundaries → 3 regions). `region_boundary_dist_um` is simply the minimum distance (in µm) from the cell's centroid to *any* boundary curve — cells near this value are close to a region edge and might reasonably be considered ambiguous/borderline.
+With *k* boundary curves this naturally produces *k+1* regions (e.g. 1 boundary → anterior/posterior; 2 boundaries → 3 regions); missing names are filled in as `region_<n>`. `region_boundary_dist_um` is simply the minimum distance (in µm) from the cell's centroid to *any* boundary curve — cells near this value are close to a region edge and might reasonably be considered ambiguous/borderline.
 
 ---
 
@@ -292,10 +292,10 @@ The `description` column is produced by one of four interchangeable backends, se
 |---|---|---|
 | `rule` (default) | `_rule_based_description()` — a template that stitches together shape/surface/branch phrases from fixed thresholds on the already-computed columns (sphericity, solidity, elongation, branch/endpoint counts, morphotype) | nothing — fully offline, deterministic |
 | `ollama` | POSTs a formatted prompt to a local Ollama server's `/api/generate` endpoint | a running local Ollama install, no API key |
-| `openai` | POSTs to `{api_url}/v1/chat/completions` (OpenAI-compatible chat endpoint) | an API key |
-| `claude` | POSTs to `https://api.anthropic.com/v1/messages` | an API key |
+| `openai` | POSTs to `{api_url}/v1/chat/completions` (default `https://api.openai.com`, model default `gpt-4o-mini`, `max_tokens` 80) | an API key |
+| `claude` | POSTs to `https://api.anthropic.com/v1/messages` (model default `claude-haiku-4-5-20251001`, `max_tokens` 80; the Base URL field is not used) | an API key |
 
-The three API backends all format the same shared prompt template (`_STATS_PROMPT`) with that row's already-computed statistics (volume, elongation, dominant axis, sphericity, solidity, branch/endpoint counts, mean branch length, morphotype, centroid) and ask for **one sentence, max 40 words**. Every backend call is wrapped in a `try/except` that returns an inline `"[Backend error: ...]"` string on failure (timeout, bad key, unreachable server) rather than raising — one row's description failing doesn't abort the whole statistics run.
+The three API backends all format the same shared prompt template (`_STATS_PROMPT`) with that row's already-computed statistics (volume, elongation, dominant axis, sphericity, solidity, branch/endpoint counts, mean branch length, morphotype, centroid) and ask for **one sentence, max 40 words**. Every backend call (60 s timeout) is wrapped in a `try/except` that returns an inline `"[Ollama error: ...]"` / `"[OpenAI error: ...]"` / `"[Claude error: ...]"` string on failure (timeout, bad key, unreachable server) rather than raising — one row's description failing doesn't abort the whole statistics run.
 
 The `rule`-based backend is the only one exercised by anything else in the pipeline (it has no external dependency), and is what runs by default with no configuration.
 
@@ -322,7 +322,7 @@ The `rule`-based backend is the only one exercised by anything else in the pipel
 | `morphotype` | [§9](#9-morphotype-classification) |
 | `description` | [§10](#10-natural-language-description-generation) |
 
-For the plain-English meaning of every column (rather than the algorithm behind it), see [GUIDE.md §11](GUIDE.md#11-statistics-csv--all-columns-explained).
+For the plain-English meaning of every column (rather than the algorithm behind it), see [GUIDE.md §12](GUIDE.md#12-statistics-csv--all-columns-explained).
 
 ---
 

@@ -373,6 +373,7 @@ def auto_contrast_correct_stack(
     slices_per_cell_calib: int = 10,
     n_lo_steps: int = 40,
     edge_margin_um: float = 50.0,
+    sample_pad: "int | None" = None,
     growth_step: int = 5,
     max_iterations: int = 10,
     until_stable: bool = True,
@@ -453,6 +454,11 @@ def auto_contrast_correct_stack(
     n_cells_calib, slices_per_cell_calib, n_lo_steps, edge_margin_um
                         : passed straight through to the contrast sweep
                           (select_calibration_samples / default_lo_candidates)
+    sample_pad           : padding (px) around each calibration sample
+                          crop in the contrast sweep (step 1) -- the
+                          Calibrate Correct-Label Contrast tool's own
+                          Bbox padding, so every best_lo sweep crops its
+                          samples identically. None falls back to `pad`.
     growth_step, max_iterations, until_stable, max_stability_passes,
     auto_grow            : forwarded straight through to both skin's own
                           trim (step 2) and every real cell's own
@@ -569,13 +575,14 @@ def auto_contrast_correct_stack(
                 "no interior/complex-enough cells found for contrast calibration "
                 "-- can't auto-correct this stack"
             )
-        lo_candidates = default_lo_candidates(labels, image, samples, pad, n_steps=n_lo_steps)
+        sweep_pad = pad if sample_pad is None else int(sample_pad)
+        lo_candidates = default_lo_candidates(labels, image, samples, sweep_pad, n_steps=n_lo_steps)
 
         def _sweep_progress(msg: str) -> None:
             _report(f"Auto-correct: {msg}")
 
         sweep = sweep_contrast_lower_value(
-            labels, image, samples, lo_candidates, pad=pad, progress_cb=_sweep_progress,
+            labels, image, samples, lo_candidates, pad=sweep_pad, progress_cb=_sweep_progress,
         )
         best_lo_swept = float(sweep["best_lo"])
         best_lo = best_lo_swept - float(lo_adjustment)

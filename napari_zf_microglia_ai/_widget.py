@@ -304,7 +304,7 @@ def _add_gt_checkbox(layout, hint, visible=True):
         "time you want this specific run to count."
         if visible else
         "  GT-verified auto-apply for this sweep now only ever happens "
-        "via the GT Toolkit Tuning Tool (Tab 5, top) -- running it here "
+        "via the GT Toolkit Tuning Tool (Sweeps & Utilities, top) -- running it here "
         "directly always produces a preview report only, never moves a "
         "shared recommended value."
     )
@@ -505,6 +505,16 @@ def _extract_region_lines_um(shapes_lyr):
     return lines
 
 
+def _edit_label_id_error(label_id):
+    """None if label_id is usable as Label A/B in Edit MG Labels (a
+    positive cell ID, or -1 for skin), else the error text to show."""
+    if label_id == 0:
+        return "0 is background, not a label -- pick a positive cell ID or -1 (skin)."
+    if label_id < -1:
+        return f"{label_id} is not a valid label -- the only negative label is -1 (skin)."
+    return None
+
+
 class ZFMicrogliaAIWidget(QWidget):
     """
     Napari dock panel for zebrafish brain extraction, microglia
@@ -609,11 +619,12 @@ class ZFMicrogliaAIWidget(QWidget):
         t5 = QVBoxLayout()
         t5.setSpacing(6)
         t5_note = QLabel(
-            "GT-verification sweeps and related utilities, consolidated from "
-            "Tabs 1-4 -- each tool below still operates on its own tab's data/"
-            "sliders (e.g. the MONAI sweep still recalibrates Tab 1's "
-            "Threshold/Erosion) and auto-applies its findings back there. "
-            "Nothing here is a separate workflow of its own."
+            "GT-verification sweeps and related utilities. Each tool below "
+            "tests the data/sliders of the tab they belong to (e.g. the MONAI "
+            "sweep tests Skin Remover's Threshold/Erosion). Run on their own, "
+            "the GT sweeps only report; their findings are applied back to "
+            "those sliders only by the GT Toolkit Tuning Tool with \"This is "
+            "verified ground truth\" ticked (Verify Best Epoch has its own box)."
         )
         t5_note.setWordWrap(True)
         t5_note.setStyleSheet("color: #888; font-size: 10px;")
@@ -788,7 +799,7 @@ class ZFMicrogliaAIWidget(QWidget):
         t1_note = QLabel(
             "Runs a trained MONAI 3D U-Net to detect and remove everything "
             "outside the brain from a raw confocal stack, producing a clean "
-            "brain_only image for Tab 2 to label. Open a file below, adjust "
+            "brain_only image for Create MG Labels to label. Open a file below, adjust "
             "the threshold/background options if needed, then Run."
         )
         t1_note.setWordWrap(True)
@@ -949,7 +960,7 @@ class ZFMicrogliaAIWidget(QWidget):
             "  BG Threshold sets how far above the inside-brain background "
             "level (its most common intensity, measured after inference) "
             "a voxel must sit to count as background and be removed -- "
-            "used by Mode 1 and Mode 2, ignored by Mode 3. Signal Erosion "
+            "used only by Mode 2, ignored by Off, Mode 1 and Mode 3. Signal Erosion "
             "shrinks each 2D slice's kept signal inward by this many "
             "voxels, and only applies to Mode 2 (the noBG stack Create "
             "MG Labels' Pixel Classifier route uses)."
@@ -1002,7 +1013,7 @@ class ZFMicrogliaAIWidget(QWidget):
             "Runs MONAI inference once, then cheaply sweeps MONAI Threshold x "
             "Erosion on the resulting probability map, scoring the whole brain "
             "mask against a hand-corrected GT brain mask (e.g. from GT "
-            "Annotation in Tab 4) — Dice/IoU on the mask itself, not per-cell."
+            "Annotation in AI Tools) — Dice/IoU on the mask itself, not per-cell."
         )
         bs_note.setWordWrap(True)
         bs_note.setStyleSheet("color: #888; font-size: 10px;")
@@ -1017,7 +1028,7 @@ class ZFMicrogliaAIWidget(QWidget):
         bs_img_row.addWidget(self._bs_img_browse_btn)
         bsl.addLayout(bs_img_row)
         bs_img_note = QLabel(
-            "  Must be the RAW, pre-Tab 1 image — no _ExtRm / _NoBG / "
+            "  Must be the RAW image, before Skin Remover — no _ExtRm / _NoBG / "
             "_RndFill suffix. Feeding an already brain-masked image would "
             "bias the very segmentation this tool is scoring."
         )
@@ -1035,7 +1046,7 @@ class ZFMicrogliaAIWidget(QWidget):
         bsl.addLayout(bs_gt_row)
         bs_gt_note = QLabel(
             "  GT brain mask = a hand-corrected brain_mask.tif (e.g. from GT "
-            "Annotation, Tab 4) — not a MONAI prediction."
+            "Annotation, AI Tools) — not a MONAI prediction."
         )
         bs_gt_note.setStyleSheet("color: #aaa; font-size: 10px;")
         bs_gt_note.setWordWrap(True)
@@ -1138,11 +1149,12 @@ class ZFMicrogliaAIWidget(QWidget):
         t2.setSpacing(6)
 
         t2_note = QLabel(
-            "Detects and labels individual microglia in 3D from Tab 1's "
-            "brain_only output. Shows exactly one of two interchangeable "
-            "methods below, chosen automatically from your active layer's "
-            "filename suffix — Pixel Classifier (_NoBG) or Cellpose-SAM "
-            "Segmentation (_ExtRm, recommended if you have a GPU)."
+            "Detects and labels individual microglia in 3D from Skin Remover's "
+            "brain_only output, with one of two interchangeable methods below. "
+            "Each is shown whenever a matching layer is open in the viewer — "
+            "Pixel Classifier for a _NoBG layer, Cellpose-SAM Segmentation for "
+            "an _ExtRm layer (recommended if you have a GPU); with both open, "
+            "both are shown."
         )
         t2_note.setWordWrap(True)
         t2_note.setStyleSheet("color: #888; font-size: 10px;")
@@ -1188,8 +1200,8 @@ class ZFMicrogliaAIWidget(QWidget):
             "real cell volume ever confirmed by GT, shared by the Pixel "
             "Classifier's own volume filter and Cellpose-SAM's Safe-merge "
             "\"already a whole cell\" floor. It only ever shrinks, and "
-            "only from a Tab 5 sweep or a GT-verified Generate Statistics "
-            "run (Tab 3) — never guessed or hand-tuned. Final min-size "
+            "only from a GT-verified GT Toolkit Tuning Tool run (Sweeps & "
+            "Utilities) — never guessed or hand-tuned. Final min-size "
             "fraction below is the actual tunable control: how far under "
             "this floor a blob can sit before either route deletes it."
         )
@@ -1210,10 +1222,10 @@ class ZFMicrogliaAIWidget(QWidget):
         maxvol_note = QLabel(
             "  Informative only, not directly editable — the largest real "
             "cell volume ever confirmed by GT. It only ever grows, and "
-            "only from a GT-verified Generate Statistics run (Tab 3) — "
-            "never guessed or hand-tuned. Doesn't drive any pipeline "
+            "only from a GT-verified GT Toolkit Tuning Tool run (Sweeps & "
+            "Utilities) — never guessed or hand-tuned. Doesn't drive any pipeline "
             "stage; only used to flag is_volume_outlier in the "
-            "Statistics CSV (Tab 3) for anything bigger."
+            "Statistics CSV for anything bigger."
         )
         maxvol_note.setWordWrap(True)
         maxvol_note.setStyleSheet("color: #888; font-size: 10px;")
@@ -1338,15 +1350,15 @@ class ZFMicrogliaAIWidget(QWidget):
         common_group.setLayout(common_layout)
         t2.addWidget(common_group)
 
-        # ── Pixel Classifier (union-find labels) — shown for _NoBG layers ── #
-        self._pixel_classifier_group = QGroupBox("Pixel Classifier — Union-Find Labels")
+        # ── Pixel Classifier (3D connected components) — shown for _NoBG layers ── #
+        self._pixel_classifier_group = QGroupBox("Pixel Classifier — 3D Connected-Component Labels")
         pcg = QVBoxLayout()
         pcg.setSpacing(6)
 
         lbl_note = QLabel(
             "Classical, GPU-optional labelling: Gaussian smooth → threshold "
-            "→ per-slice 2D connected components → overlap-based union-find "
-            "into 3D objects → volume filter. No trained model needed — the "
+            "→ per-slice hole fill → 3D connected components → volume "
+            "filter. No trained model needed — the "
             "fallback for machines with no usable GPU (see Cellpose-SAM "
             "Segmentation below for the recommended path).\n\n"
             "Run option 2 (Remove globally) first to get a\n"
@@ -1429,12 +1441,12 @@ class ZFMicrogliaAIWidget(QWidget):
         psl.setSpacing(6)
 
         ps_note = QLabel(
-            "Sweeps Tab 1's BG Threshold x Signal Erosion (Background mode 2 — "
+            "Sweeps Skin Remover's BG Threshold x Signal Erosion (Background mode 2 — "
             "\"Remove globally\", the noBG stack used by the Pixel Classifier) "
             "against the N most morphologically complex "
             "cells in a ground-truth-annotated fish, using this section's own "
             "σ XY / σ Z / Min volume above. Doesn't re-run MONAI inference — "
-            "needs a pre-computed brain_mask.tif from a normal Tab 1 run."
+            "needs a pre-computed brain_mask.tif from a normal Run Skin-Remover."
         )
         ps_note.setWordWrap(True)
         ps_note.setStyleSheet("color: #888; font-size: 10px;")
@@ -1476,7 +1488,7 @@ class ZFMicrogliaAIWidget(QWidget):
         ps_lbl_row.addWidget(self._ps_lbl_browse_btn)
         psl.addLayout(ps_lbl_row)
         ps_gt_note = QLabel(
-            "  brain_mask.tif = the RAW (un-eroded) mask Tab 1 saves — same "
+            "  brain_mask.tif = the RAW (un-eroded) mask Run Skin-Remover saves — same "
             "fish as GT image/labels. GT labels = a hand-corrected "
             "microglia instance-label volume, typically named "
             "_GROUND_TRUTH.tif, one integer ID per cell — not the brain "
@@ -1631,10 +1643,7 @@ class ZFMicrogliaAIWidget(QWidget):
             "Sweeps Smooth sigma XY x sigma Z (the Pixel Classifier's "
             "pre-threshold Gaussian smoothing) against the N most complex "
             "cells in a ground-truth-annotated fish, holding BG Threshold "
-            "and Signal Erosion fixed at Tab 1's current values. These sigma "
-            "values have never been swept before in this project -- "
-            "1.5/3.0 has been a guessed starting point since Tab 2 was "
-            "first built, never verified against real GT."
+            "and Signal Erosion fixed at Skin Remover's current values."
         )
         sg_note.setWordWrap(True)
         sg_note.setStyleSheet("color: #888; font-size: 10px;")
@@ -1676,11 +1685,11 @@ class ZFMicrogliaAIWidget(QWidget):
         sg_lbl_row.addWidget(self._sg_lbl_browse_btn)
         sgl.addLayout(sg_lbl_row)
         sg_gt_note = QLabel(
-            "  brain_mask.tif = the RAW (un-eroded) mask Tab 1 saves — "
+            "  brain_mask.tif = the RAW (un-eroded) mask Run Skin-Remover saves — "
             "same fish as GT image/labels. GT labels = a hand-corrected "
             "microglia instance-label volume, typically named "
             "_GROUND_TRUTH.tif, one integer ID per cell — not the brain "
-            "mask. BG Threshold/Erosion are read from Tab 1's current "
+            "mask. BG Threshold/Erosion are read from Skin Remover's current "
             "sliders when you click below, not swept."
         )
         sg_gt_note.setStyleSheet("color: #aaa; font-size: 10px;")
@@ -2034,8 +2043,9 @@ class ZFMicrogliaAIWidget(QWidget):
             "skin at that same threshold (using the brain mask layer "
             "below), resorts every cell by Centroid Z, then corrects "
             "every cell in that order (2D against skin for a touching "
-            "cell, 3D otherwise, growth step 5px up to 10 attempts/slice, "
-            "until-stable up to 100 passes/slice), and removes leftover "
+            "cell, 3D otherwise, with the Bbox padding, auto-grow and "
+            "until-stable values set in Edit MG Labels' Correction Settings), "
+            "and removes leftover "
             "debris. Uses the Auto-sweep + Reduce best_lo by controls in "
             "Edit MG Labels' Contrast low (best_lo) calibration section. "
             "Produces one consolidated report covering every cell."
@@ -2052,7 +2062,7 @@ class ZFMicrogliaAIWidget(QWidget):
         cp_brainmask_note = QLabel(
             "  Required when auto-correct above is checked. Auto-selected "
             "from '<stem>_brain_mask' whenever it matches the active "
-            "brain_only layer -- Tab 1's Open/Run already creates and loads "
+            "brain_only layer -- Run Skin-Remover already creates and loads "
             "that layer alongside every _ExtRm layer, so this is normally "
             "already filled in."
         )
@@ -2393,7 +2403,7 @@ class ZFMicrogliaAIWidget(QWidget):
         gtp_mask_row.addWidget(self._gtp_mask_browse_btn)
         gtpl.addLayout(gtp_mask_row)
         gtp_mask_note = QLabel(
-            "  The raw (un-eroded) brain_mask.tif this fish's own Tab 1 run "
+            "  The raw (un-eroded) brain_mask.tif this fish's own Run Skin-Remover "
             "saved -- without it, whoever corrects this package can't use "
             "Protect Skin as Label at all (it needs a brain mask layer). "
             "Auto-filled from this fish's own folder when \"Source image\" "
@@ -2552,7 +2562,7 @@ class ZFMicrogliaAIWidget(QWidget):
         edit_a_row = QHBoxLayout()
         edit_a_row.addWidget(QLabel("Label A:"))
         self._edit_label_a_spin = QSpinBox()
-        self._edit_label_a_spin.setMinimum(-99999)
+        self._edit_label_a_spin.setMinimum(-1)
         self._edit_label_a_spin.setMaximum(99999)
         self._edit_label_a_spin.setValue(1)
         edit_a_row.addWidget(self._edit_label_a_spin)
@@ -2564,7 +2574,7 @@ class ZFMicrogliaAIWidget(QWidget):
         edit_b_row = QHBoxLayout()
         edit_b_row.addWidget(QLabel("Label B:"))
         self._edit_label_b_spin = QSpinBox()
-        self._edit_label_b_spin.setMinimum(-99999)
+        self._edit_label_b_spin.setMinimum(-1)
         self._edit_label_b_spin.setMaximum(99999)
         self._edit_label_b_spin.setValue(2)
         edit_b_row.addWidget(self._edit_label_b_spin)
@@ -3353,7 +3363,7 @@ class ZFMicrogliaAIWidget(QWidget):
             "  is_volume_outlier below is checked against the never-rising "
             "Min volume floor and never-falling largest-cell ceiling -- "
             "both are tuned exclusively by the GT Toolkit Tuning Tool "
-            "(Tab 5), never from here. Statistics only ever reads them, "
+            "(Sweeps & Utilities), never from here. Statistics only ever reads them, "
             "purely for reporting."
         )
         stats_is_gt_note.setWordWrap(True)
@@ -3365,7 +3375,7 @@ class ZFMicrogliaAIWidget(QWidget):
             "-- the floor side reuses Min volume above."
             if init_max_volume is not None else
             "  is_volume_outlier ceiling: not yet measured -- run the GT "
-            "Toolkit Tuning Tool (Tab 5) against a verified GT fish at "
+            "Toolkit Tuning Tool (Sweeps & Utilities) against a verified GT fish at "
             "least once. The floor side reuses Min volume above."
         )
         self._maxvol_ceiling_lbl.setStyleSheet("color: #aaa; font-size: 10px;")
@@ -3665,8 +3675,9 @@ class ZFMicrogliaAIWidget(QWidget):
             "contrast-low value (best_lo) that best reproduces the "
             "Labels layer's own existing 2D shapes from the Signal "
             "layer's intensity -- no ground truth needed. On success, "
-            "sets the Signal layer's contrast limits to [best lo, "
-            "best lo + 20]. Every other best_lo-driven tool (Protect "
+            "sets the Signal layer's contrast limits to low = best lo, "
+            "high = the 99th percentile of the signal inside the labels "
+            "(at least best lo + 50). Every other best_lo-driven tool (Protect "
             "Skin as Label, Auto-correct Labels, the "
             "Cellpose-SAM auto-correct pipeline, via Edit MG Labels' "
             "own \"Contrast low (best_lo) calibration\" section) runs "
@@ -3733,7 +3744,9 @@ class ZFMicrogliaAIWidget(QWidget):
         ccl.addLayout(ccal_pad_row)
         ccal_pad_note = QLabel(
             "  Bbox padding sets how far around each sampled cell, in "
-            "pixels, the sweep crops before testing candidate lo values."
+            "pixels, the sweep crops before testing candidate lo values -- "
+            "used by every best_lo sweep (this tool, Protect Skin as Label, "
+            "Auto-correct Labels and the Cellpose-SAM auto-correct)."
         )
         ccal_pad_note.setWordWrap(True)
         ccal_pad_note.setStyleSheet("color: #888; font-size: 10px;")
@@ -3858,7 +3871,7 @@ class ZFMicrogliaAIWidget(QWidget):
         ai_monai_group_note = QLabel(
             "The MONAI pipeline, in order: annotate ground truth (below), "
             "prepare the training dataset from it, then train the brain-"
-            "segmentation model Tab 1 uses."
+            "segmentation model Skin Remover uses."
         )
         ai_monai_group_note.setWordWrap(True)
         ai_monai_group_note.setStyleSheet("color: #888; font-size: 10px;")
@@ -3871,7 +3884,7 @@ class ZFMicrogliaAIWidget(QWidget):
         gt_note = QLabel(
             "Creates hand-drawn ground-truth brain/skin masks by interpolating "
             "polygons between key slices — the source of truth MONAI training, "
-            "and the GT-sweep tools in Tab 5, are checked against.\n\n"
+            "and the GT-sweep tools in Sweeps & Utilities, are checked against.\n\n"
             "1. Pick the Image layer to annotate.\n"
             "2. Select the 'brain_polygons' layer (yellow) and draw\n"
             "   polygons every ~10 slices with the polygon tool.\n"
@@ -4147,7 +4160,7 @@ class ZFMicrogliaAIWidget(QWidget):
 
         ai_cellpose_group_note = QLabel(
             "The Cellpose-SAM pipeline, in order: extract training crops "
-            "(below), then fine-tune the microglia-segmentation model Tab 2 "
+            "(below), then fine-tune the microglia-segmentation model Create MG Labels "
             "uses."
         )
         ai_cellpose_group_note.setWordWrap(True)
@@ -4390,7 +4403,7 @@ class ZFMicrogliaAIWidget(QWidget):
         self._ct_pretrained_browse_btn.setFixedWidth(32)
         ct_pre_row.addWidget(self._ct_pretrained_browse_btn)
         ctl.addLayout(ct_pre_row)
-        ct_pre_note = QLabel("  Defaults to the checkpoint already loaded in Tab 2 — \"continue training\".")
+        ct_pre_note = QLabel("  Defaults to the checkpoint already loaded in Create MG Labels — \"continue training\".")
         ct_pre_note.setStyleSheet("color: #aaa; font-size: 10px;")
         ct_pre_note.setWordWrap(True)
         ctl.addWidget(ct_pre_note)
@@ -4497,7 +4510,7 @@ class ZFMicrogliaAIWidget(QWidget):
             "GT labels volume and sets branch_radius above to the thinnest-quartile "
             "(distal branch tip) radius in pixels — recalibrated from actual morphology "
             "instead of a guessed value. GT-verified auto-apply now only happens via the "
-            "GT Toolkit Tuning Tool (Tab 5, top); running it here directly is preview-only."
+            "GT Toolkit Tuning Tool (Sweeps & Utilities, top); running it here directly is preview-only."
         )
         ct_calib_note.setStyleSheet("color: #aaa; font-size: 10px;")
         ct_calib_note.setWordWrap(True)
@@ -5789,7 +5802,7 @@ class ZFMicrogliaAIWidget(QWidget):
                     self._state["cellpose_model_path"] = checkpoint_path
                     self._cp_model_lbl.setText(str(checkpoint_path))
                     self._save_cfg(cellpose_model_path=str(checkpoint_path))
-                    applied_msg = f" Pointer updated ({pointer.name}) and applied to Tab 2 as the active model."
+                    applied_msg = f" Pointer updated ({pointer.name}) and applied to Create MG Labels as the active model."
                 except FileNotFoundError as exc:
                     applied_msg = f" (could not update pointer/active model: {exc})"
                 self._es_status_lbl.setText(
@@ -6242,7 +6255,7 @@ class ZFMicrogliaAIWidget(QWidget):
             )
         else:
             self._labels_mode_hint.setText(
-                "Select a brain_only layer from Tab 1 (_ExtRm or _NoBG) to see "
+                "Select a brain_only layer from Skin Remover (_ExtRm or _NoBG) to see "
                 "labeling options here."
             )
 
@@ -6737,7 +6750,7 @@ class ZFMicrogliaAIWidget(QWidget):
         if not smtp_user or not smtp_password:
             return None, (
                 "ERROR: Notify email is set but SMTP username/password is missing "
-                "— fill both in, or clear the Notify email field in Tab 5's Email "
+                "— fill both in, or clear the Notify email field in Sweeps & Utilities' Email "
                 "notification panel to proceed without notification."
             )
         self._save_cfg(
@@ -7047,13 +7060,10 @@ class ZFMicrogliaAIWidget(QWidget):
         other autosweep-driven tool correlates to), read from there
         instead of each tool hardcoding its own, possibly-diverging
         copy. Covers n_cells/slices_per_cell/edge_margin_um/n_lo_steps
-        and the sample-crop padding used only while building candidate
-        lo values -- NOT the per-cell correction padding used elsewhere
-        in auto_contrast_correct_stack() (that stays whatever "Bbox
-        padding" field each caller already has; the two happen to share
-        a parameter name there, not a meaning, and unifying that too
-        would also change real per-cell correction behavior, not just
-        calibration -- out of scope here)."""
+        and the sample-crop padding used by the sweep itself
+        (sample_pad -- passed to auto_contrast_correct_stack() as its own
+        argument, separate from the per-cell correction `pad` that
+        Correction Settings' Bbox padding supplies)."""
         return {
             "n_cells": self._ccal_ncells_spin.value(),
             "slices_per_cell": self._ccal_slices_spin.value(),
@@ -8089,8 +8099,9 @@ class ZFMicrogliaAIWidget(QWidget):
             self._edit_sel_status_lbl.setText("No Labels layer selected.")
             return
         sel = int(lyr.selected_label)
-        if sel == 0:
-            self._edit_sel_status_lbl.setText("Selected label is 0 (background).")
+        err = _edit_label_id_error(sel)
+        if err:
+            self._edit_sel_status_lbl.setText(f"Selected label: {err}")
             return
         self._edit_label_a_spin.setValue(sel)
         self._edit_sel_status_lbl.setText(f"Label A set to {sel}.")
@@ -8103,8 +8114,9 @@ class ZFMicrogliaAIWidget(QWidget):
             self._edit_sel_status_lbl.setText("No Labels layer selected.")
             return
         sel = int(lyr.selected_label)
-        if sel == 0:
-            self._edit_sel_status_lbl.setText("Selected label is 0 (background).")
+        err = _edit_label_id_error(sel)
+        if err:
+            self._edit_sel_status_lbl.setText(f"Selected label: {err}")
             return
         self._edit_label_b_spin.setValue(sel)
         self._edit_sel_status_lbl.setText(f"Label B set to {sel}.")
@@ -8130,6 +8142,10 @@ class ZFMicrogliaAIWidget(QWidget):
             return
 
         target_label = self._edit_label_a_spin.value()
+        err = _edit_label_id_error(target_label)
+        if err:
+            self._split_status_lbl.setText(f"ERROR: Label A: {err}")
+            return
         n_splits     = self._split_n_spin.value()
         sigma        = self._split_sigma_slider.value()
         min_dist     = self._split_dist_slider.value()
@@ -8210,6 +8226,11 @@ class ZFMicrogliaAIWidget(QWidget):
 
         label_a = self._edit_label_a_spin.value()
         label_b = self._edit_label_b_spin.value()
+        for name, lid in (("A", label_a), ("B", label_b)):
+            err = _edit_label_id_error(lid)
+            if err:
+                self._join_status_lbl.setText(f"ERROR: Label {name}: {err}")
+                return
         if label_a == label_b:
             self._join_status_lbl.setText("ERROR: Label A and Label B must be different.")
             return
@@ -8298,6 +8319,10 @@ class ZFMicrogliaAIWidget(QWidget):
             return
 
         label_id = self._edit_label_a_spin.value()
+        err = _edit_label_id_error(label_id)
+        if err:
+            self._correct_status_lbl.setText(f"ERROR: Label A: {err}")
+            return
         pad = self._corrset_pad_spin.value()
         mode = self._correct_mode_combo.currentData()
         if mode == "3d" and label_id == -1:
@@ -8539,6 +8564,10 @@ class ZFMicrogliaAIWidget(QWidget):
             return
 
         label_id = self._edit_label_a_spin.value()
+        err = _edit_label_id_error(label_id)
+        if err:
+            self._copyslice_status_lbl.setText(f"ERROR: Label A: {err}")
+            return
         direction = self._copyslice_dir_combo.currentData()
         z_src = int(self._viewer.dims.current_step[0])
         z_dst = z_src + direction
@@ -8617,6 +8646,11 @@ class ZFMicrogliaAIWidget(QWidget):
 
         label_a = self._edit_label_a_spin.value()
         label_b = self._edit_label_b_spin.value()
+        for name, lid in (("A", label_a), ("B", label_b)):
+            err = _edit_label_id_error(lid)
+            if err:
+                self._adjcorr_status_lbl.setText(f"ERROR: Label {name}: {err}")
+                return
         if label_a == label_b:
             self._adjcorr_status_lbl.setText("ERROR: Label A and Label B must be different.")
             return
@@ -9271,6 +9305,7 @@ class ZFMicrogliaAIWidget(QWidget):
                     slices_per_cell_calib=sweep_params["slices_per_cell"],
                     edge_margin_um=sweep_params["edge_margin_um"],
                     n_lo_steps=sweep_params["n_lo_steps"],
+                    sample_pad=sweep_params["sample_pad"],
                     progress_cb=_progress,
                 )
                 result["labels"] = new_labels
@@ -10680,6 +10715,7 @@ class ZFMicrogliaAIWidget(QWidget):
                     slices_per_cell_calib=sweep_params["slices_per_cell"],
                     edge_margin_um=sweep_params["edge_margin_um"],
                     n_lo_steps=sweep_params["n_lo_steps"],
+                    sample_pad=sweep_params["sample_pad"],
                     lo_override=lo_override, lo_adjustment=lo_adjustment,
                     progress_cb=_progress3,
                 )
@@ -11198,13 +11234,18 @@ class ZFMicrogliaAIWidget(QWidget):
             labels_layer.refresh()
 
             new_ids_str = ", ".join(str(i) for i in info["new_labels"]) or "(none -- discarded, no overlap survived)"
+            n_prot = info.get("n_protected_vox", 0)
+            prot_note = (
+                f" {n_prot} voxel(s) already belonging to a neighbouring label or skin were left untouched."
+                if n_prot else ""
+            )
             self._cp_status_lbl.setText(
                 f"Done — label {label_id} replaced with {info['n_new']} new label(s): "
-                f"{new_ids_str}."
+                f"{new_ids_str}.{prot_note}"
             )
             self._cp_log_view.append(
                 f"\nDone — label {label_id} replaced with {info['n_new']} new label(s): "
-                f"{new_ids_str}."
+                f"{new_ids_str}.{prot_note}"
             )
             sb = self._cp_log_view.verticalScrollBar()
             sb.setValue(sb.maximum())

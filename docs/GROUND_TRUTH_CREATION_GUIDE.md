@@ -135,17 +135,17 @@ All in the **Skin Remover** tab of the plugin:
 
 ### Step 6 — Background option
 
-In the **Skin Remover** tab, select background option **1 — Remove background outside brain**.
+In the **Skin Remover** tab, select background option **1 — Remove background outside brain**. (This setting is only read by **Run Skin-Remover**, which you don't run here, so it has no effect on the steps below.)
 
 ### Step 7 — Protect the skin as label -1
 
 1. Go to the **Edit MG Labels** tab.
-2. At the top, in **Layers and label(s) being edited**, make sure the correct layers are selected:
+2. At the top, in **Layers and label(s) being edited**, make sure the correct layers are selected (the plugin pre-fills the brain mask and labels, but not the `_original` layer — pick that one by hand):
    - **Signal layer** = `<stem>_original` (the raw channel), **not** the `_ExtRm` layer
    - **Labels layer** = the labels you loaded in Step 5
    - **Brain mask layer** = the brain mask you converted in Step 5
 3. Scroll down to **Protect Skin as Label** and click it.
-4. **Wait until it is done** (about 7 minutes for a full fish). It first runs a contrast sweep on about 20 cells to find the contrast/brightness setting of the raw signal that best fits the labels Cellpose-SAM generated (e.g. `lo=102`), then labels everything outside the brain as skin (**-1**) at that setting.
+4. **Wait until it is done** (about 7 minutes for a full fish). It first runs a contrast sweep on about 20 cells to find the contrast/brightness setting of the raw signal that best fits the labels Cellpose-SAM generated, lowers it by **Reduce best_lo by** (default 2; e.g. swept 104 → `lo=102`), then labels everything outside the brain as skin (**-1**) at that setting and removes small stray skin fragments. It also sets the `_original` layer's contrast to that value.
 5. Hide the other layers and check the skin label in **3D**: every slice should carry skin.
 
 #### Correcting a slice that is missing skin

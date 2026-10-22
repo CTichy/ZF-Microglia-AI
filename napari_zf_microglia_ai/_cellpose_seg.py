@@ -732,7 +732,11 @@ def rerun_single_cell(volume, labels, label_id, model_path, cellprob=-2.5, flow=
     (e.g. a neighbouring cell caught by the padding) is discarded, not
     duplicated into the full volume. If the fix genuinely reveals more
     than one real cell where there was one label before, all of them
-    are kept.
+    are kept. A kept object is only written into voxels that are
+    background once label_id has been cleared -- a neighbouring label
+    (or skin, -1) inside the crop is never overwritten; the number of
+    voxels left to a neighbour that way is reported as
+    'n_protected_vox'.
 
     volume : the SAME intensity volume label_id's original segmentation
     was produced from (not the label array itself) -- do_3D needs
@@ -741,7 +745,7 @@ def rerun_single_cell(volume, labels, label_id, model_path, cellprob=-2.5, flow=
     Returns (new_labels, info):
       new_labels : full-size label array, label_id's voxels replaced.
       info : {'old_label': label_id, 'new_labels': [id, ...],
-              'n_new': int, 'crop_stats': {...}}
+              'n_new': int, 'n_protected_vox': int, 'crop_stats': {...}}
              -- crop_stats is run_full_pipeline()'s own stats dict from
              the crop.
 
@@ -793,16 +797,24 @@ def rerun_single_cell(volume, labels, label_id, model_path, cellprob=-2.5, flow=
     new_labels[labels == label_id] = 0
 
     region = new_labels[crop_sl]
+    free = region == 0
     next_id = int(new_labels.max()) + 1 if new_labels.max() > 0 else 1
     spliced_ids = []
+    n_protected = 0
     for old_local_id in keep_ids:
-        region[crop_labels == old_local_id] = next_id
+        piece = crop_labels == old_local_id
+        n_protected += int(np.count_nonzero(piece & ~free))
+        write = piece & free
+        if not write.any():
+            continue
+        region[write] = next_id
+        free &= ~write
         spliced_ids.append(next_id)
         next_id += 1
     new_labels[crop_sl] = region
 
     info = dict(
         old_label=label_id, new_labels=spliced_ids, n_new=len(spliced_ids),
-        crop_stats=crop_stats,
+        n_protected_vox=n_protected, crop_stats=crop_stats,
     )
     return new_labels, info

@@ -15,7 +15,7 @@ import logging as _logging
 _logging.getLogger("cellpose.vit").setLevel(_logging.ERROR)
 _logging.getLogger("cellpose.models").setLevel(_logging.ERROR)
 
-__version__ = "0.2.0"
+__version__ = "0.3.0"
 
 from ._widget import ZFMicrogliaAIWidget
 
