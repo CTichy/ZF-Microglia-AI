@@ -997,20 +997,40 @@ _random_crops(img_slice, gt_slice, crop_size, n_crops, rng, min_gt_pixels):
         pick a random GT-positive pixel as an anchor
         place a crop_size x crop_size window with a random offset so the
             anchor lands somewhere inside it (not necessarily centered)
-        keep it only if it contains >= min_gt_pixels of real GT signal,
+        keep it only if it contains >= min_gt_pixels cell pixels (label > 0),
             and its own top-left corner hasn't already been used
 
+_anchored_crops(img_slice, gt_slice, anchor_mask, ..., accept):
+    same placement rule, anchored on anchor_mask pixels; accept(gt_crop)
+    decides whether a window is kept
+
+_skin_crops(get_slice, skin slice ids, ..., n_boundary, n_skin_only, touch_px=3):
+    for each slice holding skin (-1), until both quotas are filled:
+        boundary: anchor on cell pixels within touch_px of skin (3x3 dilation
+            x touch_px); keep a window with >= min_gt_pixels cell pixels
+            and some skin; index = 100 + k
+        skin-only: anchor on skin pixels; keep a window with no cell pixel
+            and >= min_gt_pixels skin pixels; index = 200 + k
+
 generate_xzyz_patches(image_path, gt_path, out_dir, anisotropy, crop_size=512,
-                       ncrops_per_slice=5, max_per_orientation=320, ...):
-    load the GT; every negative label (skin = -1) becomes 0 (background for
-        Cellpose) -- in memory only, the GT file is left untouched
+                       ncrops_per_slice=5, max_per_orientation=320, ...,
+                       skin_crops=True, boundary_fraction=0.20,
+                       skin_only_fraction=0.10, touch_px=3):
+    load the GT as is (skin -1 kept for sampling); skin crops only if
+        skin_crops and the GT has a -1 voxel
     for each orientation in (XY native, XZ stretched, YZ stretched):
-        shuffle every GT-containing slice of that orientation
+        shuffle every slice of that orientation holding a cell (label > 0)
         for each slice (until max_per_orientation total crops collected):
             draw up to ncrops_per_slice random crops from it
         cap the COLLECTED list to max_per_orientation, THEN write files
             (not an early-exit mid-slice that could overshoot the cap)
-        save <orientation>_<slice:03d/04d>_<i:02d>.tif + _masks.tif pairs
+        if skin crops: shuffle the slices holding skin with a second
+            generator (seed + 1, so the cell crops never change) and collect
+            round(boundary_fraction x n_cell_crops) boundary +
+            round(skin_only_fraction x n_cell_crops) skin-only crops
+        save <orientation>_<slice:03d/04d>_<index:02d>.tif + _masks.tif
+            pairs; every mask is written with negative labels as 0
+            (background for Cellpose) -- the GT file is never changed
 ```
 
 ### `_crop_truncation.py` — cleaning incidental-neighbor truncation
@@ -1158,7 +1178,7 @@ Pure argument-list construction (`build_prepare_data_argv` / `build_monai_train_
 
 **GT Annotation section**: buttons wrapping `interpolate_shapes()`/`generate_masks()` directly — synchronous (both are fast: pure numpy/shape rasterization, no model inference), errors shown in the status label rather than crashing.
 
-**Extract X/Y/Z Patches** (`_on_xz_run()`): background-thread wrapper around `generate_xzyz_patches()` (anisotropy = Z µm / XY µm from its own scale fields), followed in the same thread by `clean_crop_truncation()` when "Clean truncated labels" is ticked (the default; threshold = "Min visible fraction", default 0.90). No cancel button.
+**Extract X/Y/Z Patches** (`_on_xz_run()`): background-thread wrapper around `generate_xzyz_patches()` (anisotropy = Z µm / XY µm from its own scale fields), passing "Add skin crops" and the two percentage fields as `skin_crops`/`boundary_fraction`/`skin_only_fraction`, followed in the same thread by `clean_crop_truncation()` when "Clean truncated labels" is ticked (the default; threshold = "Min visible fraction", default 0.90). The status line reports the cell crops, the boundary and skin-only counts (or that the GT has no skin label), and the cleanup. No cancel button.
 
 **Combine Crops into Shared Training Folder** (`_on_cc_run()`): wraps `combine_crop_folder()` (fish_stem left to its default, the crop folder's parent name); on success stores the combined folder in config and fills Train Cellpose-SAM's Data dir.
 
@@ -1590,7 +1610,7 @@ Every button/combo handler in the file is documented, with real behavior, in the
 | `_epoch_sweep.py` | 275 | GT-verified Cellpose-SAM checkpoint (epoch) sweep, bbox-restricted | §8 |
 | `_contrast_sweep.py` | 321 | Self-referential Correct-Label contrast (`lo`) calibration against Cellpose-SAM's own output | §5 |
 | `_background.py` | 193 | Population-mode background estimation + 3 background-removal modes | §3 |
-| `_xzyz_patches.py` | 187 | Orientation-slice (XY/XZ/YZ) 2D training-crop generation, the current Cellpose-SAM training methodology | §7 |
+| `_xzyz_patches.py` | 300 | Orientation-slice (XY/XZ/YZ) 2D training-crop generation, the current Cellpose-SAM training methodology | §7 |
 | `_gt_toolkit.py` | 248 | Single-folder auto-discovery of a fish's files + step preconditions ("GT Toolkit Tuning Tool") | §8 |
 | `_gt_package.py` | 209 | Zips a GT-correction package (source image, correction starting point, guide, stats CSV) for external manual review | §8 |
 | `_brain_sweep.py` | 165 | GT-verified MONAI Threshold x Erosion sweep for the brain mask | §8 |

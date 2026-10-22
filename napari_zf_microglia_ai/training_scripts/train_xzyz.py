@@ -110,8 +110,17 @@ img_files = sorted(
 )
 log.info(f"  Found {len(img_files)} image files")
 
+# Extract X/Y/Z Patches numbers skin-only crops (empty mask on purpose:
+# skin, no cell) from this index up -- same value as
+# _xzyz_patches.SKIN_ONLY_INDEX_OFFSET. Any other crop with an empty mask
+# (e.g. every label zeroed by truncation cleanup) is skipped.
+SKIN_ONLY_INDEX_OFFSET = 200
+_crop_index_re = re.compile(r"_(\d+)$")
+
 images, labels = [], []
 skipped = 0
+n_empty_skipped = 0
+n_skin_only = 0
 for fname in img_files:
     stem      = fname[:-4]
     img_path  = os.path.join(DATA_DIR, fname)
@@ -150,11 +159,19 @@ for fname in img_files:
         for new_id, old_id in enumerate(unique, start=1):
             lut[old_id] = new_id
         mask = lut[mask]
+    else:
+        m = _crop_index_re.search(stem)
+        if not (m and int(m.group(1)) >= SKIN_ONLY_INDEX_OFFSET):
+            n_empty_skipped += 1
+            continue
+        n_skin_only += 1
 
     images.append(img)
     labels.append(mask)
 
 log.info(f"  Loaded {len(images)} pairs  ({skipped} skipped)")
+log.info(f"  {n_skin_only} skin-only crops (empty mask) kept, "
+         f"{n_empty_skipped} other empty-mask crops skipped")
 
 # ── Train / val split ─────────────────────────────────────────────────────────
 rng   = np.random.default_rng(SEED)
@@ -227,7 +244,7 @@ model_path, train_losses, test_losses = cp_train.train_seg(
     save_each        = True,
     channel_axis     = None,
     normalize        = True,
-    min_train_masks  = 1,
+    min_train_masks  = 0,   # empty masks left by the loader are skin-only crops
 )
 
 sys.stdout = sys.stdout._s   # restore stdout

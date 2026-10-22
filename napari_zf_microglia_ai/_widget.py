@@ -4276,6 +4276,35 @@ class ZFMicrogliaAIWidget(QWidget):
         xz_opts_note.setWordWrap(True)
         xzl.addWidget(xz_opts_note)
 
+        self._xz_skin_cb = QCheckBox("Add skin crops (from the GT's skin label -1)")
+        self._xz_skin_cb.setChecked(True)
+        xzl.addWidget(self._xz_skin_cb)
+
+        xz_skin_row = QHBoxLayout()
+        xz_skin_row.addWidget(QLabel("Cell-skin boundary (% of cell crops):"))
+        self._xz_boundary_spin = QSpinBox()
+        self._xz_boundary_spin.setRange(0, 200)
+        self._xz_boundary_spin.setValue(20)
+        xz_skin_row.addWidget(self._xz_boundary_spin)
+        xz_skin_row.addWidget(QLabel("Skin-only (%):"))
+        self._xz_skinonly_spin = QSpinBox()
+        self._xz_skinonly_spin.setRange(0, 200)
+        self._xz_skinonly_spin.setValue(10)
+        xz_skin_row.addWidget(self._xz_skinonly_spin)
+        xzl.addLayout(xz_skin_row)
+        xz_skin_note = QLabel(
+            "  Needs a GT that carries the skin label (-1, from Protect Skin "
+            "as Label); otherwise no skin crops are made. Per orientation, on "
+            "top of the cell crops: boundary crops hold a cell lying within "
+            "3 px of skin plus that skin; skin-only crops hold skin and no "
+            "cell (an empty mask), teaching that bright skin is background. "
+            "Skin is written as 0 in every mask crop. Use the Image field's "
+            "raw channel (with skin), not _ExtRm."
+        )
+        xz_skin_note.setStyleSheet("color: #aaa; font-size: 10px;")
+        xz_skin_note.setWordWrap(True)
+        xzl.addWidget(xz_skin_note)
+
         self._xz_clean_cb = QCheckBox("Clean truncated labels")
         self._xz_clean_cb.setChecked(True)
         xzl.addWidget(self._xz_clean_cb)
@@ -11915,6 +11944,9 @@ class ZFMicrogliaAIWidget(QWidget):
         seed = self._xz_seed_spin.value()
         do_clean = self._xz_clean_cb.isChecked()
         threshold = self._xz_threshold_spin.value()
+        skin_crops = self._xz_skin_cb.isChecked()
+        boundary_fraction = self._xz_boundary_spin.value() / 100.0
+        skin_only_fraction = self._xz_skinonly_spin.value() / 100.0
 
         self._xz_run_btn.setEnabled(False)
         self._xz_status_lbl.setText("Extracting XZYZ patches...")
@@ -11927,7 +11959,10 @@ class ZFMicrogliaAIWidget(QWidget):
                     img_path, gt_path, out_dir, anisotropy,
                     crop_size=crop_size, ncrops_per_slice=ncrops_per_slice,
                     max_per_orientation=max_per_orientation, min_gt_pixels=min_gt_pixels,
-                    seed=seed, progress_cb=lambda msg: result.update(_progress=msg),
+                    seed=seed, skin_crops=skin_crops,
+                    boundary_fraction=boundary_fraction,
+                    skin_only_fraction=skin_only_fraction,
+                    progress_cb=lambda msg: result.update(_progress=msg),
                 )
                 result["gen"] = gen
                 if do_clean and not gen.get("cancelled"):
@@ -11963,7 +11998,12 @@ class ZFMicrogliaAIWidget(QWidget):
 
             gen = result["gen"]
             n_total = gen["n_xy"] + gen["n_xz"] + gen["n_yz"]
-            msg = f"Extracted {n_total} crops (xy={gen['n_xy']}, xz={gen['n_xz']}, yz={gen['n_yz']})."
+            msg = f"Extracted {n_total} cell crops (xy={gen['n_xy']}, xz={gen['n_xz']}, yz={gen['n_yz']})."
+            if gen["skin_label_found"] and skin_crops:
+                msg += (f" Skin crops: {gen['n_boundary']} cell-skin boundary, "
+                        f"{gen['n_skin_only']} skin-only.")
+            elif skin_crops:
+                msg += " No skin label (-1) in the GT, so no skin crops."
             if "clean" in result:
                 c = result["clean"]
                 msg += (f" Cleanup: {c['n_files_modified']}/{c['n_files_scanned']} files modified, "
