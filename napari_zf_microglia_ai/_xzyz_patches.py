@@ -118,6 +118,12 @@ def generate_xzyz_patches(image_path, gt_path, out_dir, anisotropy,
     _report("loading image + GT ...")
     img = tifffile.imread(image_path)
     gt = tifffile.imread(gt_path).astype(np.int32)
+    # Negative labels (skin = -1) are background for Cellpose: write them as 0
+    # in every mask crop. The GT file itself is left untouched.
+    n_neg = int(np.count_nonzero(gt < 0))
+    if n_neg:
+        gt[gt < 0] = 0
+        _report(f"{n_neg} negative-label (skin) voxels set to 0 in the crops")
     Z, Y, X = gt.shape
     _report(f"image {img.shape}, GT {gt.shape}, {len(np.unique(gt)) - 1} cells")
 

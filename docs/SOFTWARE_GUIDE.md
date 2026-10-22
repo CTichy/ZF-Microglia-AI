@@ -1002,6 +1002,8 @@ _random_crops(img_slice, gt_slice, crop_size, n_crops, rng, min_gt_pixels):
 
 generate_xzyz_patches(image_path, gt_path, out_dir, anisotropy, crop_size=512,
                        ncrops_per_slice=5, max_per_orientation=320, ...):
+    load the GT; every negative label (skin = -1) becomes 0 (background for
+        Cellpose) -- in memory only, the GT file is left untouched
     for each orientation in (XY native, XZ stretched, YZ stretched):
         shuffle every GT-containing slice of that orientation
         for each slice (until max_per_orientation total crops collected):

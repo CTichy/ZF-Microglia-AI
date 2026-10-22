@@ -130,6 +130,12 @@ for fname in img_files:
         skipped += 1
         continue
 
+    # Negative labels (skin = -1) are background for Cellpose
+    n_neg = int(np.count_nonzero(mask < 0))
+    if n_neg:
+        log.warning(f"  {stem}: {n_neg} negative-label px set to 0")
+        mask[mask < 0] = 0
+
     # Drop objects < 9 px (crash GPU flow computation)
     if mask.max() > 0:
         counts = np.bincount(mask.ravel())
