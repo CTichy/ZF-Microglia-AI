@@ -1365,6 +1365,11 @@ SUFFIXES ← the fixed map of {key: filename suffix} this plugin's own
            self-documenting: _cp_krendl_ac_snd.tif's name itself says it
            went through Krendl, then auto-correct, then sanding
 
+fish_output_folder(source_path):           ← the folder every output is written to
+    if source is not .ims and its stem starts with "<its folder's name>_":
+        return its folder                    ← a derived file already inside the fish folder
+    return <parent>/<stem>                   ← a raw file beside the fish folder
+
 discover_fish_files(source_path):
     resolve_fish_folder(...) ← accepts the folder itself, any file inside
         it, or the original raw source file sitting beside it
@@ -1525,7 +1530,7 @@ Three different "which layer" resolvers, each deliberately scoped to a different
 - **Auto-fill** (inside `_refresh_stats_layers()`, only for combos still on "None"): anchor = the selected Image layer ending in `_brain_only_ExtRm/_NoBG/_RndFill/_brain_only`, else the topmost such layer; `stem` = anchor minus that suffix. Signal ← the layer named exactly `stem` (the raw channel; never the anchor), Brain mask ← `<stem>_brain_mask`, Labels ← `<anchor>_cellpose_labels` or `<anchor>_labels`, else the selected/topmost Labels layer not ending in `_brain_mask`. Cellpose-SAM's Signal combo ← the first `_ExtRm` layer; its Brain-mask combo ← `<stem>_brain_mask` of the active layer.
 - **`_raw_channel_layer(name)`** / **`_resolve_skin_signal_image(name, out_dir)`**: strip one `_BG_SUFFIX` and then `_brain_only` from a layer name to find the raw channel — the first returns that open Image layer (used by the chained Cellpose-SAM auto-correct, which requires it); the second, used for skin's own trim, returns that layer's data, else `<out_dir>/<raw>_original.tif`, else `None` (caller falls back to the signal layer) with a note saying which.
 
-`_get_layer_scale()`: metadata from the last Open-button load, else the active layer's own napari `scale`, else `(1,1,1)`. `_output_dir()`: `<original file's parent>/<original file's stem>`, created on first use — the original file being the last one opened with the plugin's Open button, else the first layer whose napari `source.path` is set (cached), else the current working directory (with a printed warning). The one folder convention every saved output file in the plugin follows (and that §8's `_gt_toolkit.py` reverse-engineers to auto-discover a fish's files). `_current_min_volume()` / `_lo_sweep_sample_params()`: thin config readers so every route/sweep launcher shares one source of truth instead of each hardcoding its own possibly-diverging copy.
+`_get_layer_scale()`: metadata from the last Open-button load, else the active layer's own napari `scale`, else `(1,1,1)`. `_output_dir()`: the fish folder, `_gt_toolkit.fish_output_folder(original file)`, created on first use — `<parent>/<stem>` for a raw `.ims` (or any file not already inside a folder named after it), and the file's own folder for a file whose name starts with that folder's name plus `_` (e.g. `<stem>/<stem>_ch1_original.tif`). The original file is the last one opened with the plugin's Open button, else the first layer whose napari `source.path` is set (cached), else the current working directory (with a printed warning). The one folder convention every saved output file in the plugin follows (and that §8's `_gt_toolkit.py` reverse-engineers to auto-discover a fish's files). `_current_min_volume()` / `_lo_sweep_sample_params()`: thin config readers so every route/sweep launcher shares one source of truth instead of each hardcoding its own possibly-diverging copy.
 
 ### The hang watchdog
 
@@ -1595,7 +1600,7 @@ Every button/combo handler in the file is documented, with real behavior, in the
 
 | File | Lines | Purpose | Guide section |
 |---|---|---|---|
-| `_widget.py` | 12,052 | Application shell — all 6 tabs, every button handler, config, layer resolution | §3–§9 |
+| `_widget.py` | 12,095 | Application shell — all 6 tabs, every button handler, config, layer resolution | §3–§9 |
 | `_labeling.py` | 3,281 | Pixel Classifier connected-components engine + every label-editing primitive (resort, debris, split, join, correct, copy, skin protection) | §4, §5 |
 | `_auto_correction.py` | 1,021 | 6-step unattended per-cell auto-correction pipeline, chained after Cellpose-SAM Segmentation | §5 |
 | `_cellpose_seg.py` | 820 | Cellpose-SAM `do_3D` inference + GMM cleanup + Krendl safe-merge + large-contact merge + final safety net | §4 |
@@ -1605,13 +1610,13 @@ Every button/combo handler in the file is documented, with real behavior, in the
 | `_io.py` | 284 | Metadata-aware `.tif`/`.ims` loading, voxel-scale resolution | §2 |
 | `_grow_correct.py` | 540 | Auto-grow / until-stable orchestration around Correct Label's 2D and 3D engines | §5 |
 | `_training_jobs.py` | 378 | Cross-platform detached-process training job management (launch, poll, kill, patience early-stop, email) | §7 |
-| `_gt_annotation.py` | 322 | Polygon-based hand-drawn GT annotation (brain/skin masks) | §7 |
+| `_gt_annotation.py` | 325 | Polygon-based hand-drawn GT annotation (brain/skin masks) | §7 |
 | `_combine_crops.py` | 85 | Symlinks one fish's crop folder into a shared multi-fish training pool | §7 |
 | `_epoch_sweep.py` | 275 | GT-verified Cellpose-SAM checkpoint (epoch) sweep, bbox-restricted | §8 |
 | `_contrast_sweep.py` | 321 | Self-referential Correct-Label contrast (`lo`) calibration against Cellpose-SAM's own output | §5 |
 | `_background.py` | 193 | Population-mode background estimation + 3 background-removal modes | §3 |
 | `_xzyz_patches.py` | 300 | Orientation-slice (XY/XZ/YZ) 2D training-crop generation, the current Cellpose-SAM training methodology | §7 |
-| `_gt_toolkit.py` | 248 | Single-folder auto-discovery of a fish's files + step preconditions ("GT Toolkit Tuning Tool") | §8 |
+| `_gt_toolkit.py` | 260 | Single-folder auto-discovery of a fish's files + step preconditions ("GT Toolkit Tuning Tool") | §8 |
 | `_gt_package.py` | 209 | Zips a GT-correction package (source image, correction starting point, guide, stats CSV) for external manual review | §8 |
 | `_brain_sweep.py` | 165 | GT-verified MONAI Threshold x Erosion sweep for the brain mask | §8 |
 | `_secrets.py` | 188 | Two-tier (OS keyring → local Fernet-encrypted file) secret storage | §2 |

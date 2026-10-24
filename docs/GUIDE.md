@@ -1049,7 +1049,7 @@ Above the button, a note shows the **is_volume_outlier ceiling** (the largest GT
 
 Click to compute. Runs in a background thread. When complete:
 
-- A CSV file is saved to the output folder (see Section 11), named `{opened_file_stem}_statistics.csv` (or the Labels layer's name if no file was opened).
+- A CSV file is saved to the output folder (see Section 11), named `<fish stem>_statistics.csv`, after the output folder (or after the Labels layer if no file was opened).
 - The status line shows how many labels were processed.
 
 The CSV contains one row per label with up to 52 columns, depending on the checklist and which optional inputs are set. See Section 12 for a full description of every column.
@@ -1418,7 +1418,7 @@ Each step uses the ranges, Sieve settings and cell counts currently set in its o
 
 ## 11. Output files and folder structure
 
-All files saved by the plugin go into a dedicated folder named after the most recently opened input file (`<file's folder>/<file stem>/`). File names inside start with the **layer** name, which for a multi-channel file includes the channel (e.g. `NT54_ch1`):
+All files saved by the plugin go into one folder per fish, named after the raw input file (`<file's folder>/<file stem>/`). Opening a file that already lives inside that folder (e.g. `NT54/NT54_ch1_original.tif` or `NT54/NT54_ch1_brain_mask.tif`) saves into that same folder, not into a new subfolder: a file whose name starts with its own folder's name plus `_` is taken to be inside the fish folder already (a raw `.ims` file always gets its own folder beside it). Crops are the exception: Extract X/Y/Z Patches writes to the Output folder you choose. File names inside start with the **layer** name, which for a multi-channel file includes the channel (e.g. `NT54_ch1`):
 
 ```
 /path/to/your/data/
@@ -1434,7 +1434,7 @@ All files saved by the plugin go into a dedicated folder named after the most re
     ├── NT54_ch1_brain_only_ExtRm_autocorrect_report.txt ← auto-correct (+ sanding) report
     ├── <labels layer>.tif                          ← Save Labels (default name)
     ├── <labels layer>_recovery.tif                 ← Autosave Labels Layer
-    └── NT54_statistics.csv                         ← per-label statistics (named after the file)
+    └── NT54_statistics.csv                         ← per-label statistics (named after the fish folder)
 ```
 
 The folder is created the first time a file is saved. If no file was opened with **Open TIF / IMS file**, the plugin uses the file behind any layer napari opened itself (File → Open, drag-and-drop); if there is none, files are saved in the current working directory (with a console warning).

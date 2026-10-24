@@ -6459,7 +6459,10 @@ class ZFMicrogliaAIWidget(QWidget):
     def _output_dir(self) -> Path:
         """
         Return (and create) the output folder for all saved files.
-        Folder = <original_file_parent> / <original_file_stem>.
+        Folder = <original_file_parent> / <original_file_stem>, i.e. the
+        fish folder (_gt_toolkit.fish_output_folder()): a file that
+        already lives inside it (e.g. <stem>/<stem>_ch1_original.tif)
+        resolves to that folder itself, not to a new subfolder.
 
         Resolution order:
           1. self._state["last_file_path"] -- set when a file is opened
@@ -6490,7 +6493,7 @@ class ZFMicrogliaAIWidget(QWidget):
                     self._state["last_file_path"] = fp
                     break
         if fp:
-            out = fp.parent / fp.stem
+            out = _gtk.fish_output_folder(fp)
         else:
             out = Path(".")
             print(
@@ -9691,7 +9694,7 @@ class ZFMicrogliaAIWidget(QWidget):
 
         labels    = np.asarray(lyr.data)
         out_dir   = self._output_dir()
-        stem      = self._state["last_file_path"].stem if self._state.get("last_file_path") else lyr.name
+        stem      = out_dir.name if self._state.get("last_file_path") else lyr.name
         out_csv   = out_dir / f"{stem}_statistics.csv"
 
         self._stats_btn.setEnabled(False)

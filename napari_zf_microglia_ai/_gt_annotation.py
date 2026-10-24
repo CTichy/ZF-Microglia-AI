@@ -39,6 +39,8 @@ import numpy as np
 import tifffile
 from scipy.ndimage import median_filter
 
+from ._gt_toolkit import fish_output_folder
+
 KEY_SHAPES_LAYER = "brain_polygons"
 N_POLY_PTS = 96
 SLICE_86_PROPAGATION = True
@@ -240,8 +242,9 @@ def generate_masks(viewer, image_layer, input_path):
     """
     Rasterize the interpolated polygons into brain/skin masks, save
     brain_mask/skin_mask/original/brain_only/skin_only TIFFs plus the two
-    polygon .npz files, all under <input_path.parent>/<input_path.stem>/
-    (same convention as the plugin's own _output_dir()). Adds brain_mask,
+    polygon .npz files, all in the fish folder
+    (_gt_toolkit.fish_output_folder(), the same folder the plugin's own
+    _output_dir() uses). Adds brain_mask,
     skin_mask, and brain_only as new viewer layers. Returns the output
     directory Path. Raises ValueError on error conditions.
     """
@@ -281,7 +284,7 @@ def generate_masks(viewer, image_layer, input_path):
     viewer.add_labels(skin_mask, name="skin_mask")
 
     input_path = Path(input_path)
-    output_dir = input_path.parent / input_path.stem
+    output_dir = fish_output_folder(input_path)
     output_dir.mkdir(exist_ok=True, parents=True)
 
     if KEY_SHAPES_LAYER in viewer.layers:

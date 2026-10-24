@@ -110,6 +110,18 @@ def best_corrected_masks(found):
     return None, None
 
 
+def fish_output_folder(source_path) -> Path:
+    """The folder every plugin output for a fish is written to:
+    <raw_parent>/<raw_stem>. A raw .ims file sits beside that folder. Any
+    other file whose name starts with its own folder's name plus "_"
+    (e.g. <stem>/<stem>_ch1_original.tif, opened directly) already lives
+    inside it, so that folder is returned as is."""
+    p = Path(source_path)
+    if p.suffix.lower() != ".ims" and p.stem.startswith(p.parent.name + "_"):
+        return p.parent
+    return p.parent / p.stem
+
+
 def resolve_fish_folder(source_path) -> Path:
     """A fish's canonical folder is <original_parent>/<original_stem> --
     the same convention _output_dir() already enforces for every file

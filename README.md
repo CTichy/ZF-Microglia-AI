@@ -264,7 +264,7 @@ Computes up to 52 CSV columns per labelled cell and exports a CSV. For what each
 - Select a description backend (Rule-based / Ollama / OpenAI / Claude API)
 - Click **Generate Statistics**
 
-CSV saved as `<opened file stem>_statistics.csv` in the output folder. The `is_volume_outlier` column is checked against the GT-tracked Min/Max volume bounds; Statistics only reads them, never changes them.
+CSV saved as `<fish stem>_statistics.csv` in the fish's output folder. The `is_volume_outlier` column is checked against the GT-tracked Min/Max volume bounds; Statistics only reads them, never changes them.
 
 **Score Against GT** — in **Tab 6 — Sweeps & Utilities**; scores any two Labels layers already in the viewer against each other.
 
