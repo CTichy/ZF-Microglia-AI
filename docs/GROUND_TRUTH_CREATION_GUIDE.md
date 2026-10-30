@@ -54,7 +54,7 @@ Every file in the package starts with the fish's own identifier (the "stem", e.g
 
 **Why two images?** Skin protection reads the real signal *outside* the brain, and in `_ExtRm` everything outside the brain has already been set to zero. `<stem>_original.tif` is the same channel with nothing removed, so it is the one the plugin reads its signal from. If a package has no `_original.tif`, open the fish's original `.ims` instead and use its microglia channel (usually `ch1`) wherever this guide says `_original`.
 
-**Before you start, read `<stem>_autocorrect_report.txt`:** it already lists the cells corrected jointly with a neighbour, the cells touching skin, and possible non-microglia blobs.
+**Before you start, read `<stem>_autocorrect_report.txt`:** it already lists the cells corrected next to a neighbour, the cells touching skin, and possible non-microglia blobs.
 
 ---
 
@@ -202,18 +202,18 @@ against skin (macrophage or leftover skin?). REPORT ONLY -- nothing was removed 
   label 74: 46% of volume outside brain (62,878 vox, centroid z=92 y=1955 x=999)
 
 --- Label 1 ---
-Auto-grow (3D, per-slice): base pad=15px, up to 20 attempt(s) per slice, group=[1]
+Auto-grow (3D, per-slice): base pad=15px, up to 20 attempt(s) per slice, corrected=[1]
 No slice needed more than the base pad.
 Slice(s) that took more than one pass to settle: 0: 2 pass(es), 1: 2 pass(es), ... 12: 2 pass(es)
 Converged -- no part of the result touches the padded region's own edge.
 Debris removed: 54 px
 
 --- Label 2 ---
-Auto-grow (3D, per-slice): base pad=15px, up to 20 attempt(s) per slice, group=[2, 4]
+Auto-grow (3D, per-slice): base pad=15px, up to 20 attempt(s) per slice, corrected=[2], fixed walls=[4]
 ...
 
 --- Label 11 ---
-Auto-grow (2D per-slice, jointly resolved against skin label -1): group=[-1, 11]
+Auto-grow (2D per-slice, against skin label -1): corrected=[11], fixed walls=[-1]
 Slice(s) that needed a bigger pad: 19: 25px, 20: 20px, 22: 30px, ...
 Slice(s) that took more than one pass to settle: 19: 3 pass(es), 20: 10 pass(es), 21: 20 pass(es), ...
 Converged -- no part of the result touches the padded region's own edge.
@@ -224,9 +224,9 @@ What to look for:
 
 | Line | Meaning | What to do |
 |------|---------|------------|
-| `group=[1]` | The cell was corrected on its own | Normal; spot-check |
-| `group=[2, 4]` | Label 2's bounding box is near label 4, so their boundary was corrected jointly | **Check both cells carefully**, especially where they meet ([case b](#b-a-cell-touching-another-cell)) |
-| `group=[-1, 11]` | The cell touches the skin, so it could only be corrected in 2D | **Review and correct this cell in 2D** ([case e](#e-a-cell-touching-the-skin)) |
+| `corrected=[1]` | The cell was corrected on its own | Normal; spot-check |
+| `fixed walls=[4]` | Label 4 lies inside label 2's working area. Label 2 was corrected up to label 4, but label 4 itself was not changed | **Check where the two cells meet** ([case b](#b-a-cell-touching-another-cell)) |
+| `2D per-slice, against skin label -1` | The cell touches the skin, so it could only be corrected in 2D | **Review and correct this cell in 2D** ([case e](#e-a-cell-touching-the-skin)) |
 | `Possible NON-microglia blob(s)` | Cells mostly outside the brain or mostly against skin (macrophage or leftover skin?) | Report only: look at each one and decide whether it is a real microglia |
 | `Debris removed` | Small loose fragments of that label removed after correction | Normally nothing to do |
 
@@ -310,8 +310,8 @@ Before finalizing the ground truth, verify:
 
 ### Boundaries
 - [ ] Cell boundaries follow the real cell edges
-- [ ] Every `group=[A, B]` pair from the report was checked where the cells meet
-- [ ] Every cell touching skin (`group=[-1, N]`) was reviewed in 2D
+- [ ] Every `fixed walls=[...]` neighbour from the report was checked where the cells meet
+- [ ] Every cell touching skin (`2D per-slice, against skin label -1`) was reviewed in 2D
 - [ ] No holes inside cells
 
 ### 3D Consistency

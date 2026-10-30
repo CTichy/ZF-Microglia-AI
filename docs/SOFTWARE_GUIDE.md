@@ -627,15 +627,17 @@ walk z from zmid down to z_orig_min, then from zmid+1 up to z_orig_max:
                   # AND (the source pseudocode's own literal "AND" was a
                   # stated user error — AND would erase real signal any
                   # time a neighbor's shape isn't already identical).
-                  # Pasted only into empty background or skin (-1), never
-                  # a different real label's territory.
+                  # Pasted only into empty background, never another
+                  # label's territory (skin -1 included).
     _correct_slice_full(z):
         if another label (a real cell, or skin -1) is present in z's own local area
         and resolve_adjacent is True:
             jointly re-derive via the same marker-seeded watershed
             Correct Adjacent Labels uses (_correct_label_group_2d_core,
-            focus_ids=[label_id]) — only label_id's OWN resulting side
-            is ever written back
+            focus_ids=[label_id]); every other label is a marker only
+            (a fixed wall) — only label_id's OWN side is written back,
+            onto background or its own old pixels; the neighbour keeps
+            every pixel and its basin stays background
         else:
             plain single-label 2D correction (_intensity_correct_2d)
         if auto_grow and result touches its own local window's edge:
@@ -662,7 +664,7 @@ No missing-slice repair pass here, unlike `correct_label_2d_stack()` below: `_or
 
 **`correct_adjacent_labels_2d(labels, image, label_a, label_b, z, lo, pad, sigma)`** — corrects two touching labels on one slice *simultaneously*, boundary placed by a **marker-seeded** watershed (`markers = each label's own existing footprint`, not auto-detected peaks — Split Label's blind peak-finding was tried and rejected here, since a combined region can have more than one real intensity dip and lock onto the wrong one). The working rectangle is sized from `label_a` alone (+pad), not the union — `label_b` only participates via whatever falls inside that rectangle.
 
-**`correct_label_group_2d` / `_correct_label_group_2d_core`** — the N-label generalization of the above, used by `grow_correct_label_2d()` (Correct Label 2D with auto-grow, Correct Adjacent Labels with auto-grow or until-stable) and (crop-only, no full-volume copy) by `correct_label_from_intensity_3d`'s per-slice joint branch. `focus_ids` optionally scopes the working rectangle to a subset of the group (mirrors `label_a`-only scoping); markers are always each label's own existing footprint, watershed runs unmasked over the whole crop then intersects with the real candidate signal so a diagonally-touching island still gets an owner.
+**`correct_label_group_2d` / `_correct_label_group_2d_core`** — the N-label generalization of the above, used by `grow_correct_label_2d()` (Correct Label 2D with auto-grow, Correct Adjacent Labels with auto-grow or until-stable) and (crop-only, no full-volume copy) by `correct_label_from_intensity_3d`'s per-slice joint branch. `focus_ids` optionally scopes the working rectangle to a subset of the group (mirrors `label_a`-only scoping); `write_ids` optionally limits which members are written back (the rest act as fixed-wall markers only and keep every pixel); markers are always each label's own existing footprint, watershed runs unmasked over the whole crop then intersects with the real candidate signal so a diagonally-touching island still gets an owner.
 
 **`touching_groups_for_stack`** (general-purpose utility, not on the current pipeline's own critical path — replaced there by the per-cell engine's own adjacency resolution): per-Z-slice union-find of mutually-touching label clusters (`_touching_pairs_on_slice` + `_union_find_groups`).
 
@@ -681,7 +683,9 @@ group ← {label_ids}  (a single int for Correct Label; [A, B] for Correct
                        the FIRST id even as the group grows)
 for each stability pass (1 if until_stable=False, else up to max_stability_passes):
     for attempt in 1..max_iterations:
-        correct the current group at the current pad
+        correct the current group at the current pad, writing back ONLY
+            the original label_ids (write_ids) — folded-in neighbours are
+            fixed-wall markers and never change
         new_neighbors ← labels the ORIGINAL group's own footprint (not a
                          folded-in neighbor's) GENUINELY touches, that
                          aren't in the group yet
@@ -693,9 +697,9 @@ for each stability pass (1 if until_stable=False, else up to max_stability_passe
        the immediately preceding pass's: stop (stable)
     else: reseed the next pass from this pass's own result
 ```
-Neighbor discovery is deliberately narrow: only the *originally requested* label's own genuine touching-adjacency counts (never "merely present in the box," which would keep finding something as the box grows; never an already-folded-in neighbor's own further touches, which could cascade the group outward indefinitely).
+The report carries `group` (everything in the watershed) and `corrected` (the ids actually written back: `label_ids` as given). Neighbor discovery is deliberately narrow: only the *originally requested* label's own genuine touching-adjacency counts (never "merely present in the box," which would keep finding something as the box grows; never an already-folded-in neighbor's own further touches, which could cascade the group outward indefinitely).
 
-**`grow_correct_label_3d(labels, image, label_ids, lo, ...)`** — a thin pass-through to `correct_label_from_intensity_3d(auto_grow=True, ...)`: all growth and stability happens *inside* that function's own per-slice walk, never as a whole-cell retry at a bigger global pad.
+**`grow_correct_label_3d(labels, image, label_ids, lo, ...)`** — a thin pass-through to `correct_label_from_intensity_3d(auto_grow=True, ...)` (report `corrected = [label_id]`; `group` lists the neighbours used as walls, none of them changed): all growth and stability happens *inside* that function's own per-slice walk, never as a whole-cell retry at a bigger global pad.
 
 **`format_grow_report(report, mode)`**: renders either shape into the same human-readable style (which slices grew, which took multiple stability passes, whether it converged) used throughout the plugin's status/report boxes.
 
@@ -800,9 +804,9 @@ Both widget call sites save that text: `_on_autocorrect_labels` to `<output fold
 
 **`_on_join_labels()`**: reads Label A/B (each with a "Use selected" button reading `layer.selected_label`), refuses A == B, calls `join_labels()`.
 
-**`_on_correct_label()`**: reads the shared Signal layer's live `contrast_limits` for `lo`, Label A, Correction Settings, mode (2D uses the current slice; 3D disabled outright for label `-1`, since a 3D correction of skin would walk nearly the whole fish — see `correct_label_from_intensity_3d`'s own note). 2D: `grow_correct_label_2d()` if Auto-grow is on (no until-stable in 2D), else `correct_label_from_intensity()`. 3D: `grow_correct_label_3d()` if Auto-grow **or** Keep-until-stable is on, else `correct_label_from_intensity_3d()`. Afterward, if sanding is enabled (§4), fills cavities (if that checkbox is on) and sands every label of the resulting group.
+**`_on_correct_label()`**: reads the shared Signal layer's live `contrast_limits` for `lo`, Label A, Correction Settings, mode (2D uses the current slice; 3D disabled outright for label `-1`, since a 3D correction of skin would walk nearly the whole fish — see `correct_label_from_intensity_3d`'s own note). 2D: `grow_correct_label_2d()` if Auto-grow is on (no until-stable in 2D), else `correct_label_from_intensity()`. 3D: `grow_correct_label_3d()` if Auto-grow **or** Keep-until-stable is on, else `correct_label_from_intensity_3d()`. Afterward, if sanding is enabled (§4), fills cavities (if that checkbox is on) and sands only the corrected label (`report["corrected"]`), never a neighbour.
 
-**`_on_correct_adjacent_labels()`**: reads Label A/B (must differ) + current slice; `grow_correct_label_2d(label_ids=[A, B], ...)` if Auto-grow or Keep-until-stable is on, else `correct_adjacent_labels_2d()`; fills cavities and sands every label of the group afterward if enabled.
+**`_on_correct_adjacent_labels()`**: reads Label A/B (must differ) + current slice; `grow_correct_label_2d(label_ids=[A, B], ...)` if Auto-grow or Keep-until-stable is on, else `correct_adjacent_labels_2d()`; fills cavities and sands Label A and Label B only (`report["corrected"]`) afterward if enabled.
 
 **`_on_copy_label_to_adjacent_slice()`**: reads label + direction, calls `copy_label_to_adjacent_slice()`.
 
@@ -1600,15 +1604,15 @@ Every button/combo handler in the file is documented, with real behavior, in the
 
 | File | Lines | Purpose | Guide section |
 |---|---|---|---|
-| `_widget.py` | 12,095 | Application shell — all 6 tabs, every button handler, config, layer resolution | §3–§9 |
-| `_labeling.py` | 3,281 | Pixel Classifier connected-components engine + every label-editing primitive (resort, debris, split, join, correct, copy, skin protection) | §4, §5 |
+| `_widget.py` | 12,097 | Application shell — all 6 tabs, every button handler, config, layer resolution | §3–§9 |
+| `_labeling.py` | 3,284 | Pixel Classifier connected-components engine + every label-editing primitive (resort, debris, split, join, correct, copy, skin protection) | §4, §5 |
 | `_auto_correction.py` | 1,021 | 6-step unattended per-cell auto-correction pipeline, chained after Cellpose-SAM Segmentation | §5 |
 | `_cellpose_seg.py` | 820 | Cellpose-SAM `do_3D` inference + GMM cleanup + Krendl safe-merge + large-contact merge + final safety net | §4 |
 | `_statistics.py` | 764 | Per-label morphology/spatial/intensity statistics + natural-language descriptions | §6 |
 | `_krendl_sweep.py` | 842 | Cellprob voxel-level GT sweep + real-prediction max_gap/min_contact, Min size and Large-contact calibration | §8 |
 | `_pixel_sweep.py` | 609 | BG Threshold x Signal Erosion / Smooth σXY x σZ GT sweeps + GT-measured floors (`min_volume_from_gt`, `min_hole_size_from_gt`, `min_intercell_gap_um`) | §8 |
 | `_io.py` | 284 | Metadata-aware `.tif`/`.ims` loading, voxel-scale resolution | §2 |
-| `_grow_correct.py` | 540 | Auto-grow / until-stable orchestration around Correct Label's 2D and 3D engines | §5 |
+| `_grow_correct.py` | 553 | Auto-grow / until-stable orchestration around Correct Label's 2D and 3D engines | §5 |
 | `_training_jobs.py` | 378 | Cross-platform detached-process training job management (launch, poll, kill, patience early-stop, email) | §7 |
 | `_gt_annotation.py` | 325 | Polygon-based hand-drawn GT annotation (brain/skin masks) | §7 |
 | `_combine_crops.py` | 85 | Symlinks one fish's crop folder into a shared multi-fish training pool | §7 |

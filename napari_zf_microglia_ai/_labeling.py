@@ -1009,10 +1009,12 @@ def correct_label_from_intensity_3d(
       joint marker-seeded watershed split Correct Adjacent Labels uses
       standalone (_correct_label_group_2d_core, scoped to label_id via
       focus_ids so only ITS OWN local neighborhood is ever touched --
-      see correct_label_group_2d's own focus_ids docstring), so the
-      LOCAL boundary against a genuinely adjacent cell gets properly
-      re-derived at that one slice too, not just excluded/protected as
-      an immovable wall the way plain foreign-exclusion alone would.
+      see correct_label_group_2d's own focus_ids docstring). Every
+      other label takes part only as a watershed marker: the boundary
+      lands between it and label_id, but only label_id is written
+      back. The other label keeps every one of its own pixels, and its
+      basin stays background -- correcting one cell never changes any
+      other cell (or skin).
 
     The label's own ORIGINAL Z range [zmin, zmax] is corrected this way
     outright (the label already exists on every one of those slices) --
@@ -1126,19 +1128,12 @@ def correct_label_from_intensity_3d(
                           switch from auto_grow: growing decides how
                           much ROOM one attempt gets; this decides
                           whether to RE-RUN a slice's correction
-                          repeatedly. A slice with a genuinely adjacent
-                          label doesn't just get its own shape
-                          corrected -- the joint watershed split also
-                          updates the NEIGHBOR's boundary there, seeded
-                          from each label's CURRENT shape. Re-running
-                          that same slice again, now that the neighbor
-                          (and this label) both hold their just-updated
-                          shapes, re-seeds the watershed from a
-                          slightly different marker than before, which
-                          can nudge the split a little closer to a
-                          mutually-consistent position each time --
-                          repeated enough, this converges toward a
-                          genuine fixed point where re-running the
+                          repeatedly. Each attempt re-seeds the watershed
+                          from this label's own just-corrected shape
+                          (the neighbors never change), so its
+                          boundary can settle a little further each
+                          time -- repeated enough, this converges
+                          toward a fixed point where re-running the
                           slice produces the identical result again.
                           When True, EACH slice (independently, exactly
                           like auto_grow above) keeps re-correcting
@@ -1329,11 +1324,13 @@ def correct_label_from_intensity_3d(
                 (cy0, cy1, cx0, cx1, crop_existing, finals, _info) = _correct_label_group_2d_core(
                     new_labels, image, group_ids, z, lo, use_pad, sigma, focus_ids=[label_id],
                 )
+                # Only label_id is written back. Every other label in
+                # the area is a marker in the watershed, so the boundary
+                # lands between them, but keeps all of its own pixels
+                # and its basin stays background.
                 crop = new_labels[z, cy0:cy1, cx0:cx1]
-                for lid in group_ids:
-                    crop[crop_existing[lid]] = 0
-                for lid in group_ids:
-                    crop[finals[lid]] = lid
+                crop[crop_existing[label_id]] = 0
+                crop[finals[label_id] & (crop == 0)] = label_id
         except ValueError:
             new_labels[z] = slice_before
             return False
@@ -1483,10 +1480,8 @@ def correct_label_from_intensity_3d(
         hasn't reached yet still contributes its own CURRENT (pre-walk,
         original) shape -- real signal, useful seeding context, refined
         by its own correction once the walk gets there. Pasted only
-        into empty background or the skin sentinel (label -1, Protect
-        Skin as Label -- this plugin's one fixed negative label); a
-        real OTHER label's own territory is never touched, exactly
-        matching the pseudocode's own paste rule. This is only a
+        into empty background; every other label's territory (real
+        cells and the skin label -1 alike) is never touched. This is only a
         SEED for the watershed marker _correct_slice_full() uses right
         after -- the final shape is still entirely re-derived from the
         real intensity threshold there, so pasting can't force-keep a
@@ -1500,8 +1495,7 @@ def correct_label_from_intensity_3d(
         if not np.any(to_paste):
             return
         slice_z = new_labels[z]
-        foreign_blocking = (slice_z != 0) & (slice_z != label_id) & (slice_z != -1)
-        paste_mask = to_paste & ~foreign_blocking
+        paste_mask = to_paste & (slice_z == 0)
         slice_z[paste_mask] = label_id
 
     # Walk the label's own FIXED original range mid-outward, in two
@@ -2097,6 +2091,7 @@ def correct_label_group_2d(
     pad: int = 15,
     sigma: float = 1.0,
     focus_ids: "list[int] | None" = None,
+    write_ids: "list[int] | None" = None,
 ) -> "tuple[np.ndarray, dict]":
     """
     N-label generalization of correct_adjacent_labels_2d(): jointly
@@ -2127,6 +2122,13 @@ def correct_label_group_2d(
                 grow_correct_label_2d()'s own use, where every group
                 member is a genuine peer -- there's no single "label
                 we're concerned about" to scope around there.
+    write_ids : optional subset of label_ids. When given, only these
+                labels are written back: every other member of the
+                group takes part in the watershed (it holds its own
+                ground as a marker, so the boundary lands between it
+                and the written labels) but keeps every one of its own
+                pixels exactly as before, and its basin stays
+                background. None (default) writes every member.
 
     Returns (new_labels, info). info is a dict:
         n_lost   -- pixels that were one of label_ids before, but ended
@@ -2147,12 +2149,13 @@ def correct_label_group_2d(
         labels, image, label_ids, z, lo, pad, sigma, focus_ids,
     )
 
+    write = list(label_ids) if write_ids is None else [lid for lid in label_ids if lid in set(write_ids)]
     new_labels = labels.copy()
     crop = new_labels[z, y0:y1, x0:x1]
-    for lid in label_ids:
+    for lid in write:
         crop[crop_existing[lid]] = 0
-    for lid in label_ids:
-        crop[finals[lid]] = lid
+    for lid in write:
+        crop[finals[lid] & (crop == 0)] = lid
 
     # copy=False: new_labels is already this function's own private copy.
     return new_labels.astype(np.int32, copy=False), info
@@ -2976,6 +2979,7 @@ def correct_label_2d_stack(
 
     report = {
         "group": sorted({label_id} | all_foreign),
+        "corrected": [label_id],
         "foreign_touching": foreign_touching,
         "foreign_nearby": foreign_nearby,
         "slices_grown": slices_grown,

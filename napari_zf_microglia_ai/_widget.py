@@ -8428,7 +8428,7 @@ class ZFMicrogliaAIWidget(QWidget):
                         )
                         result["grow_report"] = grow_report
                         if sanding_on:
-                            new_labels, result["sanding_info"] = _sand_group(new_labels, grow_report["group"])
+                            new_labels, result["sanding_info"] = _sand_group(new_labels, grow_report["corrected"])
                     else:
                         new_labels = correct_label_from_intensity(
                             labels, image, label_id, z, lo, hi, pad=pad
@@ -8463,7 +8463,7 @@ class ZFMicrogliaAIWidget(QWidget):
                         )
                         result["grow_report"] = grow_report
                         if sanding_on:
-                            new_labels, result["sanding_info"] = _sand_group(new_labels, grow_report["group"])
+                            new_labels, result["sanding_info"] = _sand_group(new_labels, grow_report["corrected"])
                     else:
                         new_labels, result["report"] = correct_label_from_intensity_3d(
                             labels, image, label_id, lo, pad=pad,
@@ -8493,8 +8493,8 @@ class ZFMicrogliaAIWidget(QWidget):
             lyr.data[:] = result["labels"]  # in-place -- see Resort Labels above for why
             lyr.refresh()
 
-            # sanding_info is now {label_id: info} -- covers every label in
-            # the (possibly grow-expanded) group, not just the original target.
+            # sanding_info is {label_id: info} -- only the corrected
+            # label; neighbours used as walls are never sanded.
             sand_infos = result.get("sanding_info") or {}
             sand_note = ""
             if sand_infos:
@@ -8512,7 +8512,8 @@ class ZFMicrogliaAIWidget(QWidget):
                 self._correct_report_view.setPlainText("\n".join(report_lines))
                 self._correct_report_view.show()
                 converged_note = "" if gr["converged"] else " -- NOT converged, still touches the border"
-                group_note = f" (group grew to {gr['group']})" if gr["group_grew"] else ""
+                walls = [i for i in gr["group"] if i not in gr["corrected"]]
+                group_note = f" (neighbour(s) {walls} used as fixed walls)" if walls else ""
                 if mode == "3d":
                     grow_note = ""
                     if grow_on:
@@ -8725,7 +8726,7 @@ class ZFMicrogliaAIWidget(QWidget):
                         until_stable=until_stable, max_stability_passes=max_stability_passes,
                     )
                     result["grow_report"] = grow_report
-                    group_ids = grow_report["group"]
+                    group_ids = grow_report["corrected"]
                 else:
                     new_labels, result["info"] = correct_adjacent_labels_2d(
                         labels, image, label_a, label_b, z, lo, pad=pad
@@ -8770,7 +8771,8 @@ class ZFMicrogliaAIWidget(QWidget):
             if "grow_report" in result:
                 gr = result["grow_report"]
                 converged_note = "" if gr["converged"] else " -- NOT converged, still touches the border"
-                group_note = f", group grew to {gr['group']}" if gr["group_grew"] else ""
+                walls = [i for i in gr["group"] if i not in gr["corrected"]]
+                group_note = f", neighbour(s) {walls} used as fixed walls" if walls else ""
                 stable_note = ""
                 if until_stable:
                     sp = gr.get("stability_passes", 1)

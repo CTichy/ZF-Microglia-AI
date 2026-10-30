@@ -845,9 +845,11 @@ def _format_2d_vs_skin_report(report: dict, skin_id: int) -> str:
     format_grow_report() itself: that function's "3D" text always says
     "(3D, per-slice)", which would misdescribe what actually ran here.
     """
+    corrected = report.get("corrected", report["group"])
+    walls = [i for i in report["group"] if i not in corrected]
     lines = [
-        f"Auto-grow (2D per-slice, jointly resolved against skin label "
-        f"{skin_id}): group={report['group']}"
+        f"Auto-grow (2D per-slice, against skin label {skin_id}): "
+        f"corrected={corrected}" + (f", fixed walls={walls}" if walls else "")
     ]
     slices_grown = report.get("slices_grown", {})
     if slices_grown:

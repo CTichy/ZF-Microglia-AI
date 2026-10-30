@@ -8,9 +8,11 @@ too small a pad would otherwise cut off.
 2D mode (grow_correct_label_2d) reuses correct_label_group_2d() directly
 (a single-ID call degenerates to plain single-label correction, so one
 function already covers both the 1-label and N-label case uniformly).
-Also auto-detects when growth reveals a neighboring label and expands
-into a joint multi-label correction so a neighbor's territory is never
-wrongly consumed -- this never grows silently into someone else's cell.
+Also auto-detects when growth reveals a neighboring label and folds it
+into the joint watershed as a marker, so the boundary lands between the
+two -- but only the requested label(s) are ever written back. A folded-in
+neighbor keeps every one of its own pixels and its basin stays background:
+correcting one cell never changes another one.
 Neighbor discovery here is deliberately narrow on two axes, to stop it
 ever cascading into an unrelated part of the fish: (1) only GENUINE
 TOUCHING adjacency counts, never mere presence nearby -- a "how much
@@ -65,10 +67,13 @@ def grow_correct_label_2d(
     Auto-grows Correct Label's 2D (single-slice) correction until the
     result no longer touches the edge of its own padded working
     region, expanding the padding by growth_step each time it does.
-    If the growing region starts overlapping a different label, that
-    label is folded into the correction (via correct_label_group_2d(),
-    the joint marker-seeded watershed correction) instead of being
-    encroached on by the target label's own growth.
+    If the growing region starts touching a different label, that
+    label is folded into the joint marker-seeded watershed
+    (correct_label_group_2d()) so the boundary lands between the two,
+    but it is never written back: only label_ids themselves change.
+    With 2+ label_ids (Correct Adjacent Labels), those labels do battle
+    each other for the shared boundary; any folded-in neighbor stays
+    exactly as it was.
 
     labels, image  : (Z, Y, X) volumes, same shape
     label_ids       : the label(s) to correct -- a single int (Correct
@@ -96,10 +101,8 @@ def grow_correct_label_2d(
                       stability loop (see its own until_stable
                       docstring), applied here to this single slice's
                       whole group at once instead of one label at a
-                      time. A joint watershed split doesn't just shape
-                      the target label(s) -- it also redraws whatever
-                      neighbor got folded into the group, seeded from
-                      each label's CURRENT shape. Once the growth+
+                      time. The joint watershed is seeded from each
+                      label's CURRENT shape. Once the growth+
                       neighbor-discovery cycle above converges (no more
                       border touch, no new neighbor pulled in), that
                       whole cycle is re-run again on this same slice,
@@ -118,7 +121,10 @@ def grow_correct_label_2d(
                       10). Ignored when until_stable is False.
 
     Returns (new_labels, report). report:
-        group            -- sorted list of label ids corrected together
+        group            -- sorted list of label ids in the joint
+                              watershed (requested + folded-in neighbors)
+        corrected        -- sorted list of the label ids actually
+                              written back (label_ids as given)
         pad_used          -- the padding of the last attempt actually made
         n_iterations       -- total attempts made, summed across every
                               stability pass (not just the last one)
@@ -200,6 +206,7 @@ def grow_correct_label_2d(
                 # must never balloon the working area (or the watershed's own
                 # cost) beyond what's actually needed near A's own neighborhood.
                 focus_ids=sorted(rect_focus),
+                write_ids=sorted(original_group),
             )
             last_new_labels, last_info = new_labels, info
 
@@ -314,6 +321,7 @@ def grow_correct_label_2d(
 
     report = {
         "group": sorted(group),
+        "corrected": sorted(original_group),
         "pad_used": pad,
         "n_iterations": total_iterations,
         "converged": converged,
@@ -400,8 +408,8 @@ def grow_correct_label_3d(
 
     Returns (new_labels, report): group (the corrected label plus every
     OTHER label reported as foreign_nearby by the final attempt --
-    informational, for sanding/reporting, not something this function
-    itself grows into), pad_used (the BASE pad -- growth is per-slice
+    informational only; none of them is changed), corrected
+    ([label_id], the only label written back), pad_used (the BASE pad -- growth is per-slice
     now, see slices_grown), n_iterations (the CAP each slice may use,
     not an actual global attempt count), converged, group_grew (always
     False now -- kept for report-shape compatibility), slices_grown
@@ -462,6 +470,7 @@ def grow_correct_label_3d(
 
     report = {
         "group": group,
+        "corrected": [label_id],
         "pad_used": initial_pad,  # the BASE pad -- growth is per-slice now, see slices_grown
         "n_iterations": max_iterations,  # the CAP each slice may use, not an actual global count
         "converged": converged,
@@ -486,7 +495,9 @@ def format_grow_report(report: dict, mode: str) -> str:
         # actually happened.
         lines.append(
             f"Auto-grow (3D, per-slice): base pad={report['pad_used']}px, "
-            f"up to {report['n_iterations']} attempt(s) per slice, group={group}"
+            f"up to {report['n_iterations']} attempt(s) per slice, corrected={report.get('corrected', group)}"
+            + (f", fixed walls={[i for i in group if i not in report.get('corrected', group)]}"
+               if [i for i in group if i not in report.get('corrected', group)] else "")
         )
         slices_grown = report.get("slices_grown", {})
         if slices_grown:
@@ -506,7 +517,9 @@ def format_grow_report(report: dict, mode: str) -> str:
     else:
         lines.append(
             f"Auto-grow ({mode}): {report['n_iterations']} attempt(s), final pad={report['pad_used']}px, "
-            f"group={group}{' (grew from neighbor discovery)' if report['group_grew'] else ''}"
+            f"corrected={report.get('corrected', group)}"
+            + (f", fixed walls={[i for i in group if i not in report.get('corrected', group)]}"
+               if [i for i in group if i not in report.get('corrected', group)] else "")
         )
     if report["converged"]:
         lines.append("  Converged -- no part of the result touches the padded region's own edge.")
