@@ -144,9 +144,12 @@ In the **Skin Remover** tab, select background option **1 — Remove background 
    - **Signal layer** = `<stem>_original` (the raw channel), **not** the `_ExtRm` layer
    - **Labels layer** = the labels you loaded in Step 5
    - **Brain mask layer** = the brain mask you converted in Step 5
-3. Scroll down to **Protect Skin as Label** and click it.
-4. **Wait until it is done** (about 7 minutes for a full fish). It first runs a contrast sweep on about 20 cells to find the contrast/brightness setting of the raw signal that best fits the labels Cellpose-SAM generated, lowers it by **Reduce best_lo by** (default 2; e.g. swept 104 → `lo=102`), then labels everything outside the brain as skin (**-1**) at that setting and removes small stray skin fragments. It also sets the `_original` layer's contrast to that value.
-5. Hide the other layers and check the skin label in **3D**: every slice should carry skin.
+3. **Turn off the Auto-sweep.** In **Edit MG Labels**, section **Contrast low (best_lo) calibration**, untick **Auto-sweep for best contrast low (best_lo)**. The Auto-sweep is not advisable while verifying ground truth: it picks and applies a contrast without you seeing it first. With it off, Protect Skin and Auto-correct Labels (Step 9) both use the `_original` layer's own current contrast low limit, and **Reduce best_lo by** is ignored. Leave it unticked for the rest of the workflow. It is ticked again every time napari starts, so untick it again after a restart.
+4. **Run the contrast calibration by hand.** Go to the **Sweeps & Utilities** tab, open **Calibrate Correct-Label Contrast** and click **Run Contrast Calibration Sweep**. It samples about 20 cells to find the contrast low (best_lo) of the raw signal that best fits the labels Cellpose-SAM generated, and sets the `_original` layer's contrast limits to low = best lo and high = the 99th percentile of the signal inside the labels. Wait until its status line says **Done** and note the two values.
+5. **Check the contrast, and lower it if needed.** Look at the `_original` layer at the contrast the sweep set. If the cells look too thin or faint parts are missing, lower **both** the low and the high contrast limit of the `_original` layer by **1, at most 2** points below the sweep's values (e.g. sweep `[104, 180]` → `[103, 179]` or `[102, 178]`). Don't go lower than 2 points.
+6. Go back to **Edit MG Labels**, scroll down to **Protect Skin as Label** and click it.
+7. **Wait until it is done** (several minutes for a full fish). It labels everything outside the brain as skin (**-1**) at the `_original` layer's contrast low and removes small stray skin fragments.
+8. Hide the other layers and check the skin label in **3D**: every slice should carry skin.
 
 #### Correcting a slice that is missing skin
 
@@ -162,7 +165,7 @@ If a slice has no skin (or is clearly wrong):
 
 Protect Skin can absorb a real cell sitting near the skin. Check for this before correcting anything else:
 
-1. **Duplicate** the `<stem>_original` layer (right-click → Duplicate Layer) and change the contrast/brightness of the **copy** until you can see all your cells well. Leave the original layer at the contrast the sweep set — the correction tools read their threshold from it.
+1. **Duplicate** the `<stem>_original` layer (right-click → Duplicate Layer) and change the contrast/brightness of the **copy** until you can see all your cells well. Leave the original layer at the contrast you set in Step 7 — the correction tools read their threshold from it.
 2. Select label **-1** and tick **show selected**.
 3. Look for cells near the skin, or any other blob, that ended up as part of skin.
 4. Sort the cells: **Resort Labels** with **Sort by = Centroid Z**.
@@ -174,7 +177,7 @@ Protect Skin can absorb a real cell sitting near the skin. Check for this before
 
 ### Step 9 — Correct all labels: Auto-correct Labels
 
-In **Edit MG Labels**, click **Auto-correct Labels**. It reuses the skin you already protected, re-fits every cell to the signal (cells touching the skin in 2D, all others in 3D), removes debris, and writes a report in the log box. See [Reading the Auto-correct Report](#reading-the-auto-correct-report) for what to look for.
+In **Edit MG Labels**, check that **Auto-sweep for best contrast low (best_lo)** is still unticked, so it uses the contrast you set in Step 7, then click **Auto-correct Labels**. It reuses the skin you already protected, re-fits every cell to the signal (cells touching the skin in 2D, all others in 3D), removes debris, and writes a report in the log box. See [Reading the Auto-correct Report](#reading-the-auto-correct-report) for what to look for.
 
 ### Step 10 — Correct single cells
 
@@ -191,7 +194,7 @@ See [Saving the Ground Truth](#saving-the-ground-truth).
 A typical report (shortened; the explanations on the right are not part of it):
 
 ```
-Auto-correction: lo=102.4, adjusted -3 from the swept 105.4 (calibration mean IoU=0.888, 289 samples)
+Auto-correction: lo=103 (given directly -- contrast sweep skipped)
 Skin was ALREADY protected as label -1 (5,048,915 voxels) -- reused exactly as it was, not re-protected or re-trimmed.
 Cells resorted by Centroid Z before correction (80 cell(s)).
 Cell-by-cell correction (Centroid-Z order): 80/80 corrected (10 touching skin, corrected in 2D against it; the rest in 3D)
