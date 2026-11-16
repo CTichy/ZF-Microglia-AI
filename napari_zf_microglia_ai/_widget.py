@@ -9393,9 +9393,9 @@ class ZFMicrogliaAIWidget(QWidget):
             # Protect Skin as Label's own section is populated as if
             # that button had been clicked directly.
             best_lo = report["best_lo"]
-            # Low end moves to the calibrated threshold; high end stays
-            # exactly as it already was on the signal layer (e.g. from
-            # the IMS load), not an arbitrary offset off best_lo.
+            # After a sweep, the low end moves to the calibrated threshold
+            # and the high end to an adaptive percentile of this fish's own
+            # real signal (see _adaptive_contrast_high()'s own comment).
             self._ac_status_lbl.setText("Applying the calibrated contrast to the signal layer…")
             _t = _time.time()
             # Guarded: napari's own _update_thumbnail() (triggered by this
@@ -9409,13 +9409,19 @@ class ZFMicrogliaAIWidget(QWidget):
             # the status text frozen on this line forever, looking exactly
             # like a hang. Same fix as Protect Skin's own contrast
             # assignment below.
-            contrast_hi = _adaptive_contrast_high(image, new_labels, best_lo)
-            try:
-                signal_lyr.contrast_limits = (best_lo, contrast_hi)
-            except Exception as exc:
-                print(f"[Auto-correct] could not set the signal layer's contrast limits: {exc}")
-            else:
-                print(f"[Auto-correct] set the signal layer's contrast in {_time.time() - _t:.1f}s")
+            # Only when the sweep ran: with Auto-sweep off, lo came from the
+            # signal layer's own contrast as the user set it, so both limits
+            # are left exactly as they are.
+            contrast_txt = "contrast left as set (Auto-sweep off)"
+            if not report.get("lo_override_used"):
+                contrast_hi = _adaptive_contrast_high(image, new_labels, best_lo)
+                contrast_txt = f"contrast set to [{best_lo:.4g}, {contrast_hi:.4g}]"
+                try:
+                    signal_lyr.contrast_limits = (best_lo, contrast_hi)
+                except Exception as exc:
+                    print(f"[Auto-correct] could not set the signal layer's contrast limits: {exc}")
+                else:
+                    print(f"[Auto-correct] set the signal layer's contrast in {_time.time() - _t:.1f}s")
             skin_rep = report["skin_report"]
             touching_ids = sorted({i for ids in skin_rep.get("foreign_touching", {}).values() for i in ids})
             nearby_ids = sorted({i for ids in skin_rep.get("foreign_nearby", {}).values() for i in ids})
@@ -9453,7 +9459,7 @@ class ZFMicrogliaAIWidget(QWidget):
                 if n_skin_final == 0 else f" Skin: {n_skin_final:,} voxels."
             )
             done_status = (
-                f"Done — lo={best_lo:.4g}, contrast set to [{best_lo:.4g}, {contrast_hi:.4g}], "
+                f"Done — lo={best_lo:.4g}, {contrast_txt}, "
                 f"skin protected as label {report['skin_label_id']}, "
                 f"{report['n_cells_corrected']}/{report['n_cells_total']} cells corrected "
                 f"({len(report.get('touching_skin_cell_ids', []))} touching skin, in 2D; "
@@ -10693,7 +10699,8 @@ class ZFMicrogliaAIWidget(QWidget):
 
         signal_layer : the actual napari Image layer (not just its raw
                        array, already captured as `volume` above) -- on
-                       completion its contrast_limits are set to the
+                       completion, when the sweep ran (Auto-sweep on), its
+                       contrast_limits are set to the
                        calibrated best_lo, the same visible feedback the
                        standalone Calibrate Correct-Label Contrast sweep
                        already gives, and Protect Skin as Label's own
@@ -10827,11 +10834,17 @@ class ZFMicrogliaAIWidget(QWidget):
             # this project -- see the identical guard on Auto-correct
             # Existing Labels' own contrast assignment for the real
             # traceback and why an unguarded crash here looks like a hang.
-            contrast_hi = _adaptive_contrast_high(volume, new_labels, best_lo)
             # Display only: the segmentation input layer (_ExtRm/_NoBG)
             # gets the same window so both read alike; the correction
-            # itself ran on the raw channel (signal_layer).
-            for lyr_c in (signal_layer, seg_layer):
+            # itself ran on the raw channel (signal_layer). Only when the
+            # sweep ran: with Auto-sweep off, lo came from the raw layer's
+            # own contrast as the user set it, so no layer is touched.
+            sweep_ran = not report.get("lo_override_used")
+            contrast_txt = "contrast left as set (Auto-sweep off)"
+            if sweep_ran:
+                contrast_hi = _adaptive_contrast_high(volume, new_labels, best_lo)
+                contrast_txt = f"contrast set to [{best_lo:.4g}, {contrast_hi:.4g}]"
+            for lyr_c in ((signal_layer, seg_layer) if sweep_ran else ()):
                 if lyr_c is None or (lyr_c is seg_layer and seg_layer is signal_layer):
                     continue
                 try:
@@ -10883,7 +10896,7 @@ class ZFMicrogliaAIWidget(QWidget):
                 self._skin_status_lbl.setText(
                     f"Done (via auto-correct) — skin protected as label "
                     f"{report['skin_label_id']} ({n_skin_final:,} voxels, "
-                    f"lo={best_lo:.4g}, contrast set to [{best_lo:.4g}, {contrast_hi:.4g}], "
+                    f"lo={best_lo:.4g}, {contrast_txt}, "
                     f"real signal only, outside the brain "
                     f"mask). Use 'Remove Skin Label' below whenever you no "
                     f"longer need it.{debris_note}"
@@ -10898,7 +10911,7 @@ class ZFMicrogliaAIWidget(QWidget):
             )
             autocorrect_status = (
                 f"{base_status} Auto-correct done — lo={report['best_lo']:.4g}, "
-                f"contrast set to [{best_lo:.4g}, {contrast_hi:.4g}], "
+                f"{contrast_txt}, "
                 f"skin protected as label {report['skin_label_id']}, "
                 f"{report['n_cells_corrected']}/{report['n_cells_total']} cells corrected "
                 f"(Centroid-Z order), {report['n_debris_fragments_removed']} debris "
