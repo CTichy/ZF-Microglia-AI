@@ -474,7 +474,11 @@ def auto_contrast_correct_stack(
                           override is used exactly as given, never
                           further adjusted.
     lo_adjustment        : only applied when `lo_override` is None (the
-                          sweep DID run). Subtracted from the swept
+                          sweep DID run) AND the labels carry no skin yet
+                          (never auto-corrected; on already-corrected
+                          labels the sweep reproduces the reduced lo they
+                          were cut at, so it is not reduced again --
+                          report's `lo_adjustment_skipped`). Subtracted from the swept
                           `best_lo` before it's used for anything --
                           "auto-sweep, but capture N units of fainter
                           signal than the sweep itself would pick,"
@@ -561,6 +565,7 @@ def auto_contrast_correct_stack(
     # plainly "the sweep didn't run" rather than crashing on a missing key.
     sweep = None
     best_lo_swept = None
+    lo_adjustment_skipped = 0.0
     if lo_override is not None:
         best_lo = float(lo_override)
         _report(f"Auto-correct: using given lo={best_lo:.4g} (sweep skipped).")
@@ -585,8 +590,21 @@ def auto_contrast_correct_stack(
             labels, image, samples, lo_candidates, pad=sweep_pad, progress_cb=_sweep_progress,
         )
         best_lo_swept = float(sweep["best_lo"])
+        # Labels that already carry skin have been through Auto-correct
+        # before: their shapes were cut at an already-reduced lo, so the
+        # sweep reproduces that value, and reducing it again would push lo
+        # lower on every re-run, into background. The reduction is applied
+        # only to labels that have never been auto-corrected.
+        if lo_adjustment and skin_voxel_count(labels, -1) > 0:
+            lo_adjustment_skipped = float(lo_adjustment)
+            lo_adjustment = 0.0
         best_lo = best_lo_swept - float(lo_adjustment)
         adj_note = f" (swept {best_lo_swept:.4g}, adjusted by -{lo_adjustment:.4g})" if lo_adjustment else ""
+        if lo_adjustment_skipped:
+            adj_note = (
+                f" (labels already corrected -- skin present -- so the reduction "
+                f"of {lo_adjustment_skipped:.4g} was not applied)"
+            )
         _report(
             f"Auto-correct: calibrated lo={best_lo:.4g}{adj_note} "
             f"(mean IoU={sweep['best_mean_iou']:.3f} on {sweep['n_samples']} samples)"
@@ -834,6 +852,9 @@ def auto_contrast_correct_stack(
         "best_lo_swept": best_lo_swept,  # None when lo_override skipped the sweep
         "lo_override_used": lo_override is not None,
         "lo_adjustment": float(lo_adjustment),
+        # Reduction NOT applied because the labels were already corrected
+        # (skin present); 0.0 when it was applied or not requested.
+        "lo_adjustment_skipped": lo_adjustment_skipped,
         "sweep_mean_iou": sweep["best_mean_iou"] if sweep is not None else None,
         "n_calibration_samples": sweep["n_samples"] if sweep is not None else 0,
         "skin_label_id": skin_id,
@@ -918,6 +939,12 @@ def format_auto_correction_report(report: dict) -> str:
         adj_note = (
             f", adjusted -{adj:.4g} from the swept {swept:.4g}" if adj and swept is not None else ""
         )
+        skipped = report.get("lo_adjustment_skipped", 0.0)
+        if skipped:
+            adj_note = (
+                f" (swept; labels already corrected -- skin present -- so the "
+                f"reduction of {skipped:.4g} was not applied)"
+            )
         lines.append(
             f"Auto-correction: lo={report['best_lo']:.4g}{adj_note} "
             f"(calibration mean IoU={report['sweep_mean_iou']:.3f}, "

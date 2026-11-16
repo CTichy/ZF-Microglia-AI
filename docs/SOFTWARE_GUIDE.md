@@ -738,6 +738,9 @@ Any non-positive label (skin `-1`) is treated as plain background during this sw
 ```
 1. best_lo ← sweep_contrast_lower_value(...) via select_calibration_samples/
              default_lo_candidates, minus lo_adjustment ("Reduce best_lo by")
+             only if the labels carry no skin yet (already-corrected labels
+             reproduce the reduced lo they were cut at, so the reduction is
+             skipped and recorded as report["lo_adjustment_skipped"])
              — or lo_override (Auto-sweep off: the signal layer's current
              contrast low), which skips the sweep and is used as given
 

@@ -680,7 +680,7 @@ The **Sigma XY** / **Sigma Z** sliders that control sanding strength (see [Softe
 
 Shared by every tool below that needs a contrast-low threshold to decide what counts as real signal — **Protect Skin as Label** and **Auto-correct Labels** today, and any future tool that needs the same calibration.
 
-**Auto-sweep for best contrast low (best_lo)** — checkbox, **default on**. When checked, sweeps for the best_lo contrast-low value against the active labels, then subtracts **Reduce best_lo by** from it — e.g. best_lo=107 with reduction=2 corrects at 105, capturing slightly more signal. When unchecked, the reduction slider is ignored and the tool instead uses the Signal layer's **own current contrast LOW limit** exactly as set in napari (no sweep, no reduction).
+**Auto-sweep for best contrast low (best_lo)** — checkbox, **default on**. When checked, sweeps for the best_lo contrast-low value against the active labels, then subtracts **Reduce best_lo by** from it — e.g. best_lo=107 with reduction=2 corrects at 105, capturing slightly more signal. **On labels that already carry skin (-1)** — labels that have already been through Auto-correct — the reduction is **not** applied: their shapes were cut at an already-reduced `lo`, so the sweep finds that value again, and subtracting the reduction once more would lower `lo` on every re-run until it floods into background. The log and the report then say *labels already corrected — skin present — so the reduction of 2 was not applied*. When unchecked, the reduction slider is ignored and the tool instead uses the Signal layer's **own current contrast LOW limit** exactly as set in napari (no sweep, no reduction).
 
 **Reduce best_lo by** — slider, **range 0-6, default 2**.
 

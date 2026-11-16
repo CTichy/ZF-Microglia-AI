@@ -2900,12 +2900,15 @@ class ZFMicrogliaAIWidget(QWidget):
         lcg = QVBoxLayout()
         lcg.setSpacing(4)
         lo_calib_note = QLabel(
-            "  Used by Protect Skin as Label and Auto-correct Existing "
+            "  Used by Protect Skin as Label and Auto-correct "
             "Labels to pick their contrast-low threshold (best_lo). Check "
             "Auto-sweep to calculate best_lo from the active labels; set "
             "Reduce best_lo by (0-6) to subtract that amount from the "
             "swept value and capture slightly more signal (e.g. "
-            "best_lo=107 minus 2 corrects at 105). Uncheck Auto-sweep to skip the "
+            "best_lo=107 minus 2 corrects at 105). On labels that already "
+            "carry skin (already auto-corrected), the reduction is not "
+            "applied, so lo does not drop again on every re-run. "
+            "Uncheck Auto-sweep to skip the "
             "sweep and use the Signal layer's own current contrast low "
             "limit instead -- Reduce best_lo by is then ignored. To "
             "change how many cells/slices the sweep samples, the edge "
