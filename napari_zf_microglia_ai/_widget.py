@@ -9319,15 +9319,20 @@ class ZFMicrogliaAIWidget(QWidget):
             print(f"Auto-correct Labels: {skin_note}")
 
         self._ac_labels_btn.setEnabled(False)
-        self._ac_log_view.hide()
+        # Live log: every progress line is kept here during the run (the
+        # status line only ever shows the latest one); the full report is
+        # appended below it at the end.
+        self._ac_log_view.clear()
+        self._ac_log_view.show()
         self._ac_status_lbl.setText("Auto-correcting existing labels...")
 
-        result = {}
+        result = {"_log": []}
 
         def _worker():
             try:
                 def _progress(msg):
                     result["_progress"] = msg
+                    result["_log"].append(msg)
                 new_labels, report = auto_contrast_correct_stack(
                     labels, image, scale, brain_mask, skin_image=skin_image,
                     min_volume=min_volume, final_min_fraction=final_min_fraction,
@@ -9360,7 +9365,18 @@ class ZFMicrogliaAIWidget(QWidget):
 
         timer = QTimer(self)
 
+        log_shown = [0]
+
+        def _flush_log():
+            new_lines = result["_log"][log_shown[0]:]
+            if new_lines:
+                log_shown[0] += len(new_lines)
+                self._ac_log_view.append("\n".join(new_lines))
+                sb = self._ac_log_view.verticalScrollBar()
+                sb.setValue(sb.maximum())
+
         def _poll():
+            _flush_log()
             if thread.is_alive():
                 if "_progress" in result:
                     self._ac_status_lbl.setText(result["_progress"])
@@ -9443,7 +9459,7 @@ class ZFMicrogliaAIWidget(QWidget):
                 self._skin_report_view.hide()
 
             report_text = format_auto_correction_report(report)
-            self._ac_log_view.setPlainText(report_text)
+            self._ac_log_view.append("\n" + report_text)
             self._ac_log_view.show()
             report_path = self._write_autocorrect_report(
                 self._output_dir() / f"{lyr.name}_autocorrect_report.txt",
@@ -10740,12 +10756,13 @@ class ZFMicrogliaAIWidget(QWidget):
         if skin_note:
             print(f"Auto-correct: {skin_note}")
 
-        result3 = {}
+        result3 = {"_log": []}
 
         def _worker3():
             try:
                 def _progress3(msg):
                     result3["_progress"] = msg
+                    result3["_log"].append(msg)
                 new_labels, report = auto_contrast_correct_stack(
                     labels, volume, scale, brain_mask, skin_image=skin_image,
                     min_volume=min_volume, final_min_fraction=final_min_fraction,
@@ -10775,7 +10792,20 @@ class ZFMicrogliaAIWidget(QWidget):
 
         timer3 = QTimer(self)
 
+        log_shown3 = [0]
+
+        def _flush_log3():
+            # Live log in the section's own log box, under the
+            # segmentation output; the full report is appended at the end.
+            new_lines = result3["_log"][log_shown3[0]:]
+            if new_lines:
+                log_shown3[0] += len(new_lines)
+                self._cp_log_view.append("\n".join(new_lines))
+                sb = self._cp_log_view.verticalScrollBar()
+                sb.setValue(sb.maximum())
+
         def _poll3():
+            _flush_log3()
             if thread3.is_alive():
                 if "_progress" in result3:
                     self._cp_status_lbl.setText(result3["_progress"])

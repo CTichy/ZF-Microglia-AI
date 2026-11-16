@@ -92,7 +92,7 @@ cell:
 from __future__ import annotations
 
 import os
-from concurrent.futures import ThreadPoolExecutor
+from concurrent.futures import ThreadPoolExecutor, as_completed
 
 import numpy as np
 from scipy.ndimage import find_objects
@@ -678,7 +678,7 @@ def auto_contrast_correct_stack(
             "outside the brain."
         )
 
-    _report("Auto-correct: resorting cells by Centroid Z...")
+    _report(f"Auto-correct (lo={best_lo:.4g}): resorting cells by Centroid Z...")
     new_labels = resort_labels(labels_with_skin, sort_by="centroid_z")
 
     # ── Step 4: which cells touch skin's final territory (geometry, see
@@ -692,7 +692,7 @@ def auto_contrast_correct_stack(
     touching_skin_ids = _labels_touching_skin(
         new_labels, [int(i) for i in np.unique(new_labels) if i > 0], skin_id, skin_touch_px,
     )
-    _report(f"Auto-correct: {len(touching_skin_ids)} cell(s) within {skin_touch_px}px of skin.")
+    _report(f"Auto-correct (lo={best_lo:.4g}): {len(touching_skin_ids)} cell(s) within {skin_touch_px}px of skin.")
 
     unique_ids2 = np.unique(new_labels)
     unique_ids2 = unique_ids2[unique_ids2 > 0]
@@ -707,7 +707,7 @@ def auto_contrast_correct_stack(
     )
     n_workers = max(1, int((os.cpu_count() or 4) * 0.75))
     _report(
-        f"Auto-correct: {n_total} cell(s) "
+        f"Auto-correct (lo={best_lo:.4g}): {n_total} cell(s) "
         + (f"({len(touching_skin_ids)} within {skin_touch_px}px of skin, corrected in 2D against it, "
            f"the rest in 3D) " if touching_skin_ids else "(none near skin, all corrected in 3D) ")
         + f"split into {len(waves)} parallel-safe "
@@ -770,8 +770,24 @@ def auto_contrast_correct_stack(
             except ValueError as exc:
                 return lid, None, None, str(exc)
 
+        # One progress line per finished cell, so a slow wave never looks
+        # frozen; lo is repeated in every line so it stays visible.
+        wave_results = []
         with ThreadPoolExecutor(max_workers=n_outer) as pool:
-            wave_results = list(pool.map(_correct_one, wave))
+            futures = [pool.submit(_correct_one, lid) for lid in wave]
+            for fut in as_completed(futures):
+                wave_results.append(fut.result())
+                done_lid, _box, _rep, done_err = wave_results[-1]
+                _report(
+                    f"Auto-correct (lo={best_lo:.4g}): wave {wave_idx + 1}/{len(waves)}, "
+                    f"cell {len(wave_results)}/{len(wave)} done (label {done_lid}"
+                    + (f", skipped: {done_err}" if done_err else "")
+                    + f"), {n_done + len(wave_results)}/{n_total} overall"
+                )
+        # Back to the wave's own order, so the report lists cells exactly
+        # as before regardless of which finished first.
+        wave_pos = {lid: i for i, lid in enumerate(wave)}
+        wave_results.sort(key=lambda r: wave_pos[r[0]])
 
         for lid, box_result, cell_report, err in wave_results:
             n_done += 1
@@ -791,7 +807,7 @@ def auto_contrast_correct_stack(
         del wave_results
 
         _report(
-            f"Auto-correct: wave {wave_idx + 1}/{len(waves)} done "
+            f"Auto-correct (lo={best_lo:.4g}): wave {wave_idx + 1}/{len(waves)} done "
             f"({len(wave)} cell(s), {n_done}/{n_total} total) -- "
             f"{n_corrected} corrected, {len(skipped_cells)} skipped so far"
         )
