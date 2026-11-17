@@ -5397,22 +5397,22 @@ class ZFMicrogliaAIWidget(QWidget):
             measured_this_fish = stats["recommended_branch_radius_px"]
 
             if is_gt:
-                # Never-falling ceiling, opposite direction from min_volume/
-                # min_hole_size/gt_min -- see _update_gt_history's mode="max"
-                # docstring. Previously this just overwrote branch_radius
-                # with whatever this one run measured, with no cross-fish
-                # memory at all -- a real bug, fixed here alongside adding
-                # the aggregation.
+                # Never-rising floor, like min_volume/min_hole_size -- see
+                # _update_gt_history's mode="min" docstring. The training
+                # loss boosts every pixel within branch_radius px of a cell's
+                # edge, so a larger radius also boosts a rim around every
+                # soma and thick process and stops being branch-specific;
+                # the thinnest tips measured in any fish set the value.
                 recommended = self._update_gt_history(
                     "cellpose_branch_radius", self._branch_calib_job["fish_key"],
-                    measured_this_fish, mode="max",
+                    measured_this_fish, mode="min",
                 )
                 self._ct_branchradius_spin.setValue(recommended)
                 self._save_cfg(cellpose_branch_radius=recommended,
                                 cellpose_branch_radius_recommended=recommended)
                 self._ct_branchradius_recommended_lbl.setText(f"  Recommended branch_radius: {recommended} px")
                 applied_note = (
-                    f" Applied ceiling across all fish calibrated so far: "
+                    f" Applied floor across all fish calibrated so far: "
                     f"branch_radius={recommended}. Saved."
                 )
             else:
@@ -7128,15 +7128,14 @@ class ZFMicrogliaAIWidget(QWidget):
                       gt_min -- "smallest real X any fish has proven,
                       never go higher than that" -- a must-not-exceed
                       constraint, so the tightest bound across fish is
-                      the smallest measurement).
-        mode="max"  : never-falling ceiling (branch_radius -- the radius
-                      needed to fully cover a real branch's thinnest
-                      cross-section is a must-reach-at-least constraint;
-                      a thicker "thin branch" measured in any fish sets
-                      a higher bar that must still be met, so the
-                      tightest bound across fish is the largest
-                      measurement -- the opposite direction from
-                      mode="min", not a copy-paste of it).
+                      the smallest measurement; branch_radius -- the
+                      loss boosts every pixel within that radius of a
+                      cell's edge, so a larger value also boosts a rim
+                      around every soma and thick process; the thinnest
+                      tips measured in any fish set it).
+        mode="max"  : never-falling ceiling (max_volume -- the largest
+                      real cell any fish has proven; the opposite
+                      direction from mode="min").
         mode="mean" : average across every fish swept so far (BG
                       Threshold, Erosion, Sigma XY/Z, Cellprob,
                       Large-contact, MONAI Threshold -- each fish's
