@@ -205,6 +205,21 @@ check_gpu():
 ```
 Informational only — Tab 5 (AI Tools) is always shown regardless of the result; this only decides which color/text its disclaimer banner uses.
 
+Free-VRAM check before a Cellpose-SAM training launch (`_on_ct_launch_training` → `_ct_gpu_memory_ok`):
+```
+CELLPOSE_TRAIN_MIN_FREE_MIB ← 11 GB    # measured: train_xzyz.py batch 4 holds ~9.3 GB
+release_own_gpu_cache():               # gc.collect + torch.cuda.empty_cache, only if CUDA is initialised
+gpu_memory_status(device=0):           # nvidia-smi, never raises
+    total, free ← --query-gpu (by --id=device)
+    procs ← --query-compute-apps filtered to that GPU's uuid → [(pid, name, used_mib)]
+_ct_gpu_memory_ok():
+    release_own_gpu_cache()
+    st ← gpu_memory_status(0)
+    if not st.ok or st.free ≥ CELLPOSE_TRAIN_MIN_FREE_MIB: return True
+    QMessageBox.warning(free/total, process list with this napari's PID marked,
+                        "Launch anyway?")  →  Yes: True / No: status "Launch cancelled", False
+```
+
 ### `_live_progress.py` — surfacing libraries' own hidden progress output
 
 MONAI's `sliding_window_inference(progress=True)` draws a `tqdm` bar to raw `sys.stderr`; Cellpose routes everything through Python's `logging` module but never calls its own `logger_setup()` unless its CLI is used, so by default its log records go nowhere — not even a terminal. `capture_live_output(push)` is a context manager that makes both visible in the GUI for the duration of one call:
@@ -1137,6 +1152,10 @@ launch_detached(argv, cwd, log_path, conda_env, notify=None):
             descendant of the supervisor, so killing the whole tree (a
             manual Stop click) kills the supervisor before it reaches
             its own email step, correctly sending no "stopped" email.
+            The GUI's patience early stop uses the same kill, so its poll
+            loop sends the "early-stopped" email itself instead
+            (_email_training_early_stop: same switch + SMTP creds,
+            background thread, best epoch from patience_exceeded).
     else:
         Popen(["conda","run","-n",env,"--no-capture-output",*argv],
               stdout/stderr -> log_path,
@@ -1607,7 +1626,7 @@ Every button/combo handler in the file is documented, with real behavior, in the
 
 | File | Lines | Purpose | Guide section |
 |---|---|---|---|
-| `_widget.py` | 12,097 | Application shell — all 6 tabs, every button handler, config, layer resolution | §3–§9 |
+| `_widget.py` | 12,226 | Application shell — all 6 tabs, every button handler, config, layer resolution | §3–§9 |
 | `_labeling.py` | 3,284 | Pixel Classifier connected-components engine + every label-editing primitive (resort, debris, split, join, correct, copy, skin protection) | §4, §5 |
 | `_auto_correction.py` | 1,021 | 6-step unattended per-cell auto-correction pipeline, chained after Cellpose-SAM Segmentation | §5 |
 | `_cellpose_seg.py` | 820 | Cellpose-SAM `do_3D` inference + GMM cleanup + Krendl safe-merge + large-contact merge + final safety net | §4 |
@@ -1635,7 +1654,7 @@ Every button/combo handler in the file is documented, with real behavior, in the
 | `_ai_tools.py` | 89 | argv builders + default script-path resolution for the 3 training scripts | §7 |
 | `_sanding.py` | 209 | Cavity fill + sigma-softening (contour polishing) pass, chained after any label-regenerating correction | §4 |
 | `_reader.py` | 58 | napari File-menu integration (`.tif`/`.ims` reader registration) | §2 |
-| `_gpu_check.py` | 55 | GPU/VRAM classification (informational banner, never a hard gate) | §2 |
+| `_gpu_check.py` | 115 | GPU/VRAM classification (informational banner, never a hard gate) + free-VRAM check before a Cellpose-SAM training launch | §2 |
 | `__main__.py` | 53 | CLI entry point / pre-loading a file at launch | — |
 | `_inference.py` | 169 | MONAI 3D U-Net sliding-window brain inference | §3 |
 | `__init__.py` | 22 | Package version + widget export | — |

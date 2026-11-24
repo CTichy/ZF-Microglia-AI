@@ -53,3 +53,63 @@ GPU_MSG = _info["message"]
 # informational now (e.g. disclaimer banner text), never used to gate
 # visibility or functionality.
 GPU_OK = GPU_MEETS_RECOMMENDED
+
+
+# ── Free-VRAM check before launching a training run ────────────────────── #
+# Training is a separate detached process, so it only gets the VRAM that
+# is free at launch. napari's own PyTorch cache (and any other program on
+# the GPU) is invisible to it until it hits CUDA out-of-memory, possibly
+# after ~15 min of data loading. These helpers let the launcher check
+# first. nvidia-smi is used (not torch) because torch only sees this
+# process's own memory, not other processes'.
+
+# Measured 2026-11-24 on the RTX 4060 Ti: train_xzyz.py at batch size 4
+# (512 crops, branch-weighted loss) holds a steady 9.3 GB once training
+# starts. Required free = that plus ~1.5 GB margin.
+CELLPOSE_TRAIN_MIN_FREE_MIB = 11 * 1024
+
+
+def release_own_gpu_cache() -> None:
+    """Hand napari's unused cached CUDA blocks back to the driver.
+    Memory still held by live tensors (e.g. a loaded model) stays."""
+    try:
+        import gc
+        import torch
+        if torch.cuda.is_available() and torch.cuda.is_initialized():
+            gc.collect()
+            torch.cuda.empty_cache()
+    except Exception:
+        pass
+
+
+def gpu_memory_status(device: int = 0) -> dict:
+    """Free/total VRAM of GPU `device` and the processes using it, from
+    nvidia-smi. Returns {ok, total_mib, free_mib, procs: [(pid, name,
+    used_mib)], error}. Never raises; ok=False when nvidia-smi fails, so
+    the caller can launch anyway instead of blocking on a broken probe."""
+    import subprocess
+    out = dict(ok=False, total_mib=0, free_mib=0, procs=[], error=None)
+    try:
+        q = subprocess.run(
+            ["nvidia-smi", f"--id={device}", "--query-gpu=uuid,memory.total,memory.free",
+             "--format=csv,noheader,nounits"],
+            capture_output=True, text=True, timeout=10, check=True,
+        ).stdout.strip().splitlines()[0]
+        uuid, total, free = [s.strip() for s in q.split(",")]
+        out.update(total_mib=int(total), free_mib=int(free))
+        apps = subprocess.run(
+            ["nvidia-smi", "--query-compute-apps=gpu_uuid,pid,process_name,used_memory",
+             "--format=csv,noheader,nounits"],
+            capture_output=True, text=True, timeout=10, check=True,
+        ).stdout.strip().splitlines()
+        for line in apps:
+            parts = [s.strip() for s in line.split(",")]
+            if len(parts) == 4 and parts[0] == uuid:
+                try:
+                    out["procs"].append((int(parts[1]), parts[2], int(parts[3])))
+                except ValueError:
+                    pass
+        out["ok"] = True
+    except Exception as exc:
+        out["error"] = str(exc)
+    return out

@@ -22,7 +22,7 @@ from qtpy.QtWidgets import (
     QPushButton, QLabel, QWidget, QVBoxLayout, QHBoxLayout,
     QCheckBox, QFileDialog, QSizePolicy, QButtonGroup, QRadioButton,
     QTabWidget, QComboBox, QSpinBox, QDoubleSpinBox, QLineEdit, QScrollArea, QGroupBox,
-    QTextEdit,
+    QTextEdit, QMessageBox,
 )
 from qtpy.QtCore import Qt, QTimer
 from superqt import QLabeledSlider, QLabeledDoubleSlider
@@ -5183,6 +5183,7 @@ class ZFMicrogliaAIWidget(QWidget):
                     )
                     self._mt_launch_btn.setEnabled(True)
                     self._mt_stop_btn.setEnabled(False)
+                    self._email_training_early_stop("MONAI U-Net", _tj.MONAI_METRIC, pid, chk, log_path)
                     return
 
             if pid and not _tj.is_running(pid):
@@ -5478,6 +5479,7 @@ class ZFMicrogliaAIWidget(QWidget):
                     )
                     self._ct_launch_btn.setEnabled(True)
                     self._ct_stop_btn.setEnabled(False)
+                    self._email_training_early_stop("Cellpose-SAM", _tj.CELLPOSE_METRIC, pid, chk, log_path)
                     return
 
             if pid and not _tj.is_running(pid):
@@ -5508,6 +5510,8 @@ class ZFMicrogliaAIWidget(QWidget):
     def _on_ct_launch_training(self):
         if self._cellpose_job.get("pid") and _tj.is_running(self._cellpose_job["pid"]):
             self._ct_status_lbl.setText("A training job is already running.")
+            return
+        if not self._ct_gpu_memory_ok():
             return
 
         script_path = self._state["config"].get("cellpose_train_script_path") or str(_ait.DEFAULT_CELLPOSE_TRAIN_SCRIPT)
@@ -5568,6 +5572,86 @@ class ZFMicrogliaAIWidget(QWidget):
         self._ct_stop_btn.setEnabled(True)
         self._ct_status_lbl.setText(f"Launched (PID {pid}) — log: {log_path}{email_note}")
         self._start_cellpose_polling()
+
+    def _ct_gpu_memory_ok(self) -> bool:
+        """Before a Cellpose-SAM training launch: first hand napari's own
+        unused cached GPU memory back to the driver, then check that GPU 0
+        (where train_xzyz.py runs) has enough free VRAM. If not, list the
+        processes holding it (marking this napari) and ask whether to
+        launch anyway. Returns True to go ahead. If nvidia-smi can't be
+        read, the launch is never blocked."""
+        from ._gpu_check import (
+            gpu_memory_status, release_own_gpu_cache, CELLPOSE_TRAIN_MIN_FREE_MIB,
+        )
+        release_own_gpu_cache()
+        st = gpu_memory_status(0)
+        if not st["ok"] or st["free_mib"] >= CELLPOSE_TRAIN_MIN_FREE_MIB:
+            return True
+
+        own_pid = os.getpid()
+        lines = []
+        for pid, name, used in sorted(st["procs"], key=lambda t: -t[2]):
+            tag = "   <- this napari" if pid == own_pid else ""
+            lines.append(f"  PID {pid}: {used / 1024:.1f} GB  ({Path(name).name}){tag}")
+        procs_txt = "\n".join(lines) or "  (no process listed)"
+        napari_note = (
+            "This napari is holding GPU memory (a model it loaded earlier). "
+            "Save your work, close napari, reopen it and launch again.\n\n"
+            if any(p == own_pid for p, _, _ in st["procs"]) else ""
+        )
+        msg = (
+            f"GPU 0 has only {st['free_mib'] / 1024:.1f} GB free of "
+            f"{st['total_mib'] / 1024:.1f} GB. Cellpose-SAM training at batch "
+            f"size 4 needs about {CELLPOSE_TRAIN_MIN_FREE_MIB / 1024:.1f} GB.\n\n"
+            f"Processes using GPU 0:\n{procs_txt}\n\n{napari_note}"
+            "Launch anyway? It will most likely stop with CUDA out of memory "
+            "once data loading is done."
+        )
+        ans = QMessageBox.warning(
+            self, "Not enough free GPU memory", msg,
+            QMessageBox.Yes | QMessageBox.No, QMessageBox.No,
+        )
+        if ans == QMessageBox.Yes:
+            return True
+        self._ct_status_lbl.setText(
+            f"Launch cancelled: only {st['free_mib'] / 1024:.1f} GB free on GPU 0 "
+            f"(needs about {CELLPOSE_TRAIN_MIN_FREE_MIB / 1024:.1f} GB)."
+        )
+        return False
+
+    def _email_training_early_stop(self, job_label, metric_cfg, pid, chk, log_path):
+        """Early stop kills the whole process tree, including the
+        supervisor script that would otherwise email when training ends,
+        so the email is sent from here instead. Same conditions as the
+        launch: plugin-wide email switch on and SMTP set up. Sent in a
+        background thread; a failure is only printed."""
+        try:
+            if not self._notify_enabled_cb.isChecked():
+                return
+            creds, err = self._get_notify_creds()
+            if err or creds is None:
+                return
+            subject = f"[ZF-Microglia-AI] {job_label} training early-stopped"
+            body = (
+                f"{job_label} training has stopped.\n\n"
+                f"Status: early-stopped (PID {pid}) after "
+                f"{chk['checkpoints_since_best']} checkpoints without improvement.\n"
+                f"Best {metric_cfg['label']} = {chk['best_value']:.4f} at epoch "
+                f"{chk['best_epoch']}.\n\n"
+                f"Log file: {log_path}\n"
+            )
+
+            def _send():
+                e = _tj.send_notification_email(
+                    creds["to_addr"], creds["smtp_host"], creds["smtp_port"],
+                    creds["smtp_user"], creds["smtp_password"], subject, body,
+                )
+                if e:
+                    print(f"Early-stop email failed: {e}")
+
+            threading.Thread(target=_send, daemon=True).start()
+        except Exception as exc:
+            print(f"Early-stop email skipped (internal error): {exc}")
 
     def _on_ct_stop_training(self):
         pid = self._cellpose_job.get("pid")
